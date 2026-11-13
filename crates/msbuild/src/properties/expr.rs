@@ -31,6 +31,7 @@
 
 use super::escaping::Escaped;
 use super::{Issue, PropertyMap};
+use crate::observed::Observer;
 
 // ============================================================================
 // Nesting-aware scanners
@@ -503,7 +504,7 @@ fn has_culture_sensitive_control(decoded: &str) -> bool {
 pub(super) fn evaluate(
     inner: &str,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
 ) -> Option<Evaluated> {
     // Stage E3 of `docs/completed/msbuild-escaped-value-plan.md`. The evaluator runs
     // *inside* the escaped domain, mirroring MSBuild's `Expander`
@@ -514,7 +515,7 @@ pub(super) fn evaluate(
     // — and this used to be a wholesale decline of any escape-bearing expression.
     let expr = parse(inner)?;
     let mut issues = Vec::new();
-    let value = eval(&expr, props, fs_probes_allowed, &mut issues, 0).ok()?;
+    let value = eval(&expr, props, fs_observer, &mut issues, 0).ok()?;
     // A `Char` (from a string indexer) is the one result MSBuild hands back
     // *raw*; every other result is already escaped (a re-escaped function return,
     // a spliced property value, or an escape-neutral number/version render), so
@@ -566,7 +567,7 @@ pub const MAX_EXPRESSION_NESTING: usize = 32;
 fn eval(
     expr: &Expr<'_>,
     props: &PropertyMap,
-    fs: bool,
+    fs: Option<&Observer>,
     issues: &mut Vec<Issue>,
     depth: usize,
 ) -> Result<Value, Unsupported> {
@@ -583,7 +584,7 @@ fn eval(
 fn eval_root(
     root: &Root<'_>,
     props: &PropertyMap,
-    fs: bool,
+    fs: Option<&Observer>,
     issues: &mut Vec<Issue>,
     depth: usize,
 ) -> Result<Value, Unsupported> {
@@ -833,7 +834,7 @@ fn eval_static(
     type_name: &str,
     member: &Member<'_>,
     props: &PropertyMap,
-    fs: bool,
+    fs: Option<&Observer>,
     issues: &mut Vec<Issue>,
     depth: usize,
 ) -> Result<Value, Unsupported> {
@@ -953,7 +954,7 @@ fn eval_msbuild_static(
     member_name: &str,
     args: &[&str],
     props: &PropertyMap,
-    fs: bool,
+    fs: Option<&Observer>,
     issues: &mut Vec<Issue>,
     depth: usize,
 ) -> Result<Value, Unsupported> {
@@ -1097,9 +1098,9 @@ fn eval_msbuild_static(
             .ok_or(Unsupported);
     }
     if member_name.eq_ignore_ascii_case("GetDirectoryNameOfFileAbove") {
-        if !fs {
+        let Some(observer) = fs else {
             return Err(Unsupported);
-        }
+        };
         let [start, file] = args else {
             return Err(Unsupported);
         };
@@ -1108,14 +1109,14 @@ fn eval_msbuild_static(
         }
         let start = super::eval_exact_path_arg(start, props, false).ok_or(Unsupported)?;
         let file = super::eval_exact_path_arg(file, props, false).ok_or(Unsupported)?;
-        return super::get_directory_name_of_file_above(&start, &file)
+        return super::get_directory_name_of_file_above(observer, &start, &file)
             .map(|p| str_result(&p))
             .ok_or(Unsupported);
     }
     if member_name.eq_ignore_ascii_case("GetPathOfFileAbove") {
-        if !fs {
+        let Some(observer) = fs else {
             return Err(Unsupported);
-        }
+        };
         // The argument order mirrors the sibling above, and the starting
         // directory is optional: the one-argument overload searches from the
         // directory of the file the expression is *written in*. Oracle-pinned
@@ -1153,7 +1154,7 @@ fn eval_msbuild_static(
             }
             _ => return Err(Unsupported),
         };
-        return super::get_path_of_file_above(&file, &start)
+        return super::get_path_of_file_above(observer, &file, &start)
             .map(|p| str_result(&p))
             .ok_or(Unsupported);
     }
@@ -1428,7 +1429,7 @@ fn eval_string_arg_inner(
         && after[close + 1..].is_empty()
     {
         let expr = parse(&after[..close]).ok_or(Unsupported)?;
-        return match eval(&expr, props, false, issues, depth + 1)? {
+        return match eval(&expr, props, None, issues, depth + 1)? {
             // The evaluated value is escaped; an argument leaves the domain once
             // at binding (`Expander.cs:4010`). A backslash in this nested `$()`
             // result meets the unix path fixup before the outer function sees it
@@ -1478,7 +1479,7 @@ fn eval_str_template(
                 // No filesystem access from a string argument; the fs
                 // capability rides with the outer call only where the pinned
                 // function needs it.
-                match eval(&expr, props, false, issues, depth + 1)? {
+                match eval(&expr, props, None, issues, depth + 1)? {
                     // A backslash in this nested `$()` result meets the unix path
                     // fixup before binding (a literal backslash in the arg *text*
                     // does not — the path normalisers handle it, so it is not
@@ -1577,7 +1578,7 @@ mod tests {
     /// [`Escaped`]; a function result re-enters the domain escaped, so this
     /// unescapes it back to the text MSBuild would show).
     fn ev(inner: &str, props: &PropertyMap) -> Option<(String, Vec<Issue>)> {
-        evaluate(inner, props, false).map(|e| (e.value.unescape(), e.issues))
+        evaluate(inner, props, None).map(|e| (e.value.unescape(), e.issues))
     }
 
     /// Stage E3 of `docs/completed/msbuild-escaped-value-plan.md`: the evaluator runs

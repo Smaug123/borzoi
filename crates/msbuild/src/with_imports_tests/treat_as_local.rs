@@ -138,7 +138,7 @@ fn imported_treat_as_local_unprotects_empty_gate_global_and_imports() {
     let canon_project = canon(&project_path);
     let mut extras = HashMap::new();
     extras.insert("ImportDirectoryBuildProps".to_string(), String::new());
-    let resolver = |name: &str| {
+    let resolver = |name: &str, _observer: &crate::observed::Observer| {
         if name == "MySdk" {
             Ok(SdkResolution::Single(SdkPaths {
                 root: root.clone(),
@@ -150,7 +150,7 @@ fn imported_treat_as_local_unprotects_empty_gate_global_and_imports() {
         }
     };
     let result = parse_fsproj_with_imports(
-        &std::fs::read_to_string(&project_path).unwrap(),
+        &crate::observed::host_fs::read_to_string(&project_path).unwrap(),
         &canon_project,
         &extras,
         &HashMap::new(),

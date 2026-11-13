@@ -89,7 +89,7 @@ fn sdk_chain_property_expressions_are_never_wrongly_committed() {
 
     let mut expressions: BTreeSet<String> = BTreeSet::new();
     for file in &files {
-        if let Ok(text) = std::fs::read_to_string(file) {
+        if let Ok(text) = borzoi_msbuild::observed::host_fs::read_to_string(file) {
             extract_call_expressions(&text, &mut expressions);
         }
     }
@@ -167,7 +167,7 @@ fn sdk_chain_conditions_are_never_wrongly_committed() {
 
     let mut conditions: BTreeSet<String> = BTreeSet::new();
     for file in &files {
-        if let Ok(text) = std::fs::read_to_string(file) {
+        if let Ok(text) = borzoi_msbuild::observed::host_fs::read_to_string(file) {
             extract_conditions(&text, &mut conditions);
         }
     }

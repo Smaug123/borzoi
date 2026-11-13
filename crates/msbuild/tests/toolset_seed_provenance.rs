@@ -55,7 +55,7 @@ fn parse_with_real_sdk(body: &str) -> ParsedProject {
 fn parse_at_with_real_sdk(body: &str, project_path: &std::path::Path) -> ParsedProject {
     let dotnet_root = common::dotnet_root_from_env();
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
-    let resolver = |name: &str| {
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         resolve_sdk(
             &dotnet_root,
             None,
@@ -67,6 +67,7 @@ fn parse_at_with_real_sdk(body: &str, project_path: &std::path::Path) -> ParsedP
                 overrides_present,
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
     parse_fsproj_with_imports(

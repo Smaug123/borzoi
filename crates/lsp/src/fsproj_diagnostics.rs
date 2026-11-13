@@ -193,7 +193,7 @@ fn parse_buffer(
     let glob_resolver: &GlobResolver<'_> = &borzoi_msbuild::glob_resolver::resolve;
     match disc {
         Some(d) => {
-            let resolver: &SdkResolver<'_> = &|name| d.resolve(name);
+            let resolver: &SdkResolver<'_> = &|name, observer| d.resolve(name, observer);
             parse_fsproj_with_imports(
                 text,
                 project_path,
@@ -212,6 +212,7 @@ fn parse_buffer(
             Some(glob_resolver),
         ),
     }
+    .inspect(crate::observed::report_evaluation)
 }
 
 /// Re-evaluate the buffer under the target framework the LSP serves it as,

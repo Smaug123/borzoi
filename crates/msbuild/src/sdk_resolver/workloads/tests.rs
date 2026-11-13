@@ -4,6 +4,8 @@
 //! descending band fallback, silent skipping of absent ids, and a
 //! degrade for every layout shape outside the envelope.
 
+use crate::observed::Observer;
+use crate::observed::host_fs;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -52,7 +54,7 @@ fn resolve_targets(
     version_dir: &Path,
     env: &WorkloadEnvironment<'_>,
 ) -> Result<SdkResolution, SdkResolveError> {
-    resolve_workload_locator(TARGETS, root, version_dir, env)
+    resolve_workload_locator(TARGETS, root, version_dir, env, &Observer::new())
 }
 
 #[test]
@@ -278,7 +280,8 @@ fn baseline_workload_set_does_not_change_the_answer() {
         with_set_target
     );
     assert_eq!(
-        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env()).unwrap(),
+        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+            .unwrap(),
         SdkResolution::Roots(Vec::new())
     );
 }
@@ -788,7 +791,9 @@ fn auto_import_returns_empty_when_no_pack_ships_auto_import_props() {
         "",
     );
 
-    let result = resolve_workload_locator(AUTO, root, &version_dir, &no_user_env()).unwrap();
+    let result =
+        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+            .unwrap();
     assert_eq!(result, SdkResolution::Roots(Vec::new()));
 }
 
@@ -803,7 +808,8 @@ fn auto_import_degrades_when_any_auto_import_props_exists() {
         "<Project/>",
     );
 
-    let err = resolve_workload_locator(AUTO, root, &version_dir, &no_user_env()).unwrap_err();
+    let err = resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+        .unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
 
@@ -862,7 +868,8 @@ fn auto_import_degrades_on_the_sdk_subfolder_layout() {
         "<Project/>",
     );
 
-    let err = resolve_workload_locator(AUTO, root, &version_dir, &no_user_env()).unwrap_err();
+    let err = resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+        .unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
 
@@ -889,7 +896,8 @@ fn auto_import_scans_user_packs_even_without_user_manifests() {
         overrides_present: false,
         global_json_pins_workload_set: false,
     };
-    let err = resolve_workload_locator(AUTO, &root, &version_dir, &env).unwrap_err();
+    let err =
+        resolve_workload_locator(AUTO, &root, &version_dir, &env, &Observer::new()).unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
 
@@ -934,7 +942,8 @@ fn auto_import_empty_when_manifestless_user_root_ships_no_props() {
         overrides_present: false,
         global_json_pins_workload_set: false,
     };
-    let result = resolve_workload_locator(AUTO, &root, &version_dir, &env).unwrap();
+    let result =
+        resolve_workload_locator(AUTO, &root, &version_dir, &env, &Observer::new()).unwrap();
     assert_eq!(result, SdkResolution::Roots(Vec::new()));
 }
 
@@ -976,7 +985,8 @@ fn global_json_workload_set_pin_degrades_both_locators() {
         global_json_pins_workload_set: true,
     };
     for locator in [TARGETS, AUTO] {
-        let err = resolve_workload_locator(locator, root, &version_dir, &env).unwrap_err();
+        let err = resolve_workload_locator(locator, root, &version_dir, &env, &Observer::new())
+            .unwrap_err();
         assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
     }
 }
@@ -996,8 +1006,16 @@ fn locator_under_rejecting_spec_reports_version_not_satisfied() {
 
     let pin = SdkVersion::parse("9.0.100").unwrap();
     let spec = VersionSpec::with_version(pin, RollForward::Disable, false);
-    let err =
-        crate::resolve_sdk(root, None, TARGETS, Some(&spec), None, &no_user_env()).unwrap_err();
+    let err = crate::resolve_sdk(
+        root,
+        None,
+        TARGETS,
+        Some(&spec),
+        None,
+        &no_user_env(),
+        &Observer::new(),
+    )
+    .unwrap_err();
     let SdkResolveError::VersionNotSatisfied { available, .. } = err else {
         panic!("expected VersionNotSatisfied, got {err:?}");
     };
@@ -1018,10 +1036,28 @@ fn resolve_sdk_routes_locators_and_ordinary_names() {
     write(&sdk_dir.join("Sdk.props"), "<Project/>");
     write(&sdk_dir.join("Sdk.targets"), "<Project/>");
 
-    let ordinary = crate::resolve_sdk(root, None, "Some.Sdk", None, None, &no_user_env()).unwrap();
+    let ordinary = crate::resolve_sdk(
+        root,
+        None,
+        "Some.Sdk",
+        None,
+        None,
+        &no_user_env(),
+        &Observer::new(),
+    )
+    .unwrap();
     assert!(matches!(ordinary, SdkResolution::Single(_)));
 
-    let locator = crate::resolve_sdk(root, None, TARGETS, None, None, &no_user_env()).unwrap();
+    let locator = crate::resolve_sdk(
+        root,
+        None,
+        TARGETS,
+        None,
+        None,
+        &no_user_env(),
+        &Observer::new(),
+    )
+    .unwrap();
     assert_eq!(locator, SdkResolution::Roots(vec![expected]));
 }
 
@@ -1030,7 +1066,7 @@ fn resolve_sdk_routes_locators_and_ordinary_names() {
 #[cfg(unix)]
 fn with_dir_mode<R>(dir: &Path, mode: u32, f: impl FnOnce() -> R) -> R {
     use std::os::unix::fs::PermissionsExt;
-    let original = fs::metadata(dir).unwrap().permissions();
+    let original = host_fs::metadata(dir).unwrap().permissions();
     fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
     let result = f();
     fs::set_permissions(dir, original).unwrap();
@@ -1055,7 +1091,7 @@ fn unreadable_band_directory_degrades() {
     });
     // Root bypasses permission bits; only assert degrade when the
     // chmod actually bit (it does everywhere we run tests).
-    if fs::read_dir(&band_dir).is_err() {
+    if host_fs::read_dir(&band_dir).is_err() {
         assert!(matches!(
             result.unwrap_err(),
             SdkResolveError::UnsupportedLayout { .. }
@@ -1074,9 +1110,9 @@ fn unreadable_packs_directory_degrades_auto_import() {
     fs::create_dir_all(&packs).unwrap();
 
     let result = with_dir_mode(&packs, 0o000, || {
-        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env())
+        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
     });
-    if fs::read_dir(&packs).is_err() {
+    if host_fs::read_dir(&packs).is_err() {
         assert!(matches!(
             result.unwrap_err(),
             SdkResolveError::UnsupportedLayout { .. }
@@ -1096,15 +1132,42 @@ fn unreadable_known_manifests_file_degrades() {
     let known = version_dir.join("KnownWorkloadManifests.txt");
 
     use std::os::unix::fs::PermissionsExt;
-    let original = fs::metadata(&known).unwrap().permissions();
+    let original = host_fs::metadata(&known).unwrap().permissions();
     fs::set_permissions(&known, fs::Permissions::from_mode(0o000)).unwrap();
     let result = resolve_targets(root, &version_dir, &no_user_env());
-    let unreadable = fs::read_to_string(&known).is_err();
+    let unreadable = host_fs::read_to_string(&known).is_err();
     fs::set_permissions(&known, original).unwrap();
     if unreadable {
         assert!(matches!(
             result.unwrap_err(),
             SdkResolveError::UnsupportedLayout { .. }
         ));
+    }
+}
+
+/// Two manifests in the host band, one of which degrades: what the
+/// resolution observes before it degrades must not depend on the order a
+/// `HashMap` yields them in, or two equal evaluations would record different
+/// read sets.
+#[test]
+fn what_resolution_observes_does_not_depend_on_hash_order() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let version_dir = host_sdk(root, "10.0.300", &["a.workload", "b.workload"]);
+    manifest(root, "10.0.300", "a.workload", "1.0.0");
+    manifest(root, "10.0.300", "b.workload", "not a version!");
+    let observe = || {
+        let observer = Observer::new();
+        let result =
+            resolve_workload_locator(TARGETS, root, &version_dir, &no_user_env(), &observer);
+        assert!(matches!(
+            result,
+            Err(SdkResolveError::UnsupportedLayout { .. })
+        ));
+        observer.finish()
+    };
+    let first = observe();
+    for _ in 0..64 {
+        assert_eq!(observe(), first);
     }
 }

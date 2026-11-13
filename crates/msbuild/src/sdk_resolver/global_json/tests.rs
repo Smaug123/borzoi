@@ -1,3 +1,4 @@
+use crate::observed::Observer;
 use std::cell::Cell;
 use std::fs;
 
@@ -652,7 +653,7 @@ fn find_global_json_in_start_dir() {
     let temp = TempDir::new().unwrap();
     let gj = temp.path().join("global.json");
     fs::write(&gj, "{}").unwrap();
-    let found = find_global_json(temp.path()).unwrap();
+    let found = find_global_json(temp.path(), &Observer::new()).unwrap();
     assert_eq!(found, gj);
 }
 
@@ -663,7 +664,7 @@ fn find_global_json_walks_upward() {
     fs::write(&gj, "{}").unwrap();
     let nested = temp.path().join("a").join("b").join("c");
     fs::create_dir_all(&nested).unwrap();
-    let found = find_global_json(&nested).unwrap();
+    let found = find_global_json(&nested, &Observer::new()).unwrap();
     assert_eq!(found, gj);
 }
 
@@ -678,7 +679,7 @@ fn find_global_json_picks_closest_ancestor() {
     fs::write(&inner, "{}").unwrap();
     let nested = inner_dir.join("src");
     fs::create_dir(&nested).unwrap();
-    let found = find_global_json(&nested).unwrap();
+    let found = find_global_json(&nested, &Observer::new()).unwrap();
     assert_eq!(found, inner, "closest ancestor wins, not outermost");
 }
 
@@ -687,7 +688,7 @@ fn find_global_json_returns_none_when_absent() {
     let temp = TempDir::new().unwrap();
     let nested = temp.path().join("a").join("b");
     fs::create_dir_all(&nested).unwrap();
-    assert_eq!(find_global_json(&nested), None);
+    assert_eq!(find_global_json(&nested, &Observer::new()), None);
 }
 
 #[test]
@@ -695,7 +696,7 @@ fn find_global_json_ignores_directory_named_global_json() {
     // Defensive: a directory called `global.json` shouldn't satisfy.
     let temp = TempDir::new().unwrap();
     fs::create_dir(temp.path().join("global.json")).unwrap();
-    assert_eq!(find_global_json(temp.path()), None);
+    assert_eq!(find_global_json(temp.path(), &Observer::new()), None);
 }
 
 // ============================================================

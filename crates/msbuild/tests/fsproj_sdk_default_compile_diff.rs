@@ -208,7 +208,7 @@ fn lay_down(root: &Path, fixture: &Fixture) -> (PathBuf, String) {
 fn ours(project: &Path, xml: &str, seam: Seam) -> Result<Vec<PathBuf>, String> {
     let dotnet_root = common::dotnet_root_from_env();
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
-    let sdk = |name: &str| {
+    let sdk = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         resolve_sdk(
             &dotnet_root,
             None,
@@ -221,6 +221,7 @@ fn ours(project: &Path, xml: &str, seam: Seam) -> Result<Vec<PathBuf>, String> {
                 // The fixture tempdir has no global.json above it.
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
     let glob: &GlobResolver<'_> = &glob_resolver::resolve;
@@ -281,7 +282,7 @@ fn sdk_compile_operations_are_exact_or_declined() {
 
     for fixture in Fixture::all() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = borzoi_msbuild::observed::host_fs::canonicalize(tmp.path()).unwrap();
         let (project, xml) = lay_down(&root, &fixture);
         let theirs: Vec<String> = oracle
             .items(&xml, &project, "Compile", &[])

@@ -1,3 +1,5 @@
+use crate::observed::Observer;
+use crate::observed::host_fs;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -102,14 +104,34 @@ fn version_dir_name(props_path: &Path) -> &std::ffi::OsStr {
 fn missing_dotnet_root_returns_none() {
     let tmp = TempDir::new().unwrap();
     let nowhere = tmp.path().join("does-not-exist");
-    assert!(locate_dotnet_sdk(&nowhere, None, "Microsoft.NET.Sdk", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            &nowhere,
+            None,
+            "Microsoft.NET.Sdk",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn empty_sdk_dir_returns_none() {
     let tmp = TempDir::new().unwrap();
     fs::create_dir_all(tmp.path().join("sdk")).unwrap();
-    assert!(locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "Microsoft.NET.Sdk",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -117,7 +139,15 @@ fn single_sdk_is_returned() {
     let tmp = TempDir::new().unwrap();
     let installed = install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
 
-    let paths = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).unwrap();
+    let paths = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        None,
+        None,
+        &Observer::new(),
+    )
+    .unwrap();
     assert_eq!(paths.props, installed.join("Sdk.props"));
     assert_eq!(paths.targets, installed.join("Sdk.targets"));
 }
@@ -130,7 +160,15 @@ fn highest_numeric_version_wins() {
     install_sdk(tmp.path(), "9.0.100", "Microsoft.NET.Sdk");
     install_sdk(tmp.path(), "10.0.100", "Microsoft.NET.Sdk");
 
-    let paths = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).unwrap();
+    let paths = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        None,
+        None,
+        &Observer::new(),
+    )
+    .unwrap();
     // Lexicographic ordering would pick "9.0.100" over "10.0.100".
     // Numeric tuple ordering must put 10 first.
     assert_eq!(version_dir_name(&paths.props), "10.0.100");
@@ -143,7 +181,15 @@ fn stable_beats_prerelease_at_same_numeric_prefix() {
     install_sdk(tmp.path(), "9.0.100", "Microsoft.NET.Sdk");
     install_sdk(tmp.path(), "9.0.100-rc.2.24474.11", "Microsoft.NET.Sdk");
 
-    let paths = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).unwrap();
+    let paths = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        None,
+        None,
+        &Observer::new(),
+    )
+    .unwrap();
     assert_eq!(version_dir_name(&paths.props), "9.0.100");
 }
 
@@ -163,7 +209,15 @@ fn missing_targets_falls_back_to_lower_version() {
     fs::create_dir_all(&broken).unwrap();
     fs::write(broken.join("Sdk.props"), "<Project/>").unwrap();
 
-    let paths = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).unwrap();
+    let paths = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        None,
+        None,
+        &Observer::new(),
+    )
+    .unwrap();
     assert_eq!(version_dir_name(&paths.props), "8.0.100");
 }
 
@@ -172,7 +226,17 @@ fn sdks_other_than_requested_are_ignored() {
     let tmp = TempDir::new().unwrap();
     // Only Web variant installed; we ask for the base. Must return None.
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk.Web");
-    assert!(locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "Microsoft.NET.Sdk",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -181,7 +245,15 @@ fn unparseable_version_dirs_are_skipped() {
     install_sdk(tmp.path(), "NuGetFallbackFolder", "Microsoft.NET.Sdk");
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
 
-    let paths = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).unwrap();
+    let paths = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        None,
+        None,
+        &Observer::new(),
+    )
+    .unwrap();
     assert_eq!(version_dir_name(&paths.props), "8.0.401");
 }
 
@@ -195,7 +267,15 @@ fn files_under_sdk_dir_are_ignored() {
     fs::write(sdk_dir.join("README"), "ignore me").unwrap();
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
 
-    let paths = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None).unwrap();
+    let paths = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        None,
+        None,
+        &Observer::new(),
+    )
+    .unwrap();
     assert_eq!(version_dir_name(&paths.props), "8.0.401");
 }
 
@@ -220,8 +300,15 @@ fn symlinked_version_dir_is_followed() {
     let real_version_dir = real.join("sdk").join("8.0.401");
     std::os::unix::fs::symlink(&real_version_dir, fake_sdk_dir.join("8.0.401")).unwrap();
 
-    let paths = locate_dotnet_sdk(&fake_dotnet, None, "Microsoft.NET.Sdk", None, None)
-        .expect("resolver should follow the symlink");
+    let paths = locate_dotnet_sdk(
+        &fake_dotnet,
+        None,
+        "Microsoft.NET.Sdk",
+        None,
+        None,
+        &Observer::new(),
+    )
+    .expect("resolver should follow the symlink");
     // Path is unresolved (we don't canonicalise), so it goes through
     // the symlink directly. The file_name check is enough.
     assert_eq!(version_dir_name(&paths.props), "8.0.401");
@@ -248,6 +335,7 @@ fn per_import_version_pin_picks_pinned_nuget_copy() {
         "Microsoft.Build.NoTargets/1.0.80",
         None,
         None,
+        &Observer::new(),
     )
     .expect("pinned NuGet copy should resolve");
     assert_eq!(version_dir_name(&paths.props), "1.0.80");
@@ -272,6 +360,7 @@ fn per_import_version_pin_fails_when_only_other_versions_present() {
         "Microsoft.Build.NoTargets/1.0.80",
         None,
         None,
+        &Observer::new(),
     )
     .expect_err("per-import pin to a missing version must miss");
     match err {
@@ -318,6 +407,7 @@ fn per_import_version_pin_overrides_caller_spec() {
         "Microsoft.NET.Sdk/9.0.100",
         Some(&caller_spec),
         None,
+        &Observer::new(),
     )
     .expect("per-import pin should override caller spec");
     assert_eq!(version_dir_name(&paths.props), "9.0.100");
@@ -332,13 +422,33 @@ fn rejects_traversal_in_versioned_sdk_reference() {
     let tmp = TempDir::new().unwrap();
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
     // Empty name half rejected.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "/Version", None, None).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "/Version", None, None, &Observer::new()).is_err());
     // `..` as the name half rejected.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "../1.0.0", None, None).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "../1.0.0", None, None, &Observer::new()).is_err());
     // Backslash inside the name half rejected.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\\bar/1.0.0", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "foo\\bar/1.0.0",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
     // NUL inside the name half rejected.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\0bar/1.0.0", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "foo\0bar/1.0.0",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -352,9 +462,29 @@ fn rejects_malformed_version_half_even_when_name_is_safe() {
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
 
     // Empty version.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk/", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "Microsoft.NET.Sdk/",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
     // `..` in version — would escape if forwarded blindly.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk/../1.0.0", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "Microsoft.NET.Sdk/../1.0.0",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
     // Multi-SDK joined string. MSBuild does support `A;B` form for
     // multiple SDKs, but the seam delivers it as one opaque value
     // and v1a doesn't decompose. Better to surface SdkNotFound
@@ -365,12 +495,23 @@ fn rejects_malformed_version_half_even_when_name_is_safe() {
             None,
             "Microsoft.NET.Sdk/1.0.0;Other/2.0",
             None,
-            None
+            None,
+            &Observer::new()
         )
         .is_err()
     );
     // Non-semver gibberish.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk/abc", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "Microsoft.NET.Sdk/abc",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
     // Multi-SDK string where the *first* version carries a prerelease
     // tail. Without prerelease-character validation, the whole
     // `preview.1;Other/2.0` tail would be accepted as an opaque
@@ -383,6 +524,7 @@ fn rejects_malformed_version_half_even_when_name_is_safe() {
             "Microsoft.NET.Sdk/1.0.0-preview.1;Other/2.0",
             None,
             None,
+            &Observer::new(),
         )
         .is_err()
     );
@@ -393,7 +535,8 @@ fn rejects_malformed_version_half_even_when_name_is_safe() {
             None,
             "Microsoft.NET.Sdk/1.0.0-rc/../etc",
             None,
-            None
+            None,
+            &Observer::new()
         )
         .is_err()
     );
@@ -413,17 +556,39 @@ fn rejects_path_escape_via_absolute_sdk_name() {
     // sandbox — we don't have to actually create it; the
     // validator must reject the input before any filesystem
     // probe.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "/Microsoft.NET.Sdk", None, None).is_err());
-    assert!(locate_dotnet_sdk(tmp.path(), None, "/etc/passwd", None, None).is_err());
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "/Microsoft.NET.Sdk",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
+    assert!(
+        locate_dotnet_sdk(
+            tmp.path(),
+            None,
+            "/etc/passwd",
+            None,
+            None,
+            &Observer::new()
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn rejects_parent_dir_traversal() {
     let tmp = TempDir::new().unwrap();
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
-    assert!(locate_dotnet_sdk(tmp.path(), None, "..", None, None).is_err());
-    assert!(locate_dotnet_sdk(tmp.path(), None, "../etc", None, None).is_err());
-    assert!(locate_dotnet_sdk(tmp.path(), None, "foo/../bar", None, None).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "..", None, None, &Observer::new()).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "../etc", None, None, &Observer::new()).is_err());
+    assert!(
+        locate_dotnet_sdk(tmp.path(), None, "foo/../bar", None, None, &Observer::new()).is_err()
+    );
 }
 
 #[test]
@@ -433,12 +598,12 @@ fn rejects_separators_inside_name() {
     // Backslash on macOS/Linux is just a regular byte to the
     // filesystem, but it would matter on Windows. Reject in
     // either case to keep behaviour portable.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "foo/bar", None, None).is_err());
-    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\\bar", None, None).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "foo/bar", None, None, &Observer::new()).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\\bar", None, None, &Observer::new()).is_err());
     // Empty rejected.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "", None, None).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "", None, None, &Observer::new()).is_err());
     // NUL rejected.
-    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\0bar", None, None).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\0bar", None, None, &Observer::new()).is_err());
 }
 
 #[test]
@@ -458,7 +623,7 @@ fn accepts_real_dotnet_sdk_names() {
         let tmp = TempDir::new().unwrap();
         install_sdk(tmp.path(), "8.0.401", name);
         assert!(
-            locate_dotnet_sdk(tmp.path(), None, name, None, None).is_ok(),
+            locate_dotnet_sdk(tmp.path(), None, name, None, None, &Observer::new()).is_ok(),
             "validator wrongly rejected {name:?}"
         );
     }
@@ -488,7 +653,8 @@ fn variant_sdks_resolve_to_their_own_directories() {
         install_sdk(tmp.path(), "8.0.401", name);
     }
     for name in names {
-        let paths = locate_dotnet_sdk(tmp.path(), None, name, None, None).unwrap();
+        let paths =
+            locate_dotnet_sdk(tmp.path(), None, name, None, None, &Observer::new()).unwrap();
         // `…/sdk/<version>/Sdks/<sdk_name>/Sdk/Sdk.props` — two parents
         // past `Sdk.props` lands on `<sdk_name>`.
         let sdk_segment = paths
@@ -545,13 +711,14 @@ fn end_to_end_resolver_splices_sdk_imports() {
     .unwrap();
 
     let dotnet_root = dotnet.path().to_path_buf();
-    let resolver = |name: &str| {
-        locate_dotnet_sdk(&dotnet_root, None, name, None, None).map(crate::SdkResolution::from)
+    let resolver = |name: &str, observer: &crate::observed::Observer| {
+        locate_dotnet_sdk(&dotnet_root, None, name, None, None, observer)
+            .map(crate::SdkResolution::from)
     };
-    let canon_project = fs::canonicalize(&project_path).unwrap();
+    let canon_project = host_fs::canonicalize(&project_path).unwrap();
     let canon_proj_dir = canon_project.parent().unwrap();
     let result = parse_fsproj_with_imports(
-        &fs::read_to_string(&project_path).unwrap(),
+        &host_fs::read_to_string(&project_path).unwrap(),
         &canon_project,
         &HashMap::new(),
         &HashMap::new(),
@@ -610,13 +777,14 @@ fn end_to_end_resolver_splices_variant_sdk() {
     .unwrap();
 
     let dotnet_root = dotnet.path().to_path_buf();
-    let resolver = |name: &str| {
-        locate_dotnet_sdk(&dotnet_root, None, name, None, None).map(crate::SdkResolution::from)
+    let resolver = |name: &str, observer: &crate::observed::Observer| {
+        locate_dotnet_sdk(&dotnet_root, None, name, None, None, observer)
+            .map(crate::SdkResolution::from)
     };
-    let canon_project = fs::canonicalize(&project_path).unwrap();
+    let canon_project = host_fs::canonicalize(&project_path).unwrap();
     let canon_proj_dir = canon_project.parent().unwrap();
     let result = parse_fsproj_with_imports(
-        &fs::read_to_string(&project_path).unwrap(),
+        &host_fs::read_to_string(&project_path).unwrap(),
         &canon_project,
         &HashMap::new(),
         &HashMap::new(),
@@ -657,12 +825,13 @@ fn end_to_end_resolver_missing_sdk_yields_sdk_not_found() {
     .unwrap();
 
     let dotnet_root = dotnet.path().to_path_buf();
-    let resolver = |name: &str| {
-        locate_dotnet_sdk(&dotnet_root, None, name, None, None).map(crate::SdkResolution::from)
+    let resolver = |name: &str, observer: &crate::observed::Observer| {
+        locate_dotnet_sdk(&dotnet_root, None, name, None, None, observer)
+            .map(crate::SdkResolution::from)
     };
-    let canon_project = fs::canonicalize(&project_path).unwrap();
+    let canon_project = host_fs::canonicalize(&project_path).unwrap();
     let result = parse_fsproj_with_imports(
-        &fs::read_to_string(&project_path).unwrap(),
+        &host_fs::read_to_string(&project_path).unwrap(),
         &canon_project,
         &HashMap::new(),
         &HashMap::new(),
@@ -695,8 +864,15 @@ fn spec_exact_pin_with_disable_picks_pinned_version() {
 
     let pin = SdkVersion::parse("8.0.100").unwrap();
     let spec = VersionSpec::with_version(pin, RollForward::Disable, false);
-    let paths =
-        locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", Some(&spec), None).unwrap();
+    let paths = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        Some(&spec),
+        None,
+        &Observer::new(),
+    )
+    .unwrap();
     // Despite 9.0.100 being installed (and otherwise preferred under
     // the spec-less branch), Disable forces the lower exact match.
     assert_eq!(version_dir_name(&paths.props), "8.0.100");
@@ -713,8 +889,15 @@ fn spec_disable_with_missing_pin_yields_version_not_satisfied() {
 
     let pin = SdkVersion::parse("8.0.100").unwrap();
     let spec = VersionSpec::with_version(pin, RollForward::Disable, false);
-    let err = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", Some(&spec), None)
-        .expect_err("spec misses");
+    let err = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        Some(&spec),
+        None,
+        &Observer::new(),
+    )
+    .expect_err("spec misses");
     match err {
         SdkResolveError::VersionNotSatisfied { spec: s, available } => {
             assert_eq!(s, spec);
@@ -739,8 +922,15 @@ fn spec_not_found_dominates_version_not_satisfied_when_no_candidates_exist() {
     let tmp = TempDir::new().unwrap();
     let pin = SdkVersion::parse("8.0.100").unwrap();
     let spec = VersionSpec::with_version(pin, RollForward::Disable, false);
-    let err = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", Some(&spec), None)
-        .expect_err("nothing here");
+    let err = locate_dotnet_sdk(
+        tmp.path(),
+        None,
+        "Microsoft.NET.Sdk",
+        Some(&spec),
+        None,
+        &Observer::new(),
+    )
+    .expect_err("nothing here");
     assert!(matches!(err, SdkResolveError::NotFound));
 }
 
@@ -769,13 +959,13 @@ fn end_to_end_resolver_version_not_satisfied_surfaces_in_diagnostic() {
     let dotnet_root = dotnet.path().to_path_buf();
     let pin = SdkVersion::parse("8.0.100").unwrap();
     let spec = VersionSpec::with_version(pin, RollForward::Disable, false);
-    let resolver = |name: &str| {
-        locate_dotnet_sdk(&dotnet_root, None, name, Some(&spec), None)
+    let resolver = |name: &str, observer: &crate::observed::Observer| {
+        locate_dotnet_sdk(&dotnet_root, None, name, Some(&spec), None, observer)
             .map(crate::SdkResolution::from)
     };
-    let canon_project = fs::canonicalize(&project_path).unwrap();
+    let canon_project = host_fs::canonicalize(&project_path).unwrap();
     let result = parse_fsproj_with_imports(
-        &fs::read_to_string(&project_path).unwrap(),
+        &host_fs::read_to_string(&project_path).unwrap(),
         &canon_project,
         &HashMap::new(),
         &HashMap::new(),
@@ -827,6 +1017,7 @@ fn per_import_pin_resolves_against_nuget_cache() {
         "Microsoft.Build.NoTargets/1.0.80",
         None,
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert!(
@@ -858,6 +1049,7 @@ fn nuget_lowercases_package_directory() {
         "Microsoft.DotNet.Arcade.Sdk/9.0.0",
         None,
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert!(!picked_from_dotnet_root(&paths.props));
@@ -882,6 +1074,7 @@ fn nuget_inner_sdk_directory_can_be_capitalized() {
         "Microsoft.Build.NoTargets/3.7.134",
         None,
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert!(!picked_from_dotnet_root(&paths.props));
@@ -915,6 +1108,7 @@ fn unpinned_reference_ignores_nuget_even_when_dotnet_has_lower() {
         "Microsoft.NET.Sdk",
         None,
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert!(
@@ -945,6 +1139,7 @@ fn unpinned_reference_to_nuget_only_sdk_yields_not_found() {
         "Microsoft.Build.NoTargets",
         None,
         None,
+        &Observer::new(),
     )
     .expect_err("unpinned reference must not silently pick from cache");
     assert!(matches!(err, SdkResolveError::NotFound));
@@ -967,6 +1162,7 @@ fn per_import_pin_only_in_nuget_picks_nuget_copy() {
         "Microsoft.NET.Sdk/9.0.100",
         None,
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert!(!picked_from_dotnet_root(&paths.props));
@@ -991,6 +1187,7 @@ fn per_import_pin_present_in_both_dotnet_wins_tie() {
         "Microsoft.NET.Sdk/8.0.401",
         None,
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert!(
@@ -1016,6 +1213,7 @@ fn nuget_dir_missing_falls_through_to_dotnet_root() {
         "Microsoft.NET.Sdk",
         None,
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert_eq!(version_dir_name(&paths.props), "8.0.401");
@@ -1032,6 +1230,7 @@ fn both_roots_empty_yields_not_found() {
         "Microsoft.NET.Sdk",
         None,
         None,
+        &Observer::new(),
     )
     .expect_err("neither root has the SDK");
     assert!(matches!(err, SdkResolveError::NotFound));
@@ -1063,6 +1262,7 @@ fn caller_spec_does_not_make_nuget_eligible() {
         "Microsoft.NET.Sdk",
         Some(&spec),
         None,
+        &Observer::new(),
     )
     .unwrap();
     assert_eq!(version_dir_name(&paths.props), "1.0.300");
@@ -1097,6 +1297,7 @@ fn version_not_satisfied_reports_dotnet_root_available_list() {
         "Microsoft.NET.Sdk",
         Some(&spec),
         None,
+        &Observer::new(),
     )
     .expect_err("disable + missing pin must miss");
     match err {
@@ -1135,6 +1336,7 @@ fn caller_spec_rejecting_dotnet_yields_version_not_satisfied_even_with_nuget_cac
         "Microsoft.NET.Sdk",
         Some(&spec),
         None,
+        &Observer::new(),
     )
     .expect_err("caller spec rejects DOTNET; no NuGet version source ⇒ unsatisfied");
     match err {
@@ -1174,6 +1376,7 @@ fn msbuild_sdks_entry_alone_makes_nuget_eligible() {
         "Microsoft.Build.NoTargets",
         None,
         Some(&pins),
+        &Observer::new(),
     )
     .expect("msbuild-sdks entry should unlock NuGet");
     assert!(!picked_from_dotnet_root(&paths.props));
@@ -1206,6 +1409,7 @@ fn msbuild_sdks_pin_overrides_caller_spec_in_dotnet_root() {
         "Microsoft.NET.Sdk",
         Some(&caller_spec),
         Some(&pins),
+        &Observer::new(),
     )
     .expect("msbuild-sdks pin should override caller spec");
     assert_eq!(version_dir_name(&paths.props), "9.0.100");
@@ -1237,6 +1441,7 @@ fn per_import_pin_wins_over_msbuild_sdks_entry() {
         "Microsoft.Build.NoTargets/1.0.80",
         None,
         Some(&pins),
+        &Observer::new(),
     )
     .expect("per-import pin should beat msbuild-sdks");
     assert_eq!(version_dir_name(&paths.props), "1.0.80");
@@ -1265,6 +1470,7 @@ fn msbuild_sdks_pin_to_missing_version_surfaces_unsatisfied() {
         "Microsoft.Build.NoTargets",
         None,
         Some(&pins),
+        &Observer::new(),
     )
     .expect_err("msbuild-sdks pin to missing version must miss");
     match err {
@@ -1308,6 +1514,7 @@ fn msbuild_sdks_entry_for_other_sdk_does_not_affect_lookup() {
         "Microsoft.NET.Sdk",
         None,
         Some(&pins),
+        &Observer::new(),
     )
     .expect("DOTNET pick should resolve normally");
     assert!(
@@ -1350,14 +1557,14 @@ fn end_to_end_per_import_pin_resolves_from_nuget() {
 
     let dotnet_root = dotnet.path().to_path_buf();
     let nuget_dir = nuget.path().to_path_buf();
-    let resolver = |name: &str| {
-        locate_dotnet_sdk(&dotnet_root, Some(&nuget_dir), name, None, None)
+    let resolver = |name: &str, observer: &crate::observed::Observer| {
+        locate_dotnet_sdk(&dotnet_root, Some(&nuget_dir), name, None, None, observer)
             .map(crate::SdkResolution::from)
     };
-    let canon_project = fs::canonicalize(&project_path).unwrap();
+    let canon_project = host_fs::canonicalize(&project_path).unwrap();
     let canon_proj_dir = canon_project.parent().unwrap();
     let result = parse_fsproj_with_imports(
-        &fs::read_to_string(&project_path).unwrap(),
+        &host_fs::read_to_string(&project_path).unwrap(),
         &canon_project,
         &HashMap::new(),
         &HashMap::new(),
@@ -1645,8 +1852,15 @@ fn proptest_highest_wins_against_reference_max() {
             } else {
                 prerelease_count.set(prerelease_count.get() + 1);
             }
-            let picked = locate_dotnet_sdk(tmp.path(), None, "Microsoft.NET.Sdk", None, None)
-                .map_err(|e| TestCaseError::fail(format!("expected resolution, got {e:?}")))?;
+            let picked = locate_dotnet_sdk(
+                tmp.path(),
+                None,
+                "Microsoft.NET.Sdk",
+                None,
+                None,
+                &Observer::new(),
+            )
+            .map_err(|e| TestCaseError::fail(format!("expected resolution, got {e:?}")))?;
             let picked_version = version_dir_name(&picked.props).to_str().unwrap().to_owned();
             prop_assert_eq!(picked_version, format_version(&expected));
             Ok(())
@@ -1966,6 +2180,7 @@ fn proptest_resolver_matches_layered_oracle() {
                     &sdk_name,
                     caller_spec.as_ref(),
                     None,
+                    &Observer::new(),
                 );
 
                 match (&expected, &actual) {
@@ -2190,6 +2405,7 @@ fn a_name_without_a_nuget_version_never_reads_the_nuget_folder() {
                         spec.as_ref(),
                         Some(&msbuild_sdks),
                         &workload_env,
+                        &Observer::new(),
                     )
                 };
                 let with_folder = resolve(Some(&nuget_dir));

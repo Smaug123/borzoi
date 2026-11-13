@@ -33,13 +33,13 @@ use borzoi_msbuild::{Diagnostic, DiagnosticKind, ImplicitImportKind, detect_impl
 /// relative path — see the module-level note.
 fn corpus_project(corpus: &Path, rel: &str) -> PathBuf {
     let joined = corpus.join(rel);
-    std::fs::canonicalize(&joined)
+    borzoi_msbuild::observed::host_fs::canonicalize(&joined)
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", joined.display()))
 }
 
 /// The canonicalised corpus root, for stripping in `simplify`.
 fn canonical_corpus_root(corpus: &Path) -> PathBuf {
-    std::fs::canonicalize(corpus)
+    borzoi_msbuild::observed::host_fs::canonicalize(corpus)
         .unwrap_or_else(|e| panic!("canonicalize corpus root {}: {e}", corpus.display()))
 }
 
@@ -49,7 +49,7 @@ fn fcs_compiler_service_finds_nearest_props_and_targets() {
     let proj = corpus_project(&corpus, "src/Compiler/FSharp.Compiler.Service.fsproj");
     let canon_root = canonical_corpus_root(&corpus);
 
-    let got = detect_implicit_imports(&proj);
+    let got = detect_implicit_imports(&proj, &borzoi_msbuild::observed::Observer::new());
     let pairs = simplify(&got, &canon_root);
 
     // src/Compiler has its own Directory.Build.props. The targets
@@ -78,7 +78,7 @@ fn fcs_fsharp_core_finds_nearest_props_and_targets() {
     let proj = corpus_project(&corpus, "src/FSharp.Core/FSharp.Core.fsproj");
     let canon_root = canonical_corpus_root(&corpus);
 
-    let got = detect_implicit_imports(&proj);
+    let got = detect_implicit_imports(&proj, &borzoi_msbuild::observed::Observer::new());
     let pairs = simplify(&got, &canon_root);
 
     assert_eq!(
@@ -103,7 +103,7 @@ fn fcs_assembly_check_falls_through_to_repo_root() {
     let proj = corpus_project(&corpus, "buildtools/AssemblyCheck/AssemblyCheck.fsproj");
     let canon_root = canonical_corpus_root(&corpus);
 
-    let got = detect_implicit_imports(&proj);
+    let got = detect_implicit_imports(&proj, &borzoi_msbuild::observed::Observer::new());
     let pairs = simplify(&got, &canon_root);
 
     // AssemblyCheck and buildtools/ have no Directory.* files; the
@@ -130,7 +130,7 @@ fn fcs_fslex_falls_through_to_repo_root() {
     let proj = corpus_project(&corpus, "buildtools/fslex/fslex.fsproj");
     let canon_root = canonical_corpus_root(&corpus);
 
-    let got = detect_implicit_imports(&proj);
+    let got = detect_implicit_imports(&proj, &borzoi_msbuild::observed::Observer::new());
     let pairs = simplify(&got, &canon_root);
 
     assert_eq!(

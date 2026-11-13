@@ -36,6 +36,8 @@ pub(crate) mod path_fixup;
 
 use escaping::Escaped;
 
+use crate::observed::{self, Observer};
+
 #[cfg(feature = "test-support")]
 pub use expr::MAX_EXPRESSION_NESTING;
 pub(crate) use expr::{is_referenceable_name, property_references};
@@ -346,22 +348,27 @@ fn no_root(dir: &Path) -> String {
 /// which MSBuild reads `%10`) is decoded by whichever leaf unescapes, because
 /// the composition is what it decodes.
 pub fn substitute(input: &str, props: &PropertyMap) -> (Escaped, Vec<Issue>) {
-    substitute_impl(input, props, false)
+    substitute_impl(input, props, None)
 }
 
 /// [`substitute`], with the filesystem-probing property functions enabled
 /// (`GetDirectoryNameOfFileAbove` walks ancestor directories with
-/// `is_file`). Only the with-imports evaluation path may use this; the
+/// `is_file`, through `observer`). Only the with-imports evaluation path may
+/// use this; the
 /// pure `parse_fsproj` surface promises no filesystem access, so there
 /// the same expression stays a visible [`Issue::Unsupported`].
-pub fn substitute_with_fs(input: &str, props: &PropertyMap) -> (Escaped, Vec<Issue>) {
-    substitute_impl(input, props, true)
+pub fn substitute_with_fs(
+    input: &str,
+    props: &PropertyMap,
+    observer: &Observer,
+) -> (Escaped, Vec<Issue>) {
+    substitute_impl(input, props, Some(observer))
 }
 
 fn substitute_impl(
     input: &str,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
 ) -> (Escaped, Vec<Issue>) {
     // The buffer is in the escaped domain throughout: the XML text between
     // references is already escaped text, and every spliced value is escaped
@@ -407,7 +414,7 @@ fn substitute_impl(
             Some(close) => {
                 let inner = &after[..close];
                 rest = &after[close + 1..];
-                if let Some(evaluated) = expr::evaluate(inner, props, fs_probes_allowed) {
+                if let Some(evaluated) = expr::evaluate(inner, props, fs_observer) {
                     issues.extend(evaluated.issues);
                     // The evaluator hands back an `Escaped`: a function result
                     // is escaped (so its `%` cannot compose an escape with what
@@ -564,7 +571,11 @@ fn eval_exact_path_args(
 /// Windows-drive `start` (the real base would be the MSBuild process
 /// state we don't receive), or a `file` with `..`/absolute components
 /// (MSBuild combines and probes those; refusing is conservative).
-fn get_directory_name_of_file_above(start: &str, file: &str) -> Option<String> {
+fn get_directory_name_of_file_above(
+    observer: &Observer,
+    start: &str,
+    file: &str,
+) -> Option<String> {
     // MSBuild `Path.GetFullPath`s the starting directory *before* the walk
     // (`IntrinsicFunctions.GetDirectoryNameOfFileAbove`), so a `..` in it is
     // collapsed lexically and never becomes a level the walk can pop back down
@@ -596,7 +607,7 @@ fn get_directory_name_of_file_above(start: &str, file: &str) -> Option<String> {
     }
     let mut dir = start_dir.to_path_buf();
     loop {
-        if dir.join(file_path).is_file() {
+        if observed::is_file(observer, &dir.join(file_path)) {
             return Some(dir.to_string_lossy().into_owned());
         }
         if !dir.pop() {
@@ -631,7 +642,7 @@ fn get_directory_name_of_file_above(start: &str, file: &str) -> Option<String> {
 /// `%XX`-bearing Windows argument for, and it belongs to the helper, not to this
 /// caller. An exhausted search returns `""`, which has no separators to get
 /// wrong, so it still commits.
-fn get_path_of_file_above(file: &str, start: &str) -> Option<String> {
+fn get_path_of_file_above(observer: &Observer, file: &str, start: &str) -> Option<String> {
     // MSBuild's guard is `file != Path.GetFileName(file)`, which differs exactly
     // when the value carries a separator. A `\` is a separator on Windows only:
     // on a unix host `Path.GetFileName(@"a\b")` is the whole `a\b`, so MSBuild
@@ -642,7 +653,7 @@ fn get_path_of_file_above(file: &str, start: &str) -> Option<String> {
     if file.is_empty() || file.contains(['/', '\\']) {
         return None;
     }
-    let dir = get_directory_name_of_file_above(start, file)?;
+    let dir = get_directory_name_of_file_above(observer, start, file)?;
     if dir.is_empty() {
         return Some(String::new());
     }
@@ -1059,7 +1070,7 @@ mod tests {
     /// The same, for the fs-probing variant.
     #[allow(dead_code)]
     fn substitute_with_fs(input: &str, props: &PropertyMap) -> (String, Vec<Issue>) {
-        let (value, issues) = super::substitute_with_fs(input, props);
+        let (value, issues) = super::substitute_with_fs(input, props, &Observer::new());
         (value.unescape(), issues)
     }
 

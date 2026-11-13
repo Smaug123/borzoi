@@ -328,7 +328,7 @@ fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> Ou
     let dir = tempfile::TempDir::new().expect("tempdir");
     // The project sits one level down, so `../odd/` is a sibling no glob
     // under the project walks into.
-    let root = std::fs::canonicalize(dir.path())
+    let root = borzoi_msbuild::observed::host_fs::canonicalize(dir.path())
         .expect("canonicalize")
         .join("proj");
     std::fs::create_dir_all(&root).expect("mkdir");

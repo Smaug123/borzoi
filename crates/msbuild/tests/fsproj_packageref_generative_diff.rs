@@ -484,7 +484,8 @@ fn shared() -> &'static Shared {
         let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("packageref-generative-{}", std::process::id()));
         std::fs::create_dir_all(root.join("Sdks")).expect("mkdir Sdks");
-        let root = std::fs::canonicalize(root).expect("canonicalize root");
+        let root =
+            borzoi_msbuild::observed::host_fs::canonicalize(root).expect("canonicalize root");
         let oracle = Oracle::spawn_with_sdks_path(&root.join("Sdks"));
         Shared {
             root,
@@ -532,7 +533,7 @@ fn write_and_parse(fixture: &Fixture) -> (Laid, ParsedProject) {
     std::fs::write(&proj, &project_xml).expect("write project");
     let resolver = {
         let sdk = sdk.clone();
-        move |name: &str| {
+        move |name: &str, _: &borzoi_msbuild::observed::Observer| {
             if name == sdk {
                 Ok(SdkResolution::Single(SdkPaths {
                     root: sdk_dir.clone(),

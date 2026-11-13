@@ -64,6 +64,7 @@
 //! [`SdkResolver`]: borzoi_msbuild::SdkResolver
 
 use crate::observed::Unobserved;
+use borzoi_msbuild::observed::Observer;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
@@ -420,7 +421,7 @@ impl SdkDiscovery {
         // alternatives that don't need the host). The decision lives
         // in [`expand_sdk_paths`] so this site doesn't have to know.
         let (roots, spec, msbuild_sdks, global_json_path, global_json_pins_workload_set) =
-            match find_global_json(&walk_start) {
+            match find_global_json(&walk_start, &Unobserved::Evaluation.msbuild_observer()) {
                 Some(path) => {
                     let text = Unobserved::Evaluation
                         .read_to_string(&path)
@@ -511,7 +512,14 @@ impl SdkDiscovery {
     /// returned `available` list is the dedup-sorted union across the
     /// consulted roots — the most informative error for a workspace
     /// with a pinned `sdk.version` and multiple roots.
-    pub fn resolve(&self, sdk_name: &str) -> Result<SdkResolution, SdkResolveError> {
+    ///
+    /// Every file-system query goes through `observer`, the evaluation's
+    /// (see [`borzoi_msbuild::SdkResolver`]).
+    pub fn resolve(
+        &self,
+        sdk_name: &str,
+        observer: &Observer,
+    ) -> Result<SdkResolution, SdkResolveError> {
         // A build-environment `MSBuildSDKsPath` reroutes MSBuild's SDK
         // resolution through the default resolver's `$(MSBuildSDKsPath)/<name>/
         // Sdk` directory (see the field's doc). We do not model where it lands,
@@ -575,6 +583,7 @@ impl SdkDiscovery {
                 Some(&self.spec),
                 Some(&self.msbuild_sdks),
                 &workload_env,
+                observer,
             )
         };
         let resolved = resolve_across_roots(&self.roots, sdk_name, &locate);

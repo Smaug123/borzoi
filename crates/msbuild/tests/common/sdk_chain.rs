@@ -5,6 +5,7 @@
 //! must draw from *identical* populations or neither number can be compared to
 //! the other, so the extraction lives here rather than in either of them.
 
+use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -55,11 +56,11 @@ pub fn sdk_dir() -> PathBuf {
         .map(PathBuf::from)
         .expect("DOTNET_ROOT is not set; run under nix develop");
     let sdk = root.join("sdk");
-    let mut versions: Vec<PathBuf> = std::fs::read_dir(&sdk)
+    let mut versions: Vec<PathBuf> = borzoi_msbuild::observed::host_fs::read_dir(&sdk)
         .unwrap_or_else(|e| panic!("read {}: {e}", sdk.display()))
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.is_dir())
+        .filter(|p| p.host_is_dir())
         .collect();
     versions.sort();
     versions
@@ -68,7 +69,7 @@ pub fn sdk_dir() -> PathBuf {
 }
 
 fn walk_msbuild_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = borzoi_msbuild::observed::host_fs::read_dir(dir) else {
         return;
     };
     for entry in entries.filter_map(Result::ok) {
