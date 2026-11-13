@@ -6,7 +6,8 @@
 > product on ids), 5 (the remaining path and name keys, in three parts), 6a
 > (export-declaration paths on ids), 6b (definitions' names on ids), 6c
 > (exports' published names on ids), 7 (`Ty` paths on ids), 9
-> (`OpenScope`) and 10 (file-wide unknowables and windows) implemented;
+> (`OpenScope`), 10 (file-wide unknowables and windows) and 11 (the
+> resolver split) implemented;
 > Stage 8's gate re-measured at Stage 7 and not met.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
@@ -301,6 +302,17 @@ With the groups as separate fields, a method can borrow the indexes while
 writing the output, which replaces clones made only to satisfy the borrow
 checker. This is a refactor, and it is worth doing for local reasoning, not
 for counts.
+
+Two corrections, settled when Stage 11 split the fields:
+
+- **The walk's position is a group too.** The scope stacks, the container
+  path, the current block's facts and the parked frames of other containers
+  are none of the above. They are pushed, popped and replaced as the walk
+  enters and leaves declarations, so they form a sixth group, `Lexical`.
+- **The indexes are not only grown.** A redefined type's cases and members
+  are removed before the new ones are filed, and every keyed insert is
+  last-wins. What sets the indexes apart from `Lexical` is that nothing in
+  them is undone when the walk leaves the scope that recorded it.
 
 ### D7. Keeping the differentials meaningful
 
@@ -1212,6 +1224,131 @@ are final. **Implements**: D6.
 **Oracle**: the compiler, and every gate unchanged, `walk_stack_bound`
 included. Any clone removed because borrows can now be split shows up in
 Stage 0's allocation column.
+
+**Implemented** (`resolve/state.rs`, `resolve/prescan.rs`,
+`resolve/lexical.rs`, `resolve/indexes.rs`, `resolve/output.rs`):
+
+- **The groups.** `Resolver`'s 86 fields are now ten. Five are the borrowed
+  inputs: `preceding`, `assemblies`, `item_base`, `recovery` and `prescan`.
+  Two are D5's `scope` and `windows`. The other three are new groups:
+  `lexical` (`Lexical`, 15 fields), `index` (`Indexes`, 32) and `out`
+  (`Output`, 19). The field accesses were rewritten from the compiler's
+  errors, and the intra-doc links from rustdoc's, so no hand edit moved a
+  field into the wrong group.
+- **`Prescan`** holds every fact computed before the walk. That is the ten
+  whole-file name scans Stage 10 left (`own_type_simple_names`,
+  `own_binder_simple_names` and their siblings), the namespace-dropped
+  declarations and the implicit-open count. It also holds the part of
+  `FileContributions` the walk used to have written into its output before
+  it started: the extension statics, the custom operations and the two
+  alias flags. The walk reads them through `&'a Prescan`, so writing one is
+  a compile error. The extension statics were collected twice, once for the
+  walk and once for the output. They are now collected once and published
+  at the end.
+- **`Output`** is exactly what the `ResolvedFile` publishes.
+  `Output::into_resolved_file` moves it there with the prescan's published
+  facts, and destructures it exhaustively, so a field added to `Output`
+  fails to compile until it is published. The walk's half of the
+  contributions is `OpenContributions`. `Unknowables` is published, so it is
+  part of `Output`.
+- **`Lexical`** is where the walk is: the value and type-parameter scope
+  stacks, the module frames, the container path and namespace depth, the
+  current block's facts, and the frames of the containers the walk is not in.
+  `module_frame` and the replay of the block's own namespace fold are its
+  methods, so they borrow nothing else.
+- **`Indexes`** is everything else the walk records for its own lookups.
+  `member_decl_counts`, which counts the output's declaration list but is
+  not published, is one of them.
+- **Deleted**: `type_slot_classes`, which every type definition wrote and
+  nothing read. `type_slot_history` answers every question it was kept for.
+
+**The borrows split.** These clones and intermediate vectors existed so that a
+`&mut self` call could follow a read of `self`:
+
+- `earlier_block_contributions` cloned this file's root contribution to push
+  it into the block's frame. `push_contribution` now takes only the scope and
+  `Lexical`, so the contribution is borrowed from `Output`.
+- `replay_own_namespace_fold` cloned the whole recorded fold.
+  `Lexical::replay_own_namespace_fold` reads it beside the frame it writes.
+- Both callers of `add_type_members` cloned the container path to pass it in.
+  The method reads it from `Lexical` beside the index it writes.
+- Seven vectors of scope entries were collected so that the push could
+  borrow `self` mutably: `push_contribution`'s marks, `open_type_statics`'s
+  entries, the implicit union cases, an opened union type's cases, an
+  `[<AutoOpen>]` module's recognizer cases, the signatured slot marks and a
+  namespace fold's evicting types. They now stream into the frame.
+- Three clones were never needed, because their source is a shared input,
+  not `self`: `block_start_contributions` cloned the earlier files' root
+  contribution, `open_auto_open_modules_in` copied the env's handle list, and
+  three lookups copied the container path only to lend it as a slice.
+- `recovery` is borrowed, and cloned once when the file is published, not
+  twice.
+
+**Not taken**: `insert_member` still clones the container path for each
+member, as the owned key of `entry`. That cost comes from the key's type, a
+`Vec<String>`, which belongs with 5a's not-converted list.
+
+**Oracle and planted bugs.** Every gate is unchanged, `walk_stack_bound` and
+its ignored cases included, and the `interning-reference` lockstep stays. The
+whole-corpus dump of Stage 7 is byte-identical before and after. Two planted
+bugs are the compiler's to catch, and eleven were run against the whole sema
+suite:
+
+- the walk writing a prescan fact: E0596, since the walk holds the prescan
+  by shared reference;
+- a field added to `Output` that nothing publishes: E0027, from the
+  exhaustive destructure;
+- this file's earlier blocks' root contribution read from the earlier files'
+  instead: `assembly_union_case_table`;
+- the replayed own-namespace fold keeping the generations it was recorded at:
+  **passed the whole suite**. A test that an explicit `open N` after a
+  barrier re-adds an earlier file's `[<AutoOpen>]` value
+  (`a_self_open_after_a_barrier_re_adds_at_its_own_generation`) now fails on
+  it;
+- the replayed fold raising none of its barriers: **passed the whole suite
+  and the sema corpus sweeps, and is not caught**. The corpus dump moves 945
+  lines under it, and the commits it adds are in FSharp.Core's own sources
+  resolved as one project, which no gate grades against FCS. In `printf.fs`,
+  `open Microsoft.FSharp.Core` inside that namespace replays a fold whose
+  `[<AutoOpen>] Operators` fragment hides names, so the referenced
+  FSharp.Core's operators must go stale behind its barrier. Without the
+  barrier, `+` commits to the referenced `Operators.(+)` where FCS binds the
+  project's own. The synthetic shapes probed (an earlier file's
+  `[<AutoOpen>]` module with an active pattern or an `extern`) do not
+  reach it. A test for it needs an implicitly opened name that a project
+  fragment redefines out of the walk's sight, as FSharp.Core's sources do;
+- an unlisted contribution that stales nothing: `assembly_union_case_table`
+  and `unmodelled_contributor_grid`;
+- a type's members filed under the block's header container instead of the
+  current one: 4 cases of `resolve_type_members` and
+  `resolve_type_qualified_cases`;
+- the prescan's extension statics left unpublished: **passed the whole
+  suite**, since every route the contributor grid had used the probe file's
+  own augmentations. A route with an earlier file's augmentation
+  (`OpenTypeEarlierFileExtension`) now gives 22 wrong cells on it;
+- the walk's root contribution left unpublished: `assembly_union_case_table`,
+  `contributor_name_oracle` and `unmodelled_contributor_grid`;
+- the unplaced types counted against no placed type: 52 cases;
+- the prescanned custom operations ignoring the file's own
+  `CustomOperationAttribute` abbreviation: **passed the whole suite**. A test
+  with the abbreviation in the file
+  (`an_abbreviation_the_file_declares_may_name_its_augmentations_operations`)
+  now fails on it;
+- the caller's recovery left unpublished: 46 cases;
+- an implicitly opened namespace's `[<AutoOpen>]` modules opened in reverse:
+  **passed the whole suite**, and the corpus dump is identical under it. The
+  stage changed only how that loop borrows the handles, not their order.
+
+**Measured** on the build box, each phase the median of five processes
+(the box's counts are lower than this machine's for the same code):
+`resolve_file` 773.3 → 776.6 instructions per byte (+0.4%), allocations
+0.686 → 0.683 per byte (−0.4%), bytes allocated 50.1 → 49.6 per byte; the
+whole tree as one project (`resolve_project`) 788.1 → 790.6 (+0.3%),
+allocations 0.609 → 0.606, bytes allocated 53.4 → 52.7; infer 149.9 → 147.7
+with its code unchanged; parse 509.1 before and after. The allocations the
+removed clones and vectors cost are gone; the instruction change is the size
+of infer's with no code change, as at Stages 4 and 10. About 0, as D6 says:
+the stage buys the lifetimes, not speed.
 
 ### Stage 12: retire the string reference
 
