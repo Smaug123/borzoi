@@ -3067,7 +3067,7 @@ fn read_generic_item_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> Gene
                 attr.name(),
                 attr.value(),
                 false,
-                true,
+                attribute_is_plain(node, &attr),
                 state,
                 &mut metadata,
             );
@@ -3081,6 +3081,16 @@ fn read_generic_item_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> Gene
         state.quiet_target_framework_reads.set(previous);
     }
     metadata.finish()
+}
+
+/// Whether `attr`'s value is its source text verbatim, free of what XML
+/// attribute-value normalisation and entity decoding touch (a tab, a line
+/// break, a `&`). Only then is the value roxmltree hands back the one MSBuild
+/// evaluates: it reads such spellings otherwise (a literal tab survives; an
+/// encoded CDATA section is decoded).
+fn attribute_is_plain(node: Node<'_, '_>, attr: &roxmltree::Attribute<'_, '_>) -> bool {
+    let raw = node.document().input_text().get(attr.range_value());
+    raw == Some(attr.value()) && !attr.value().contains(['\t', '\n', '\r', '&'])
 }
 
 /// Set [`State::quiet_target_framework_reads`] for a metadatum named `name`

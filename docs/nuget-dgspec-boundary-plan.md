@@ -1718,12 +1718,14 @@ and the gaps have known causes.
 The generic item tables keep every metadatum an item declaration gives,
 not just NuGet's five package metadata names. Each value is kept as MSBuild
 holds it, untrimmed, beside the trimmed value the dependency capture reads.
-Two kinds of value are uncertain in the table:
+Three kinds of value are uncertain in the table:
+- an attribute whose source text XML normalisation or entity decoding
+  touches (a tab, a line break, a `&`), which MSBuild reads its own way;
 - a body holding more than text and comments, which MSBuild takes as inner
   XML;
 - a value MSBuild's Unix path fixup may rewrite.
 
-The dependency capture keeps its own reading of both (#642). The package
+The dependency capture keeps its own reading of all three (#642). The package
 consumers still read only their five names, and ignore an uncertainty on any
 other name. Nothing they commit to moves.
 
@@ -1748,7 +1750,8 @@ Two checks hold it:
   constructs the taint and uncertainty marks guard. These are literal,
   `$(…)` and escaped identities, `@(…)` copies and transforms, `Remove`,
   attribute and child metadata, conditions on either, `%(…)` and `@(…)` in
-  metadata, padded, backslash-bearing and escaped path values, bodies
+  metadata, padded, backslash-bearing and escaped path values, attributes
+  with tabs, line breaks and entities, bodies
   holding elements, processing instructions, comments or CDATA, the
   structural `Label` attribute, item definitions, an untrusted property, an
   imported item file (plain, or under a condition that turns the walk

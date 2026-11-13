@@ -44,7 +44,7 @@ const INCLUDES: [&str; 9] = [
     "@(ProjectReference)",
 ];
 /// Values for a metadata attribute.
-const VALUES: [&str; 14] = [
+const VALUES: [&str; 17] = [
     "1.0",
     "$(Name)",
     "pre$(Name)post",
@@ -62,6 +62,10 @@ const VALUES: [&str; 14] = [
     "x\\y",
     // The fixup decides on the escaped value, where this is no `$(`.
     "%24(foo)\\x",
+    // What XML attribute-value normalisation and entity decoding touch.
+    "a\tb",
+    "line\nbreak",
+    "&lt;![CDATA[c]]&gt;",
 ];
 /// Bodies for a metadata child element: the attribute values, and what only
 /// element content can hold.
