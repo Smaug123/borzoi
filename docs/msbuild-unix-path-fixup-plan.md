@@ -1,6 +1,6 @@
 # MSBuild's unix path fixup (`MaybeAdjustFilePath`)
 
-> Found by the E0 decoder differential in `docs/msbuild-escaped-value-plan.md`,
+> Found by the E0 decoder differential in `docs/completed/msbuild-escaped-value-plan.md`,
 > on its first run against real MSBuild. It is **not** an escaping bug and does
 > not belong to that stack: it is a separate, host- and cwd-dependent
 > normalisation.
@@ -152,18 +152,40 @@ So the provenance must preserve literal/splice boundaries and bracket each
 eligible piece independently. The k-cap (suggest 4 → 16 evaluations, decline
 beyond) bounds the *tracked* set between collapses.
 
-**Unpinned prerequisite — the collapse rule.** The unanimity/collapse rule is
-*not* `path_fixup::worlds` applied to a composed result:
-`worlds('/repo/proj/obj\')` is `{…/obj\, …/obj/}`, which does not reduce to a
-singleton, and dropping the backslash is unsound (a *literal*
-`/definitely-missing/proj/obj\` stays raw — oracle round-2). Yet
-`[System.IO.Path]::Combine('/definitely-missing/proj','obj\')` evaluates to
-`/definitely-missing/proj/obj/` (converted) *even though the root is missing* —
-a `Combine` **result** does not follow the same `LooksLikeUnixFilePath`
-existence-probe as a bare literal. The precise rule (when a `Combine`/expansion
-result collapses vs stays two-valued) is a `MaybeAdjustFilePath` semantic this doc
-has **not** pinned. Milestone 1's first task is to pin it with a differential
-oracle, not to assume one.
+**The collapse rule — pinned (#78).** `path_fixup_diff.rs`'s
+`the_fixup_collapse_rule_is_pinned` evaluates one table of bodies with
+`dotnet msbuild` from three working directories (one holding the first
+segments, an empty one, and one holding a different set) and asserts every
+value. On SDK 10.0.401 it shows:
+
+- **Two passes, not one.** A property value meets `MaybeAdjustFilePath` once
+  per literal piece as it is built, *and then once more as a whole*. Each pass
+  converts iff the first segment of what *it* sees exists under the working
+  directory. The per-piece pass is the counter-example above
+  (`a\x;$(Empty)b\y` → `a\x;b/y` where only `b/` exists). The whole-value pass
+  is new: with `R` stored raw as `obj\`, `x$(R)` is `xobj/` where `xobj/`
+  exists and `obj/` does not, and `q\$(R)` is `q/obj/` where `q/` exists. So a
+  provenance model must bracket each piece *and* the composed result. The
+  worlds of a value are not a product over its pieces alone.
+- **A splice carries what its property stored**, having passed both passes
+  where it was written. `$(R)` is `obj/` from a directory holding `obj/`
+  because `R` was stored converted there.
+- **Path functions collapse.** `System.IO.Path`'s `Combine`,
+  `GetDirectoryName` and `GetFullPath`, and `[MSBuild]::NormalizePath`, convert
+  their arguments' backslashes whatever the working directory.
+  `GetDirectoryName('obj\x')` is `obj` from every directory; on Linux it would
+  be empty for the unconverted argument. So their results have one world, which
+  is why `Combine` converts under a missing root.
+- **Other functions do not.** `String.Concat`, `String.Copy` and a `Replace`
+  on a splice return text that the whole-value pass then probes, so they keep
+  two worlds.
+- **A literal absolute path stays raw** under a missing root
+  (`/definitely-missing/proj/obj\`), while `$(MSBuildProjectDirectory)\obj\`
+  converts, its first segment being the existing root.
+
+GitHub's `main` no longer matches the installed SDK's `Expander` layout, so
+the rule is held to the oracle and not to a source reading. Milestone 1 can
+start from it.
 
 **Milestone 1: collapse-aware bracketing + the property table.** Track the
 world-set through property/condition expansion; commit the single agreed value on

@@ -173,6 +173,18 @@ fn path_functions_commit_backslash_cwd_independently() {
     check_expr_cwd_independent("$([System.IO.Path]::IsPathRooted('a\\b'))");
     check_expr_cwd_independent("$([System.IO.Path]::IsPathRooted('C:\\a'))");
     check_expr_cwd_independent("$([System.IO.Path]::IsPathRooted('\\a'))");
+    // Other path functions convert their arguments' backslashes too, and a
+    // string function's result meets the cwd-probed whole-value pass: each
+    // either commits the one value MSBuild gives from both cwds, or declines.
+    check_expr_cwd_independent("$([System.IO.Path]::GetDirectoryName('a\\x'))");
+    check_expr_cwd_independent("$([System.IO.Path]::GetFileName('a\\x'))");
+    check_expr_cwd_independent("$([System.IO.Path]::GetExtension('a\\x.fs'))");
+    check_expr_cwd_independent("$([System.IO.Path]::GetFileNameWithoutExtension('a\\x.fs'))");
+    check_expr_cwd_independent("$([System.IO.Path]::GetFullPath('/r/a\\x'))");
+    check_expr_cwd_independent("$([MSBuild]::NormalizePath('/r/a\\x'))");
+    check_expr_cwd_independent("$([System.String]::Concat('a\\','x'))");
+    check_expr_cwd_independent("$([System.String]::Copy('a\\x'))");
+    check_expr_cwd_independent("$('a\\x'.Length)");
 }
 
 /// The one shape we must **not** commit: a `$(…)`-spliced value with a backslash
@@ -240,5 +252,173 @@ fn combine_declines_a_cwd_dependent_spliced_separator_run() {
             eval_combine_of_p(without_a.path(), pval),
             "expected the spliced separator run {pval:?} to be cwd-dependent in MSBuild"
         );
+    }
+}
+
+/// Evaluate `props` (name, body) in one project with `dotnet msbuild` run from
+/// `cwd`, after `dirs` are created there, and return each property's value
+/// with `cwd` spelled `<cwd>`.
+fn eval_properties_in(cwd: &Path, dirs: &[&str], props: &[(&str, &str)]) -> Vec<String> {
+    for dir in dirs {
+        std::fs::create_dir_all(cwd.join(dir)).unwrap();
+    }
+    let mut xml = String::from("<Project><PropertyGroup><Empty></Empty><R>obj\\</R>");
+    for (name, body) in props {
+        xml.push_str(&format!("<{name}>{body}</{name}>"));
+    }
+    xml.push_str("</PropertyGroup></Project>\n");
+    std::fs::write(cwd.join("Collapse.proj"), xml).unwrap();
+    let names: Vec<&str> = props.iter().map(|(name, _)| *name).collect();
+    let mut cmd = std::process::Command::new("dotnet");
+    cmd.current_dir(cwd);
+    common::scrub_oracle_env(&mut cmd);
+    cmd.args(["msbuild", "Collapse.proj"]);
+    cmd.arg(format!("-getProperty:{}", names.join(",")));
+    let out = BoundedCommand::new(cmd)
+        .timeout(MSBUILD_TIMEOUT)
+        .run_ok(format_args!("dotnet msbuild in {}", cwd.display()));
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("-getProperty prints JSON for several names");
+    let cwd = cwd.to_string_lossy();
+    names
+        .iter()
+        .map(|name| {
+            json["Properties"][name]
+                .as_str()
+                .expect("each property is reported")
+                .replace(cwd.as_ref(), "<cwd>")
+        })
+        .collect()
+}
+
+/// The collapse rule of `docs/msbuild-unix-path-fixup-plan.md` (#78), pinned
+/// against the installed SDK's MSBuild rather than read from source (GitHub's
+/// `main` no longer matches it).
+///
+/// A property value meets `MaybeAdjustFilePath` **twice**: each literal piece
+/// as the value is built, and then the whole expanded value. Each pass converts
+/// iff the first segment of what it sees exists as a directory under the
+/// process's working directory. A splice carries the value its property
+/// stored (already through both passes where it was written).
+///
+/// `System.IO.Path` functions and `[MSBuild]::NormalizePath` convert their
+/// arguments' backslashes whatever the working directory, so their results do
+/// not depend on it: that is why a `Combine` result collapses to one value even
+/// under a missing root. Other functions (`String.Concat`, `String.Copy`, a
+/// `Replace` on a splice) return text that the whole-value pass then probes.
+#[test]
+#[cfg(not(windows))]
+fn the_fixup_collapse_rule_is_pinned() {
+    // (property, body, from a cwd holding `obj x nope c a`, from an empty cwd,
+    // from a cwd holding only `b xobj q`)
+    let table: &[(&str, &str, &str, &str, &str)] = &[
+        ("L1", "obj\\", "obj/", "obj\\", "obj\\"),
+        (
+            "L2",
+            "/definitely-missing/proj/obj\\",
+            "/definitely-missing/proj/obj\\",
+            "/definitely-missing/proj/obj\\",
+            "/definitely-missing/proj/obj\\",
+        ),
+        (
+            "L3",
+            "$(MSBuildProjectDirectory)\\obj\\",
+            "<cwd>/obj/",
+            "<cwd>/obj/",
+            "<cwd>/obj/",
+        ),
+        (
+            "C1",
+            "$([System.IO.Path]::Combine('/definitely-missing/proj','obj\\'))",
+            "/definitely-missing/proj/obj/",
+            "/definitely-missing/proj/obj/",
+            "/definitely-missing/proj/obj/",
+        ),
+        (
+            "C2",
+            "$([System.IO.Path]::Combine('nope','obj\\'))",
+            "nope/obj/",
+            "nope/obj/",
+            "nope/obj/",
+        ),
+        (
+            "C4",
+            "$([System.IO.Path]::Combine('$(R)','c'))",
+            "obj/c",
+            "obj/c",
+            "obj/c",
+        ),
+        (
+            "D1",
+            "$([System.IO.Path]::GetDirectoryName('obj\\x'))",
+            "obj",
+            "obj",
+            "obj",
+        ),
+        (
+            "D2",
+            "$([System.IO.Path]::GetFullPath('obj\\'))",
+            "<cwd>/obj/",
+            "<cwd>/obj/",
+            "<cwd>/obj/",
+        ),
+        (
+            "D3",
+            "$([MSBuild]::NormalizePath('obj\\'))",
+            "<cwd>/obj/",
+            "<cwd>/obj/",
+            "<cwd>/obj/",
+        ),
+        (
+            "F1",
+            "$([System.String]::Concat('obj\\','x'))",
+            "obj/x",
+            "obj\\x",
+            "obj\\x",
+        ),
+        (
+            "F2",
+            "$([System.String]::Copy('obj\\'))",
+            "obj/",
+            "obj\\",
+            "obj\\",
+        ),
+        ("F3", "$(R.Replace('o','o'))", "obj/", "obj\\", "obj\\"),
+        ("S1", "$(R)", "obj/", "obj\\", "obj\\"),
+        // The whole-value pass: `xobj` exists, `obj` does not.
+        ("S2", "x$(R)", "xobj/", "xobj\\", "xobj/"),
+        ("S3", "q\\$(R)", "q\\obj/", "q\\obj\\", "q/obj/"),
+        // The per-piece pass: the literal after the splice is its own piece.
+        (
+            "P1",
+            "a\\x;$(Empty)b\\y",
+            "a/x;b/y",
+            "a\\x;b\\y",
+            "a\\x;b/y",
+        ),
+        ("P2", "a\\x;b\\y", "a/x;b/y", "a\\x;b\\y", "a\\x;b\\y"),
+        ("P3", "b\\y;a\\x", "b\\y;a\\x", "b\\y;a\\x", "b/y;a/x"),
+        (
+            "P4",
+            "b\\y$(Empty);a\\x",
+            "b\\y;a\\x",
+            "b\\y;a\\x",
+            "b/y;a/x",
+        ),
+    ];
+    let props: Vec<(&str, &str)> = table.iter().map(|row| (row.0, row.1)).collect();
+    let cwds: [&[&str]; 3] = [&["obj", "x", "nope", "c", "a"], &[], &["b", "xobj", "q"]];
+    for (column, dirs) in cwds.iter().enumerate() {
+        let cwd = tempfile::TempDir::new().unwrap();
+        let cwd = std::fs::canonicalize(cwd.path()).unwrap();
+        let got = eval_properties_in(&cwd, dirs, &props);
+        for (row, value) in table.iter().zip(&got) {
+            let want = [row.2, row.3, row.4][column];
+            assert_eq!(
+                value, want,
+                "{} = {} from a cwd holding {dirs:?}: MSBuild's fixup changed",
+                row.0, row.1
+            );
+        }
     }
 }

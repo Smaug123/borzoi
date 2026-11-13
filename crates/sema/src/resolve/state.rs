@@ -15,22 +15,20 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
-use super::container::ContainerId;
 use super::contributors::{FileContributions, RecBlock};
 use super::model::{
     DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
     ItemId, OpenTrace, ProjectItems, Resolution, SlotClass, TypeSlot,
 };
+use super::open_scope::OpenScope;
 use super::path_set::PathSet;
+use crate::names::{ChildMap, PathId};
 
-/// A binding visible in a scope frame. `name` is `idText`-normalised; later
-/// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
 /// The opens in scope that could supply a **dotted-path head** the walk does
-/// not otherwise see ([`Resolver::dotted_opacity`]).
-#[derive(Debug, Clone, Default)]
+/// not otherwise see ([`OpenOpacityState::dotted`](crate::resolve::open_scope::OpenOpacityState::dotted)).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct DottedOpacity {
-    /// An open whose dotted heads are unknowable: every
-    /// [`Resolver::opaque_value_open`] open (implied), an opened assembly
+    /// An open whose dotted heads are unknowable: an opened assembly
     /// module with public nested entities, a group hiding names, or an `open`
     /// of a project module that is not [`Self::project_modules`]-shaped.
     other: bool,
@@ -72,6 +70,8 @@ impl DottedOpacity {
     }
 }
 
+/// A binding visible in a scope frame. `name` is `idText`-normalised; later
+/// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
 #[derive(Debug, Clone)]
 pub(super) struct ScopeEntry {
     pub(super) name: String,
@@ -80,7 +80,7 @@ pub(super) struct ScopeEntry {
     /// member (`open type T`), or (a later slice) an opened module's value
     /// (`open M`) — rather than a source binding (`let`, a union/exception case, a
     /// parameter). Two consequences, both keeping opens sound:
-    /// - while an [`opaque_value_open`](Resolver::opaque_value_open) is in scope,
+    /// - while an [`opaque_value_open`](crate::resolve::open_scope::OpenOpacityState::value) is in scope,
     ///   [`lookup`](Resolver::lookup) skips it — an open whose contents we cannot
     ///   enumerate might shadow it with a value we do not model, so resolving the
     ///   modelled opened name would risk a wrong target (correctness over
@@ -89,7 +89,7 @@ pub(super) struct ScopeEntry {
     ///   ([`resolve_file`](super::resolve_file)), so an `open` in one block does not leak into a later
     ///   same-named block (F#: opens are scoped to one block; values merge).
     pub(super) from_open: bool,
-    /// The [`open_generation`](Resolver::open_generation) when this entry was
+    /// The [`open_generation`](crate::resolve::open_scope::OpenScope::open_generation) when this entry was
     /// created. [`lookup`](Resolver::lookup) treats an entry as *stale* (skips
     /// it) once a later `open` with names we cannot list bumped the generation,
     /// conservatively shadowing every earlier name — **source bindings
@@ -192,7 +192,7 @@ pub(super) enum MarkReach {
 impl ScopeEntry {
     /// A name introduced by a *source binding* — a `let` value/parameter, a
     /// union/exception case, an active-pattern case, a `match`/lambda local —
-    /// stamped with the current [`open_generation`](Resolver::open_generation)
+    /// stamped with the current [`open_generation`](crate::resolve::open_scope::OpenScope::open_generation)
     /// so a later residue-bearing `open` can shadow it (see
     /// [`Self::generation`]).
     pub(super) fn binding(name: String, resolution: Resolution, generation: usize) -> Self {
@@ -213,7 +213,7 @@ impl ScopeEntry {
     }
 
     /// A name brought into scope by an `open` (see [`Self::from_open`]), tagged
-    /// with the current [`open_generation`](Resolver::open_generation) so a later
+    /// with the current [`open_generation`](crate::resolve::open_scope::OpenScope::open_generation) so a later
     /// unmodelled open can shadow it (see [`Self::generation`]), and with the
     /// open's source offset (see [`Self::open_pos`]).
     ///
@@ -625,7 +625,7 @@ pub(super) enum CaseTier {
     /// the path as written. These yield to an assembly entity in scope through
     /// an `open`: an `open` out-ranks the lower two outright, and two `open`
     /// tiers cannot be ordered against each other here — the project
-    /// (`Resolver::open_shortening_prefixes`) and assembly
+    /// (`OpenScope::open_shortening_prefixes`) and assembly
     /// (`Resolver::open_reading_prefixes`) prefix lists are built from the same
     /// opens but are neither shared nor index-aligned.
     Namespace,
@@ -659,7 +659,7 @@ pub(super) enum ShadowVeto {
     Vetoed(DeclineCause),
 }
 
-/// One [`Resolver::auto_open_type_shadow_names`] entry — see the field docs.
+/// One [`OpenScope::auto_open_type_shadow_names`](crate::resolve::open_scope::OpenScope::auto_open_type_shadow_names) entry — see the field docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AutoOpenTypeShadow {
     /// The auto-open module declaration's start offset — where the name
@@ -721,13 +721,13 @@ pub(super) enum TieredResolution<R> {
 /// [`Resolver::open_reading_prefixes`], which fixes the walk order
 /// (latest-open-first, then within an open readings as ordered here) for every
 /// consumer.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct OpenGroup {
     /// The readings, highest-priority first.
     pub(super) readings: Vec<Vec<String>>,
 }
 
-/// One entry in [`Resolver::open_shortening_prefixes`]: a container some `open`
+/// One entry in [`OpenScope::open_shortening_prefixes`](crate::resolve::open_scope::OpenScope::open_shortening_prefixes): a container some `open`
 /// (explicit or implicit) brought into scope, under which a later `open`'s path
 /// may be shortened.
 ///
@@ -749,7 +749,7 @@ pub(super) struct OpenGroup {
 /// the auto-open descendants of a same-FQN **module** in some other reference —
 /// FCS opened the namespace, not that module. An open that really did read a
 /// module pushes its own entry with this set.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct ShorteningPrefix {
     pub(super) path: Vec<String>,
     pub(super) namespace_reading: bool,
@@ -831,7 +831,7 @@ pub(super) struct DeclKinds {
     /// latest-wins list over lexical module declarations and `open`s** (FCS-probed:
     /// an `open` declared *after* a lexical `module Pal` outranks it for the head
     /// of `Pal.Color.Red`, one declared *before* it loses), so a candidate is
-    /// compared positionally against [`Resolver::explicit_open_prefixes`].
+    /// compared positionally against [`OpenScope::explicit_open_prefixes`](crate::resolve::open_scope::OpenScope::explicit_open_prefixes).
     pub(super) module_pos: Option<u32>,
     /// A second `module M = …` of the name in this container: FS0037, and FCS
     /// reads the *first* one where sema keeps the latest, so the container's
@@ -1046,7 +1046,7 @@ pub(super) struct Resolver<'a> {
     /// whenever no generic definition is open.
     pub(super) typar_scopes: Vec<Vec<(String, DefId)>>,
     /// In-file `type` definitions, keyed by their enclosing container
-    /// ([`ContainerId`], interned by [`Self::container_path`], so a walk along
+    /// ([`PathId`], interned by [`Self::container_path`], so a walk along
     /// the enclosing containers probes once per level without hashing a path)
     /// then by `idText` name → defining binder. F#
     /// keeps types in a *separate* namespace from values, so this is queried
@@ -1067,7 +1067,7 @@ pub(super) struct Resolver<'a> {
     /// the group is mutually recursive. Cross-file type resolution (`A.T` from
     /// another file) is a later slice — those references stay deferred via the
     /// existing [`Self::record_project_name_shadow`].
-    pub(super) type_defs: HashMap<ContainerId, HashMap<String, DefId>>,
+    pub(super) type_defs: HashMap<PathId, HashMap<String, DefId>>,
     /// Each in-file type's [`SlotClass`] — keyed by container path, like
     /// [`Self::type_defs`], and populated by the same
     /// [`define_type`](Self::define_type) call (last-wins on redefinition).
@@ -1079,8 +1079,11 @@ pub(super) struct Resolver<'a> {
     /// container and simple name — all of them, not the last-wins one
     /// [`Self::type_slot_classes`] keeps: same-named types of different
     /// arities each take the unqualified slot, and the latest of any of them
-    /// is what orders a value ([`Self::head_value_slot`]).
-    pub(super) type_slot_history: HashMap<ContainerId, HashMap<String, Vec<TypeSlotDef>>>,
+    /// is what orders a value ([`Self::head_value_slot`]). Keyed by the
+    /// container's interned path and the name's, so a probe for a name the
+    /// table never interned costs no hashing of its text past the one
+    /// lookup that says so.
+    pub(super) type_slot_history: ChildMap<Vec<TypeSlotDef>>,
     /// Each in-file type's **access-root** — keyed by container path, like [`Self::type_defs`], and
     /// populated by the same [`define_type`](Self::define_type) call. `None` =
     /// public; `Some(k)` = accessible only from a site within the `k`-segment
@@ -1096,7 +1099,7 @@ pub(super) struct Resolver<'a> {
     /// sibling module through `A.U.X`.
     pub(super) case_repr_roots: HashMap<DefId, Vec<String>>,
     /// The **complete declared-name view of each container** — keyed by the
-    /// container's [`ContainerId`], like [`Self::type_defs`], mapping each
+    /// container's [`PathId`], like [`Self::type_defs`], mapping each
     /// declared name to the namespaces it occupies ([`DeclKinds`]); read by
     /// path through [`declared_in`](Self::declared_in). Populated from the same declaration walk that fills
     /// `type_defs` / `type_cases` / `module_like_names` / the value frames, one mark
@@ -1107,7 +1110,7 @@ pub(super) struct Resolver<'a> {
     /// ([`classify_same_file_module_qualified_case`](Self::classify_same_file_module_qualified_case))
     /// can decide a head/segment with *certainty* — emit only when unambiguous, defer
     /// on any contention (Gap A of `docs/type-qualified-case-prefix-plan.md`).
-    pub(super) container_decls: HashMap<ContainerId, HashMap<String, DeclKinds>>,
+    pub(super) container_decls: HashMap<PathId, HashMap<String, DeclKinds>>,
     /// In-file **type-qualified cases**, keyed by enclosing container path then by
     /// *type* name then by case name → the case's defining binder. Holds every
     /// `enum` case **and** every union case (`[<RequireQualifiedAccess>]` or not),
@@ -1170,7 +1173,7 @@ pub(super) struct Resolver<'a> {
     /// reaching the enclosing enum. (Type-position resolution
     /// [`lookup_type_def_at_arity`](Self::lookup_type_def_at_arity) does *not* consult it — a module
     /// does not shadow a type in the type namespace.)
-    pub(super) module_like_names: HashMap<ContainerId, HashSet<String>>,
+    pub(super) module_like_names: HashMap<PathId, HashSet<String>>,
     /// The **value scope of each top-level container** — a `namespace`/`module`
     /// header's path (`[]` for an anonymous module) — keyed like
     /// [`Self::type_defs`]. F# merges same-named `namespace N` blocks and isolates
@@ -1196,12 +1199,9 @@ pub(super) struct Resolver<'a> {
     pub(super) assemblies: &'a AssemblyEnv,
     /// Project-global id of this file's first item (the `preceding` count).
     pub(super) item_base: u32,
-    /// Whether the container being walked is a module whose path qualifies
-    /// its exports: a `module` header, or a nested module under a real root.
-    /// That path is then [`Self::container_path`], read through
-    /// [`module_path`](Self::module_path); a flag rather than a copy, since a
-    /// copy per nested module is quadratic in the nesting depth.
-    pub(super) in_exporting_module: bool,
+    /// Everything the opens and module headers in scope decide, which lives
+    /// as long as the module that wrote it ([`OpenScope`]).
+    pub(super) scope: OpenScope,
     /// Dotted path of the enclosing *container* — the `module`/`namespace`
     /// header's `longId` (`["Demo"]` for `namespace Demo` as well as for
     /// `module Demo`; empty for an anonymous module or `namespace global`).
@@ -1209,7 +1209,7 @@ pub(super) struct Resolver<'a> {
     /// because a namespace binds no *values*; nested modules, however, *are*
     /// qualified under a namespace, so this is the prefix used to export a
     /// nested module's cross-file shadow path.
-    pub(super) container_path: super::container::ContainerPath,
+    pub(super) container_path: super::container::ContainerPath<'a>,
     /// How many leading segments of [`Self::container_path`] are the enclosing
     /// **namespace** (the rest are nested-module names). For `namespace
     /// Outer.Inner` it is 2; for a top-level `module Outer.Client` it is 1 (the
@@ -1220,22 +1220,6 @@ pub(super) struct Resolver<'a> {
     /// a namespace container, so `open Inner` inside `module Outer.Client` must not
     /// reach `Outer.Client.Inner` (FCS leaves it undefined).
     pub(super) namespace_depth: usize,
-    /// The **access-floor** of the current walk position: the access-root
-    /// length imposed by the deepest enclosing `module private …`, or `None` if
-    /// no `private` module encloses here. A `module private M` (M at `[…P, M]`)
-    /// makes its contents accessible only from within its *parent* `P`, so it
-    /// contributes floor `Some(P.len())`; stacked private modules take the
-    /// deepest (largest). A value/case declared here inherits this floor unless
-    /// its own (or its type's) `private` modifier narrows it further — see
-    /// [`Self::export_access_root_len`], which combines the two into the export's
-    /// [`ExportedItem::access_root_len`](super::model::ExportedItem). This is what
-    /// makes the collapse recovery sound *and* correct: a private-module value is
-    /// filtered from an outside `open` (never committed), while a sibling within
-    /// the enclosing namespace still resolves it (oracle-pinned D2/D6). Set at the
-    /// file root and saved/restored as [`nested_module`](Self::nested_module)
-    /// descends. An absolute segment count (a prefix of every descendant
-    /// `container_path`), so it stays valid as the walk goes deeper.
-    pub(super) access_floor: Option<usize>,
     /// Every declared named-module path in the file, accumulated as the walk
     /// enters each module (read back by
     /// [`is_project_module_path`](Resolver::is_project_module_path)).
@@ -1353,105 +1337,17 @@ pub(super) struct Resolver<'a> {
     /// entry also carries the type's [`TypeSlot`], consumed by
     /// [`head_value_slot`](Self::head_value_slot) to decide eviction.
     pub(super) type_path_exports: Vec<(Vec<String>, bool, TypeSlot)>,
-    /// Opened namespace reading-groups in scope, **one [`OpenGroup`] per
-    /// `open`**, in source order — F#'s implicit auto-opens first, then the
-    /// file's explicit `open` decls (an `open` is in scope for the decls after
-    /// it).
-    ///
-    /// Name resolution walks these through [`Self::open_reading_prefixes`]
-    /// **latest-open-first** and, within an open, in the group's priority order:
-    /// the latest `open` with a *complete* reading of the name wins (F# is
-    /// latest-open-wins, not ambiguity — `open Demo; open Demo.Sub; Calc` is
-    /// `Demo.Sub.Calc`, reversed it is `Demo.Calc`). A short path that does not
-    /// resolve directly is retried under each reading (`open System` makes
-    /// `Console.WriteLine` resolve as `System.Console.WriteLine`).
-    pub(super) imports: Vec<OpenGroup>,
-    /// How many *leading* [`Self::imports`] groups are the implicit
+    /// Each path in [`Self::type_path_exports`], interned, to the index of
+    /// its latest entry there: the entry a later definition at the same path
+    /// shadows the earlier ones with.
+    pub(super) type_path_export_ids: HashMap<PathId, usize>,
+    /// How many *leading* [`OpenScope::imports`](crate::resolve::open_scope::OpenScope::imports) groups are the implicit
     /// auto-opens ([`implicit_open_groups`]). Constant for the file: every
     /// reset re-seeds `imports` with exactly that list, and explicit opens
     /// are only ever appended after it — so `imports[..implicit_import_count]`
     /// is always the implicit seed and the rest the explicit source opens
     /// ([`Resolver::explicit_open_reading_prefixes`] relies on this split).
     pub(super) implicit_import_count: usize,
-    /// Every prefix that can **shorten a later module open**, in source order
-    /// (latest last): the implicit auto-opens, each explicit `open <namespace>`,
-    /// and each resolved `open <project module>`. The single source-ordered
-    /// sequence lets [`resolved_project_module`](Self::resolved_project_module)
-    /// honour F#'s "latest open wins" *across open kinds* — `open A.Container;
-    /// open B; open Shared` resolves `Shared` as `B.Shared` (the later namespace
-    /// open) even though a module open (`A.Container`) preceded it, and `open
-    /// Shared; open Sub` chains `Sub` to `Shared.Sub`. Kept separate from
-    /// [`Self::imports`] (which holds only *namespace* prefixes, for
-    /// assembly/qualified-path resolution) so adding module prefixes here does not
-    /// pollute that. Block-scoped (reset per top-level block, saved/restored
-    /// across nested modules).
-    pub(super) open_shortening_prefixes: Vec<ShorteningPrefix>,
-    /// Opened **assembly module** paths whose bare-name surface is *not provably
-    /// complete* ([`AssemblyEnv::open_fold_surface`](crate::AssemblyEnv::open_fold_surface)'s residue — projection dropped
-    /// a nested type, the pickle is unknowable, a member is undecodable, …).
-    ///
-    /// A later `open Sub` shortens through such a prefix (`Parent.Sub`), and the module
-    /// it names may be exactly the one projection *dropped* — invisible to us, but bound
-    /// by FCS at a **higher** priority than any root `Sub`. Resolving the root one's
-    /// values would then be a wrong target, so an open that finds nothing under an
-    /// incomplete prefix goes opaque instead (review round 9). Same block scoping as
-    /// [`Self::open_shortening_prefixes`].
-    pub(super) incomplete_open_prefixes: Vec<Vec<String>>,
-    /// Every in-scope **explicit namespace `open`** (project or assembly — the
-    /// kinds that do *not* set an opaque/unmodelled flag and so reach the same-file
-    /// module-qualified classifier), as `(source position, canonical opened
-    /// prefix)`. FCS-probed (r16): the dotted-head environment is one
-    /// source-position-ordered latest-wins list over lexical module declarations
-    /// and opens — an open declared *after* a same-file `module Pal` outranks it
-    /// for the head of `Pal.Color.Red` (residual backtracking included), one
-    /// declared *before* it loses. The classifier compares each lexical candidate
-    /// ([`DeclKinds::module_pos`]) against these: a later open whose prefix could
-    /// supply a module/namespace/assembly entity named like the head *contests*
-    /// the candidate, and the classifier declines (the open-aware cross-file
-    /// branches own resolution then). Implicit auto-opens precede every same-file
-    /// declaration and so can never contest — they are not recorded. Block-scoped
-    /// (reset per top-level block, saved/restored across nested modules) like
-    /// [`Self::imports`].
-    pub(super) explicit_open_prefixes: Vec<(u32, Vec<String>)>,
-    /// Every in-scope **project module `open`** (the [`OpenInterpretation::Module`]
-    /// arm), as `(source position, canonical module path)`. A module open
-    /// imports the module's TYPES into FCS's unqualified slot too (probe
-    /// M20v, codex round 8 — the opened `M.Color` class evicts an earlier
-    /// value exactly like a namespace-open-supplied type), so
-    /// [`head_value_slot`](Resolver::head_value_slot) consults these
-    /// alongside [`Self::explicit_open_prefixes`]. Same block-scoped
-    /// lifecycle (reset per top-level block, saved/restored across nested
-    /// modules).
-    pub(super) module_open_prefixes: Vec<(u32, Vec<String>)>,
-    /// Every open through which an **assembly namespace's types are reachable**,
-    /// as `(source position, canonical namespace path)` — every
-    /// [`OpenInterpretation::Reading`] the open produced, captured *before* the
-    /// `project_readings_only` filter that keeps a direct project-module /
-    /// assembly-namespace merge out of [`Self::explicit_open_prefixes`]. This is
-    /// exactly where a referenced-assembly type occupies FCS's unqualified slot
-    /// and can evict a same-named local value: a plain `open System` (A1), a
-    /// project-namespace open, **and** a *direct* `open Demo` where `Demo` is a
-    /// project module merged with the assembly namespace `Demo` (codex round 2 —
-    /// FCS binds `Demo.Calc` there). A module *alias* (`open Alias`) produces no
-    /// reading — `open_interpretations` marks its namespaces unreachable — so it
-    /// is correctly absent (codex round 1). Consulted by
-    /// [`head_value_slot`](Resolver::head_value_slot) for the assembly-eviction
-    /// check only (`docs/head-slot-assembly-eviction-plan.md`); the *project*
-    /// slot checks keep using `explicit`/`module` prefixes. Same block-scoped
-    /// lifecycle as [`Self::explicit_open_prefixes`].
-    pub(super) assembly_open_prefixes: Vec<(u32, Vec<String>)>,
-    /// Monotonic generation, bumped each time an `open M` of a project module with
-    /// **unmodelled value-namespace members** is processed. Each opened
-    /// [`ScopeEntry`] is tagged with the generation at its creation
-    /// ([`ScopeEntry::generation`]); [`lookup`](Self::lookup) treats an opened
-    /// entry whose generation is older than this as *shadowed* by that later open
-    /// — we cannot enumerate the new open's union cases / exception constructors /
-    /// active patterns, so any of them might shadow an earlier opened name, and
-    /// conservatively dropping every earlier opened name (F#: the latest open
-    /// wins) is sound. A *fully-modelled* open (only `let`s) does not bump it, so
-    /// earlier opens stay resolvable. Block-scoped (reset per top-level block,
-    /// saved/restored across nested modules) like `imports`.
-    pub(super) open_generation: usize,
     /// The project half of this block's implicit open of its own enclosing
     /// namespace ([`Resolver::open_own_enclosing_namespace`]): the namespace's
     /// fragments from earlier files and earlier blocks of this file, as the
@@ -1462,22 +1358,13 @@ pub(super) struct Resolver<'a> {
     /// fragment is registered only once the block ends. Block-scoped: set at
     /// each block's start.
     pub(super) own_namespace_fold: RecordedFold,
-    /// Project-global [`ItemId`]s of opened cross-file cases that must **not** be
-    /// trusted in pattern position — exported cases of a *hidden* module (one whose
-    /// `open` also brings unenumerable constructors, e.g. an active pattern, that
-    /// could shadow them; see [`open_module_values`](Self::open_module_values)).
-    /// They still resolve as values in expression position; only
-    /// [`case_reference`](Self::case_reference) consults this to defer the pattern
-    /// use. Block-scoped (reset per top-level block, saved/restored across nested
-    /// modules) like [`Self::open_generation`].
-    pub(super) pattern_suppressed_case_ids: HashSet<ItemId>,
     /// Qualified paths of in-project modules whose `open` may bring **value-space
     /// names we cannot enumerate**: a module declaring union cases / exception
     /// constructors / active patterns (we enumerate only `let` values), or a
     /// module *alias* whose target we could **not** resolve to an in-project
     /// module (an alias of an assembly module — a resolvable alias is canonicalised
     /// instead, see [`Self::module_aliases`]). Opening one bumps
-    /// [`Self::open_generation`] so it shadows earlier opens. A *file-level*
+    /// [`OpenScope::open_generation`](crate::resolve::open_scope::OpenScope::open_generation) so it shadows earlier opens. A *file-level*
     /// accumulator (a module is recorded as the walk passes its definition, which
     /// always precedes any `open` of it — same file earlier in source, or an
     /// earlier Compile-order file via [`Preceding`](super::model::ProjectItems)); merged across files like
@@ -1593,7 +1480,7 @@ pub(super) struct Resolver<'a> {
     /// arity, more than one means the latest in-file hit may not be the one
     /// FCS binds (of two same-arity declarations in one scope it binds the
     /// first) ([`DeclineCause::InFileTypeNameReused`]).
-    pub(super) type_decl_counts: HashMap<ContainerId, HashMap<String, HashMap<usize, usize>>>,
+    pub(super) type_decl_counts: HashMap<PathId, HashMap<String, HashMap<usize, usize>>>,
     /// Each in-file type's generic arity, by its [`Self::type_defs`] binder.
     /// FCS looks a type name up by name *and* arity first, so `E<int>` beside
     /// `type E` and `type E<'T>` binds the generic one whatever their order,
@@ -1612,7 +1499,7 @@ pub(super) struct Resolver<'a> {
     pub(super) own_type_scoped: HashMap<(String, usize), bool>,
     /// [`Self::type_defs`] keyed by name and arity, so a container declaring
     /// a name at two arities keeps both (last-wins per arity).
-    pub(super) type_defs_by_arity: HashMap<ContainerId, HashMap<(String, usize), DefId>>,
+    pub(super) type_defs_by_arity: HashMap<PathId, HashMap<(String, usize), DefId>>,
     /// The subset of [`Self::own_type_simple_names`] declared by an
     /// `exception` anywhere in the file. Exceptions never enter `type_defs`,
     /// so an in-file *type* hit for such a name may be reaching past a closer
@@ -1631,7 +1518,7 @@ pub(super) struct Resolver<'a> {
     /// [`Self::own_type_simple_names`], so position- and block-blind. An
     /// in-file attribute hit for such a name must defer (AO-2): the
     /// auto-open import contests it positionally in FCS, and the walk's
-    /// block-scoped [`Self::auto_open_type_shadow_names`] guard cannot see a
+    /// block-scoped [`OpenScope::auto_open_type_shadow_names`](crate::resolve::open_scope::OpenScope::auto_open_type_shadow_names) guard cannot see a
     /// straddle — a block-1 direct type, a block-2 auto-open redeclaration,
     /// and a block-3 attribute bind the *auto-open's* type in FCS while
     /// the in-file lookup retains block 1's (codex on AO-2). Position-blind
@@ -1654,16 +1541,6 @@ pub(super) struct Resolver<'a> {
     /// `true` when some augmentation member's *name* is not walkable (an
     /// operator head, an `inherit`) — the gate keeps the wholesale defer.
     pub(super) augmentation_names_unknowable: bool,
-    /// The start offset of the latest `open` (of any kind) in scope in this
-    /// top-level block: an open is scoped to its module, so leaving a nested
-    /// module restores it. The positional contest of the attribute and type
-    /// resolutions: F# is latest-wins across bindings and opens alike, so an
-    /// in-file type commit whose definition *precedes* an open must defer —
-    /// the open could supply the name at higher priority (`type
-    /// ObsoleteAttribute … ; open System; [<Obsolete>]` binds
-    /// `System.ObsoleteAttribute` in FCS). Reset per top-level block with the
-    /// rest of the open state.
-    pub(super) latest_open_pos: u32,
     /// The in-file types the current top-level block declares. Reset per
     /// block: a namespace reopened in a later block, `namespace global`
     /// included, makes an augmentation there an extension to FCS.
@@ -1678,10 +1555,6 @@ pub(super) struct Resolver<'a> {
     /// tables cover (a class, a union or a record), and certainly not
     /// `[<AutoOpen>]`.
     pub(super) augmentable_types: HashSet<DefId>,
-    /// `true` while walking a `module rec` / `namespace rec` block. Later type
-    /// declarations are in scope for earlier type annotations there, so a bare
-    /// single-segment type name must defer unless already resolved in-file.
-    pub(super) recursive_module_active: bool,
     /// What this file's declarations contribute to later files through routes
     /// the walk does not model ([`FileContributions`]), accumulated by the walk.
     pub(super) contributions: FileContributions,
@@ -1716,40 +1589,6 @@ pub(super) struct Resolver<'a> {
     /// every binder after each `open`, and the nested modules' `[<AutoOpen>]`
     /// contents after each type or exception definition.
     pub(super) rec_contribution: Option<RecBlock>,
-    /// Type names a **same-file** `[<AutoOpen>]` module has opened into the
-    /// current scope. F# opens an auto-open nested module into the remainder
-    /// of its CONTAINER's scope — including a *module* container or the
-    /// anonymous root, which the namespace-keyed cross-file signal
-    /// ([`Resolver::project_auto_open_module_in_namespace`](super::Resolver))
-    /// can never match (a module container path is not a walked prefix). The
-    /// file's own types are fully modelled, so this signal is name-KEYED:
-    /// populated at each auto-open nested module's exit with its direct type
-    /// names, kept (not restored) so it covers the container's remaining
-    /// scope, and propagated outward when the auto-open module's *own*
-    /// container is itself auto-open — the FCS-recursive chain. A bare
-    /// type-position use of one of these names defers as shadowable; the
-    /// upgrade to resolving the actual binder is a later slice. The value
-    /// carries the IMPORT position (the auto-open module declaration's
-    /// start — F#'s in-scope introductions contest positionally, so a
-    /// same-container `type` declared AFTER the import outranks it and must
-    /// keep resolving exactly) and the name's **minimum visible depth**: a
-    /// name contributed through a `module private` auto-open module is
-    /// visible no shallower than that module's container, so exit-time
-    /// propagation drops it once the walk leaves that container
-    /// (`type private` members never enter the set at all). The depth is
-    /// consulted only at exits — an entry live in a scope's set is visible
-    /// to everything at or below that scope.
-    pub(super) auto_open_type_shadow_names: HashMap<String, AutoOpenTypeShadow>,
-    /// While [`Self::recursive_module_active`]: every nested-module name
-    /// declared anywhere in the `rec` block (pre-scanned on entry, all
-    /// nesting depths — a superset of what is in scope at any one point,
-    /// which can only over-defer, never mis-bind). A multi-segment
-    /// type-position path whose head is one of these may descend into a
-    /// module the source-ordered walk has not reached yet — the
-    /// forward-declared counterpart of
-    /// [`type_path_descends_into_nested_module`](super::Resolver), which only
-    /// sees modules already walked. Empty outside `rec` blocks.
-    pub(super) rec_module_names: HashSet<String>,
     /// In-project **module abbreviations**: the alias's absolute path
     /// (`[scope…, Alias]`) → the *canonical* fully-qualified path of the module it
     /// abbreviates. The RHS is resolved with the same precedence as an `open` path
@@ -1766,43 +1605,6 @@ pub(super) struct Resolver<'a> {
     /// accumulator keyed by absolute path; not yet merged across files, so an alias
     /// declared in an earlier file stays conservative.
     pub(super) module_aliases: HashMap<Vec<String>, Vec<String>>,
-    /// `true` once an open that brings *type members* into unqualified scope is
-    /// in scope — `open type T`, or `open <module>`/`open <type>` whose path is
-    /// itself an assembly type. Its **static members** are modelled (one *opened*
-    /// [`ScopeEntry`] per static name was pushed into the frame by
-    /// [`Self::open_type_statics`]), but its **nested types** are not — so a
-    /// *qualified* path could still come from it, and while one is in scope
-    /// `resolve_long_ident` cannot soundly resolve a qualified path via the
-    /// *other* (namespace) opens and defers instead. Also set for an `open type`
-    /// whose target we could not resolve to a handle (an in-project type, an
-    /// exotic type form): nothing is modelled then, so every open-based resolution
-    /// stays conservative. Monotonic: an open is in scope for the decls after it,
-    /// which we visit in source order.
-    pub(super) unmodelled_open_active: bool,
-    /// `true` once an open that *could* bring an unqualified **value** we do not
-    /// model is in scope: a plain `open <assembly module/class>` (its values /
-    /// statics are unmodelled here), or an `open type T` whose target we could not
-    /// resolve to an assembly handle or that is project-shadowed. Such an open
-    /// might provide — or shadow — a bare name with a value we cannot enumerate,
-    /// so while one is in scope [`lookup`](Self::lookup) skips every *opened*
-    /// ([`ScopeEntry::from_open`]) entry — resolving a modelled opened name could
-    /// otherwise pick a target the opaque open shadows (correctness over
-    /// availability). It also implies [`Self::dotted_opacity`] (an unknown
-    /// bare value head could likewise be a dotted-path head we cannot resolve), so
-    /// the dotted-path gate in [`resolve_long_ident`](Self::resolve_long_ident)
-    /// checks both. A plain `open <namespace>` brings only *types*, no unqualified
-    /// values, so it does **not** set this. Save/restored across nested modules.
-    pub(super) opaque_value_open: bool,
-    /// Which opens in scope could supply a *dotted-path head* we do not model
-    /// (see [`DottedOpacity`]). While [`DottedOpacity::any`] holds, the
-    /// dotted-path gate in [`resolve_long_ident`](Self::resolve_long_ident)
-    /// leaves such a head unresolved rather than risk routing it to a
-    /// colliding cross-file / referenced-assembly path (correctness over
-    /// availability). Unlike `opaque_value_open` it does **not** make
-    /// [`lookup`](Self::lookup) skip opened entries — an opened module's bare
-    /// values are modelled and must resolve. Save/restored across nested
-    /// modules.
-    pub(super) dotted_opacity: DottedOpacity,
     /// `true` while the file's top-level module is *anonymous* (the implicit
     /// filename module — `ModuleOrNamespaceKind::Anon`, no `namespace`/`module`
     /// header). A nested module under it is reachable cross-file only via the
@@ -1990,11 +1792,11 @@ pub(super) fn implicit_open_namespaces(assemblies: &AssemblyEnv) -> Vec<Vec<Stri
     assemblies.effective_implicit_open_namespace_paths()
 }
 
-/// The implicit auto-opens as [`Resolver::imports`] entries — each is its own
+/// The implicit auto-opens as [`OpenScope::imports`](crate::resolve::open_scope::OpenScope::imports) entries — each is its own
 /// single-reading `open` group (no relative/root split; they are fully qualified),
 /// in source order *before* any explicit `open`, so an explicit open shadows them
 /// under the latest-open-wins walk.
-/// The implicit auto-opens as [`Resolver::open_shortening_prefixes`] entries.
+/// The implicit auto-opens as [`OpenScope::open_shortening_prefixes`](crate::resolve::open_scope::OpenScope::open_shortening_prefixes) entries.
 /// Every one is a namespace reading, so each lends the `[<AutoOpen>]` modules it
 /// folds as further prefixes ([`Resolver::auto_open_shortening_prefixes`]).
 pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<ShorteningPrefix> {

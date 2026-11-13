@@ -44,6 +44,7 @@ mod infer;
 mod infer_project;
 mod match_reach;
 mod member_ty;
+mod names;
 mod node_span;
 mod overload;
 mod qnof;

@@ -938,6 +938,12 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
         "PlatformTarget",
         "Optimize",
         "DebugSymbols",
+        // Names the ASP.NET SDKs' import gates read. `VisualStudioVersion` is a
+        // toolset value no document writes, so it reaches the table (which
+        // lists written names only) through the `sdk-visual-studio-version`
+        // case's copy.
+        "SeenVisualStudioVersion",
+        "PublishProfileName",
     ];
 
     let mut oracle = Oracle::spawn();
@@ -983,6 +989,31 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
             // movement floor below, which only this case can satisfy.
             pins: &[],
         },
+        // The ASP.NET SDKs layer the Web, Razor and Publish SDKs over the
+        // plain one. Their props read `TargetFramework` before the body defines
+        // it (`GetTargetPlatformIdentifier($(TargetFramework))`), gate an import
+        // on `$(VisualStudioVersion)` and derive `PublishProfileName` through
+        // `Path.GetFileNameWithoutExtension`.
+        Case {
+            name: "sdk-web",
+            xml: "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n",
+            files: &[],
+            pins: &[("PublishProfileName", "Default")],
+        },
+        Case {
+            name: "sdk-worker",
+            xml: "<Project Sdk=\"Microsoft.NET.Sdk.Worker\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n",
+            files: &[],
+            pins: &[("PublishProfileName", "Default")],
+        },
+        // The toolset's `VisualStudioVersion`, copied into a written property
+        // so the table reports it.
+        Case {
+            name: "sdk-visual-studio-version",
+            xml: "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <SeenVisualStudioVersion>$(VisualStudioVersion)</SeenVisualStudioVersion>\n  </PropertyGroup>\n</Project>\n",
+            files: &[],
+            pins: &[],
+        },
         // `DefineConstants` is a value the LSP feeds straight into the lexer's
         // `#if` handling, and the SDK derives it from the configuration.
         Case {
@@ -1017,6 +1048,27 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
         // the configuration wrote it, so this is the named proof that the sidecar
         // was found and conditioned — the one SDK route whose liveness a
         // literal pin cannot state.
+        // The ASP.NET import gates read these, so a decline anywhere in the
+        // sweep leaves the project's import set undecided: each must commit
+        // under every global set (certain-implies-exact already holds the
+        // values to MSBuild).
+        let must_commit: &[&str] = match case.name {
+            "sdk-web" | "sdk-worker" => &["PublishProfileName"],
+            "sdk-visual-studio-version" => &["SeenVisualStudioVersion"],
+            _ => &[],
+        };
+        {
+            for &name in must_commit {
+                let committed_sets = census.by_name.get(name).map_or(0, |n| n.committed_sets);
+                assert_eq!(
+                    committed_sets,
+                    global_sets().len(),
+                    "{}: `{name}` committed under only {committed_sets} of {} global sets",
+                    case.name,
+                    global_sets().len()
+                );
+            }
+        }
         if case.name == "sdk-directory-build-props" {
             sidecar_route_live = census
                 .moving_in_msbuild()
