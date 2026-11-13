@@ -175,14 +175,7 @@ pub fn well_known(project_path: &Path) -> PropertyMap {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stem = project_path
-        .file_stem()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let extension = project_path
-        .extension()
-        .map(|n| format!(".{}", n.to_string_lossy()))
-        .unwrap_or_default();
+    let (stem, extension) = split_file_name(project_path);
     // `MSBuildProjectDirectoryNoRoot` has no trailing separator, like
     // `MSBuildProjectDirectory` (probed against `dotnet msbuild`).
     let dir_no_root = project_path.parent().map(no_root).unwrap_or_default();
@@ -206,19 +199,13 @@ pub fn well_known(project_path: &Path) -> PropertyMap {
 /// The `MSBuildThisFile*` reserved properties for the file at `path`, which
 /// MSBuild binds to whichever file is being walked: the project's own body,
 /// then each imported file for the duration of its import. Probed against
-/// `dotnet msbuild` from a project body and from an import in a subdirectory:
+/// `dotnet msbuild` from a project body and from imports in a subdirectory:
 /// the directory names carry a trailing separator, the `NoRoot` one drops the
-/// filesystem root, and the name and extension split at the last `.`
-/// (`Imp.x.props` is `Imp.x` and `.props`).
+/// filesystem root, and the name and extension split as .NET splits them
+/// ([`split_file_name`]).
 pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
-    let with_separator = |dir: String| {
-        if dir.is_empty() {
-            dir
-        } else {
-            format!("{dir}/")
-        }
-    };
     let parent = path.parent();
+    let (name, extension) = split_file_name(path);
     [
         (
             "MSBuildThisFile",
@@ -228,7 +215,7 @@ pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
         ),
         (
             "MSBuildThisFileDirectory",
-            with_separator(
+            with_trailing_separator(
                 parent
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default(),
@@ -236,40 +223,59 @@ pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
         ),
         (
             "MSBuildThisFileDirectoryNoRoot",
-            with_separator(parent.map(no_root).unwrap_or_default()),
+            with_trailing_separator(parent.map(no_root).unwrap_or_default()),
         ),
         (
             "MSBuildThisFileFullPath",
             path.to_string_lossy().into_owned(),
         ),
-        (
-            "MSBuildThisFileName",
-            path.file_stem()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        ),
-        (
-            "MSBuildThisFileExtension",
-            path.extension()
-                .map(|n| format!(".{}", n.to_string_lossy()))
-                .unwrap_or_default(),
-        ),
+        ("MSBuildThisFileName", name),
+        ("MSBuildThisFileExtension", extension),
     ]
 }
 
-/// `dir` without its filesystem root (`/a/b` → `a/b`), as MSBuild's `NoRoot`
-/// reserved properties spell it.
+/// A file's name and extension as .NET's `Path.GetFileNameWithoutExtension`
+/// and `Path.GetExtension` split them, which MSBuild's reserved properties
+/// use: at the last `.`, which the extension keeps, except that a final `.`
+/// gives no extension (`Imp.` is `Imp` and ``). Unlike Rust's `file_stem`, a
+/// leading `.` is not special: `.props` is `` and `.props`.
+fn split_file_name(path: &Path) -> (String, String) {
+    let file = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match file.rfind('.') {
+        None => (file, String::new()),
+        Some(dot) if dot + 1 == file.len() => (file[..dot].to_string(), String::new()),
+        Some(dot) => (file[..dot].to_string(), file[dot..].to_string()),
+    }
+}
+
+/// `dir` with the platform's separator after it, unless it is empty.
+fn with_trailing_separator(dir: String) -> String {
+    if dir.is_empty() {
+        dir
+    } else {
+        format!("{dir}{}", std::path::MAIN_SEPARATOR)
+    }
+}
+
+/// `dir` without its filesystem root (`/a/b` → `a/b`, `C:\a\b` → `a\b`), its
+/// separators as written, as MSBuild's `NoRoot` reserved properties spell it.
 fn no_root(dir: &Path) -> String {
-    dir.components()
-        .filter(|c| {
-            !matches!(
+    let root: std::path::PathBuf = dir
+        .components()
+        .take_while(|c| {
+            matches!(
                 c,
                 std::path::Component::RootDir | std::path::Component::Prefix(_)
             )
         })
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
+        .collect();
+    let text = dir.to_string_lossy();
+    text.strip_prefix(root.to_string_lossy().as_ref())
+        .unwrap_or(&text)
+        .to_string()
 }
 
 /// Expand `$(Name)` occurrences in `input` — **project XML text**, hence
@@ -1690,6 +1696,19 @@ mod tests {
                 expression: "$(unclosed and more".to_string()
             }]
         );
+    }
+
+    /// .NET's split, not Rust's: a leading `.` starts the extension, and a
+    /// final `.` leaves none (probed against `dotnet msbuild`).
+    #[test]
+    fn file_names_split_as_dotnet_splits_them() {
+        let split = |p: &str| split_file_name(std::path::Path::new(p));
+        assert_eq!(split("/d/Imp.x.props"), ("Imp.x".into(), ".props".into()));
+        assert_eq!(split("/d/.props"), ("".into(), ".props".into()));
+        assert_eq!(split("/d/Imp."), ("Imp".into(), "".into()));
+        assert_eq!(split("/d/Makefile"), ("Makefile".into(), "".into()));
+        assert_eq!(no_root(std::path::Path::new("/repo/app")), "repo/app");
+        assert_eq!(no_root(std::path::Path::new("/")), "");
     }
 
     #[test]

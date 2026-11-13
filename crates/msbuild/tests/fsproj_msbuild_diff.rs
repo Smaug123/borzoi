@@ -910,6 +910,8 @@ fn path_derivable_reserved_properties_match_msbuild() {
     let source = format!(
         "<Project><PropertyGroup>{body}</PropertyGroup>\
          <Import Project=\"sub dir/Imp.x.props\" />\
+         <Import Project=\"sub dir/.props\" />\
+         <Import Project=\"sub dir/Imp.\" />\
          <PropertyGroup><After>$(MSBuildThisFileName)$(MSBuildThisFileExtension)</After></PropertyGroup>\
          </Project>"
     );
@@ -918,6 +920,19 @@ fn path_derivable_reserved_properties_match_msbuild() {
         format!("<Project><PropertyGroup>{imported}</PropertyGroup></Project>"),
     )
     .unwrap();
+    // Names .NET splits unlike Rust: no name before a leading `.`, no
+    // extension after a final one.
+    for (file, prefix) in [(".props", "J"), ("Imp.", "K")] {
+        let props: String = ["MSBuildThisFileName", "MSBuildThisFileExtension"]
+            .iter()
+            .map(|n| format!("<{prefix}_{n}>[$({n})]</{prefix}_{n}>"))
+            .collect();
+        std::fs::write(
+            dir.join("sub dir").join(file),
+            format!("<Project><PropertyGroup>{props}</PropertyGroup></Project>"),
+        )
+        .unwrap();
+    }
     let fsproj = dir.join("Demo.fsproj");
     std::fs::write(&fsproj, &source).unwrap();
 
@@ -925,6 +940,12 @@ fn path_derivable_reserved_properties_match_msbuild() {
         .iter()
         .flat_map(|n| [format!("B_{n}"), format!("I_{n}")])
         .chain(["After".to_string()])
+        .chain(["J", "K"].iter().flat_map(|p| {
+            [
+                format!("{p}_MSBuildThisFileName"),
+                format!("{p}_MSBuildThisFileExtension"),
+            ]
+        }))
         .collect();
     let mut cmd = Command::new("dotnet");
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
