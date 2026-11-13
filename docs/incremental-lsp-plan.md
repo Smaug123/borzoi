@@ -754,12 +754,24 @@ The `Vfs` replaces `State::docs` and the `observed` source reads. Its disk
 side reads stamp-then-read and applies the racy rule. `build_parses` asks the
 `Vfs` for each Compile item. An unchanged disk file then costs one `stat` per
 generation and returns the same `Arc<str>`, so the parse-cache comparison
-becomes a pointer test. `read_text`'s scan of every buffer goes away. Watched
-source events become re-`stat` hints.
+becomes a pointer test. `read_text`'s scan of every buffer goes away.
+
+**Cached folds are validated, not only rebuilt.** Once a project's fold is
+cached, `parses_for_project` and `resolved_prefix_and_env_for` answer from
+`project_parses` and `resolved_projects` without reaching `build_parses`, and
+so without reading the `Vfs`. Re-reading in `build_parses` alone would
+therefore leave a closed Compile item's disk edit unseen until something
+invalidated the project. So `ProjectParses` records the stamp (or buffer
+version) of each Compile item it was built from. Every generation that reads
+a cached fold validates those, and a mismatch drops the cached parses and the
+resolved project exactly as `invalidate_file` does today. Watched source
+events keep calling `invalidate_file` as well, and also become re-`stat`
+hints. The event path is removed only in Stage 7, once every cache it guards
+is validated.
 
 **Oracle**:
-- Stage 2a's count test flips: the comment keystroke performs **0 opens** and
-  at most `N` `stat`s.
+- Stage 2a's count test flips: the comment keystroke performs **0 opens**,
+  and each request that reads the fold performs at most `N` `stat`s.
 - `incremental_state_machine` gains `WITNESSED = [SourceContent]`. Scripts
   that `Write` a source and `Check` without `Flush` must agree with a fresh
   session. At least one pinned script does exactly that and fails on `main`
@@ -776,8 +788,10 @@ source events become re-`stat` hints.
   whose timestamps tick at a generated granularity up to `G`, so the property
   covers coarse-clock filesystems that the CI machine does not have.
 
-**Expected gain**: per keystroke, 80 opens and 80 `fstat`s become 0, and 0
-path `stat`s become at most 80. Instructions are not estimated in user space;
+**Expected gain**: per keystroke, 80 opens and 80 `fstat`s become 0. Path
+`stat`s go from 0 to at most 80 per request that reads the fold, which is
+three requests (`semanticTokens E`, `semanticTokens L`, `hover L`), so about
+240 per keystroke. Instructions are not estimated in user space;
 the kernel's share of the 80 reads, extrapolated from a microbenchmark, is
 roughly 13 M of `semanticTokens E`'s 24.4 M with warm vnodes, and more when
 they are recycled (see "Kernel instructions"). The stage measures both levels. The other expected effect is that `semanticTokens E` falls
@@ -969,14 +983,14 @@ hints plus the refresh decisions it makes today.
 - #313's planted mutations M1–M10 are re-planted where their code still
   exists, and are still caught.
 
-**Expected cost**: this stage *raises* the file-system counts. A
-`project_parses` hit stops being free. Every generation that reads the fold
-validates it: about 80 Compile-item `stat`s, plus the evaluation's validated
-read set, plus the env's (DLL contents under immutable roots exempt, listings
-not). On WoofWare.Incremental that is roughly 130 `stat`s per fold-reading
-request, and a keystroke has three (`semanticTokens E`, `semanticTokens L`,
-`hover L`), so roughly **400 `stat`s per keystroke**, against 0 path `stat`s
-and 80 opens today. The `observed` counters measure it per message in
+**Expected cost**: this stage *raises* the file-system counts further. Stage
+2b already validates the 80 Compile items per fold-reading generation (about
+240 `stat`s per keystroke). Here, a cached fold also validates the
+evaluation's read set and the env's, with DLL contents under immutable roots
+exempt and listings not. On WoofWare.Incremental that is roughly 130 `stat`s
+per fold-reading request in total. A keystroke has three such requests, so
+the total is roughly **400 `stat`s per keystroke**, against 0 path `stat`s and
+80 opens today. The `observed` counters measure it per message in
 `edit_counts`, and the read-set sizes reported by Stages 3a and 6a predict it
 before the stage is written. If the measured instructions matter, the
 remedy to weigh is validating once per revision plus once per bounded time
