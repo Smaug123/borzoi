@@ -16,6 +16,8 @@
 
 use std::collections::BTreeMap;
 
+use super::EvaluatedItem;
+use super::item_pass::{helper_item_definition_default_uncertainties, item_list_view};
 use super::{State, is_toolset_initial_property_name, item_key};
 use crate::UntrustedCause;
 
@@ -74,6 +76,10 @@ pub struct ItemRead {
     /// list of that type (none was declared where it walked, or the type is
     /// one this crate models elsewhere, as `PackageReference` is).
     pub items: Option<Vec<ItemRow>>,
+    /// Whether the walk itself would take `items` as MSBuild's list, by the
+    /// predicate an `@(…)` reference in the walk uses: no opacity, no taint,
+    /// nothing untracked. Only an exact list makes a claim.
+    pub exact: bool,
     /// Some declaration of the type could not be fully evaluated, so the list
     /// may be missing entries.
     pub tainted: bool,
@@ -81,15 +87,19 @@ pub struct ItemRead {
     pub untracked: bool,
 }
 
-/// One captured item: its identity, decoded, and the metadata the walk kept
-/// (which is only the package metadata names; see the item pass's
-/// `is_package_metadata_name`), keyed lowercase.
+/// One captured item: its identity, decoded, and every metadatum its declaration
+/// gave it, keyed lowercase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemRow {
     pub identity: String,
     pub metadata: BTreeMap<String, String>,
-    /// Metadata names the walk could not evaluate, lowercase.
+    /// Metadata names whose value the walk does not know, lowercase: one it
+    /// could not evaluate, or one an item definition may give a default (which
+    /// the walk does not apply).
     pub uncertain_metadata: Vec<String>,
+    /// Whether `metadata` and `uncertain_metadata` name every metadatum the
+    /// item carries. When false, a name in neither is unknown, not absent.
+    pub metadata_complete: bool,
 }
 
 impl State<'_> {
@@ -143,25 +153,47 @@ impl State<'_> {
 
     fn read_items(&self, item_type: &str) -> ItemRead {
         let key = item_key(item_type);
-        let items = self.evaluated_items.get(&key).map(|list| {
-            list.iter()
-                .map(|item| ItemRow {
-                    identity: item.identity.clone(),
-                    metadata: item
-                        .metadata
+        let row = |item: &EvaluatedItem| ItemRow {
+            identity: item.identity.clone(),
+            metadata: item
+                .exact_metadata
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
+                .collect(),
+            uncertain_metadata: item
+                .metadata_uncertainties
+                .iter()
+                .map(|u| u.name.to_ascii_lowercase())
+                .chain(
+                    item.exact_metadata
                         .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                    uncertain_metadata: item
-                        .metadata_uncertainties
-                        .iter()
-                        .map(|u| u.name.to_ascii_lowercase())
-                        .collect(),
-                })
-                .collect()
-        });
+                        .filter(|(_, v)| v.is_none())
+                        .map(|(k, _)| k.clone()),
+                )
+                .collect(),
+            metadata_complete: item.metadata_complete,
+        };
+        // The list an `@(…)` reference in the walk itself would take as exact,
+        // by the same predicate; else the table as captured, for reporting.
+        let view = item_list_view(item_type, self);
+        let exact = view.is_some();
+        let items = match view {
+            Some(items) => Some(items.iter().map(row).collect()),
+            None => self.evaluated_items.get(&key).map(|list| {
+                list.iter()
+                    .map(|item| {
+                        let mut item = item.clone();
+                        item.metadata_uncertainties.extend(
+                            helper_item_definition_default_uncertainties(&key, &item, self),
+                        );
+                        row(&item)
+                    })
+                    .collect()
+            }),
+        };
         ItemRead {
             items,
+            exact,
             tainted: self.tainted_item_lists.contains(&key),
             untracked: self.untracked_item_lists.contains(&key),
         }
@@ -258,13 +290,17 @@ mod tests {
         assert!(!reads.items["h"].tainted);
         assert_eq!(identities(&reads.items["T"]), ["x"]);
         assert!(reads.items["T"].tainted);
+        // No declaration, no taint, no opacity: exactly empty.
         assert_eq!(
             reads.items["Absent"],
             ItemRead {
-                items: None,
+                items: Some(Vec::new()),
+                exact: true,
                 tainted: false,
                 untracked: false
             }
         );
+        assert!(!reads.items["T"].exact);
+        assert!(reads.items["h"].exact);
     }
 }

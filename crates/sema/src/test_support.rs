@@ -415,13 +415,13 @@ pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(St
             let scheme = crate::function_ty::module_function_scheme(env, module, m)
                 .ok()?
                 .ty;
-            let scheme = flexed(&scheme, m.generic_parameters.len() as u32);
+            let scheme = flexed(env, &scheme, m.generic_parameters.len() as u32);
             let mut order = Vec::new();
             first_appearance(&scheme, &mut order);
             let renamed = renumber(&scheme, &order);
             Some((
                 env.member_display_name(module, idx).to_string(),
-                renamed.render(),
+                renamed.render(env),
             ))
         })
         .collect()
@@ -539,7 +539,7 @@ pub fn module_function_application_type(
     }
     let mut params = Vec::new();
     first_appearance(&ty, &mut params);
-    params.is_empty().then(|| ty.render())
+    params.is_empty().then(|| ty.render(env))
 }
 
 /// The type a **value use** of a function of type `ty` has in FCS: each
@@ -549,10 +549,10 @@ pub fn module_function_application_type(
 /// not `obj -> 'b`. `System.Object` is the one unsealed type
 /// [`crate::function_ty::module_function_scheme`] carries; `next` is the first
 /// unused parameter index.
-fn flexed(ty: &crate::Ty, mut next: u32) -> crate::Ty {
+fn flexed(env: &AssemblyEnv, ty: &crate::Ty, mut next: u32) -> crate::Ty {
     use crate::Ty;
     let mut flex = |t: &Ty| match t {
-        Ty::Named { path, args } if args.is_empty() && path == &["System", "Object"] => {
+        t if t.is_named(env.names(), &["System", "Object"]) => {
             next += 1;
             Ty::Param(next - 1)
         }

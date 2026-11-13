@@ -413,7 +413,10 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
         ("xs", "System.Int32[]"),
     ] {
         assert_eq!(
-            run.def_types.get(binder).map(Ty::render).as_deref(),
+            run.def_types
+                .get(binder)
+                .map(|t| t.render(&run.env))
+                .as_deref(),
             Some(expected),
             "the corpus prelude binder `{binder}` must ground (it feeds every argument position)"
         );
@@ -425,13 +428,13 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
         let fcs = run.fcs_types.get(&key).unwrap_or_else(|| {
             panic!(
                 "we typed {key:?} as {} but FCS has no node there (line {}: {:?})",
-                ty.render(),
+                ty.render(&run.env),
                 run.line(key.0),
                 source_line(&run.corpus.fsharp, key.0)
             )
         });
         assert_eq!(
-            &ty.render(),
+            &ty.render(&run.env),
             fcs,
             "type mismatch at line {}: {:?}",
             run.line(key.0),
@@ -492,12 +495,12 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
                 Some(fcs) => {
                     // The published type must be the chosen overload's return type.
                     if let Some(ty) = run.our_type(site)
-                        && ty.render() != fcs.ret
+                        && ty.render(&run.env) != fcs.ret
                     {
                         violations.push(format!(
                             "PUBLISHED THE WRONG RETURN TYPE\n    {}\n    ours: {}\n    FCS:  {}",
                             site.text,
-                            ty.render(),
+                            ty.render(&run.env),
                             fcs.ret,
                         ));
                     }
@@ -538,7 +541,7 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
         else {
             continue;
         };
-        let args = arg_types(site);
+        let args = arg_types(&run.env, site);
         // **Direct unit syntax is candidate-dependent** (§2.2, and the OV-7
         // review-1 probe): FCS reads `M()` as *zero* arguments when the candidate
         // admits arity 0, but as **one** (ill-typed) `unit` argument otherwise —
@@ -557,7 +560,7 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
                 site.text,
                 chosen.name,
                 our_params(chosen).join(", "),
-                args.iter().map(Ty::render).collect::<Vec<_>>(),
+                args.iter().map(|t| t.render(&run.env)).collect::<Vec<_>>(),
             ));
         }
         may_apply_checked += 1;
@@ -589,15 +592,15 @@ fn our_commit_agrees_with_fcs_or_we_deferred() {
 /// The inference types of a site's arguments, in order — the matcher's input.
 /// Derived from the generator's own argument-shape table, so it cannot drift
 /// from the source text it emitted.
-fn arg_types(site: &Site) -> Vec<Ty> {
+fn arg_types(env: &AssemblyEnv, site: &Site) -> Vec<Ty> {
     site.arg_types
         .iter()
         .map(|canon| match canon.strip_suffix("[]") {
             Some(elem) => Ty::Array {
-                elem: Box::new(Ty::named(elem)),
+                elem: Box::new(Ty::named(env, elem)),
                 rank: 1,
             },
-            None => Ty::named(canon),
+            None => Ty::named(env, canon),
         })
         .collect()
 }
@@ -1050,7 +1053,7 @@ fn classify(run: &Run, site: &Site) -> Outcome {
         return Outcome::PossiblyCurried;
     }
     let declaring = run.env.entity(handle).assembly.name.clone();
-    let args = arg_types(site);
+    let args = arg_types(&run.env, site);
     let survivors: Vec<_> = group
         .iter()
         .filter(|(_, m)| run.env.may_apply(m, &declaring, &args))

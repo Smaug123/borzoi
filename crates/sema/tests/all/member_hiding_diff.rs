@@ -164,6 +164,7 @@ impl Theirs {
 /// One loaded run of the corpus: both sides' answers, indexed by site line.
 struct Run {
     corpus: Corpus,
+    env: AssemblyEnv,
     inferred: InferredFile,
     line_starts: Vec<usize>,
     ours: HashMap<usize, Ours>,
@@ -295,6 +296,7 @@ fn run() -> Run {
 
     Run {
         corpus,
+        env,
         inferred,
         line_starts: starts,
         ours,
@@ -336,7 +338,7 @@ impl Run {
             .types()
             .iter()
             .find(|(r, _)| (usize::from(r.start()), usize::from(r.end())) == range)
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&self.env))
     }
 
     /// FCS's first error on `line`, rendered for a failure message.
@@ -428,10 +430,10 @@ fn every_published_type_is_confirmed_by_the_types_oracle() {
         let (start, end) = (usize::from(range.start()), usize::from(range.end()));
         let line = line_at(&run.line_starts, start);
         match run.fcs_types.get(&(start, end)) {
-            Some(fcs) if *fcs == ty.render() => checked += 1,
+            Some(fcs) if *fcs == ty.render(&run.env) => checked += 1,
             Some(fcs) => wrong.push(format!(
                 "  line {line:>4}: we typed {start}..{end} as `{}`, FCS says `{fcs}`",
-                ty.render()
+                ty.render(&run.env)
             )),
             // FCS's typed tree omits an expression it could not check, and
             // reshapes ones it elaborates — a method group read as a value becomes

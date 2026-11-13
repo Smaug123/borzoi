@@ -4,7 +4,8 @@
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
 > product on ids), 5 (the remaining path and name keys, in three parts), 6a
-> (export-declaration paths on ids), 6b (definitions' names on ids) and 9
+> (export-declaration paths on ids), 6b (definitions' names on ids), 6c
+> (exports' published names on ids), 7 (`Ty` paths on ids) and 9
 > (`OpenScope`) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
@@ -886,6 +887,80 @@ census is unchanged. The whole-corpus dump of 6a, with each definition printed
 as its spelling, range, kind and provisionality, is byte-identical before and
 after, against both bases.
 
+**6c, implemented** (`resolve/decl_path.rs`, `resolve/model.rs`):
+
+- **`ExportedItem` on ids.** An export's name is an `ExportName` (the
+  definition's `Name`, which the walk already holds) and its value path an
+  `Option<DeclPath>`: when `Some`, it is the declaration's own path, which the
+  walk interns for the `ExportDecl` anyway, so an export builds no path and
+  clones no string. `FileExportIndices::derive` asserts both halves of that:
+  the value path is the declaration's, and it ends in the published name.
+- **`SigExport` on ids.** Its name is an `ExportName`, its path and
+  type-qualified path `DeclPath`s interned under the signature container's
+  id, and its value path a `bool`: the signature's value path was always
+  `Some(path)` or `None`, so a `bool` says the same with no way to disagree
+  with `path`. Materialising it at the implementation's slot clones ids.
+  The screen's exemption sets (`exported_value_paths`,
+  `exported_case_paths`) are string-keyed, as 5a left the signature screens,
+  and spell the paths once per signature.
+- **The lookups.** The ten same-file scans of `Resolver::items` that read
+  `qualified` ask the `DeclPath`: `is` (the path is exactly a key's),
+  `is_child_of`, `is_strictly_under` and `accessible_from` (the access root's
+  id against the site's prefix ids). Each scan looks its key up once
+  (`PathKey::of`) and compares integers per item where it compared a
+  `Vec<String>` before; a key the table never interned matches no item, since
+  every value path was interned. The scan that hands a case's path to
+  `ProjectItems::module_value_may_be_constant_pattern` spells it there.
+- **The public API.** `ExportedItem::name(env)` and `qualified_path(env)`
+  read through the env the export was resolved against, as `Def::spelling`
+  does. Outside sema, three LSP tests in `semantic.rs` read export names and
+  now take the fold's env from `resolved_project_and_env_for`.
+- **Not converted**: `ExportedItem::repr_access_root`, the container of a
+  union whose representation is `private`. It feeds `ProjectItems`'
+  string-keyed `case_repr_roots`, which 5a left, and only such unions carry
+  one.
+- **Lockstep.** Under `interning-reference` in a debug build an
+  `ExportName` carries the text the walk published, and reading it, comparing
+  two, and re-keying assert that the id spells it; a value path is a
+  `DeclPath`, which carries its spelling (6a), and each new question asserts
+  its answer against the string expression it replaced. The property test
+  `a_declaration_path_answers_as_its_segments_do` holds the four questions
+  to those expressions over generated tables and sites, and
+  `an_export_name_answers_as_its_text_does` holds `ExportName`. Two tests
+  were written against the string fields first and passed there:
+  `exported_names` pins the name, value path, case kind and binder file of
+  every way the walk makes an export (quoted and operator names, a private
+  value, union, enum, `[<RequireQualifiedAccess>]` and `exception` cases,
+  active-pattern cases, a nested module, a headerless file, and a signature's
+  materialised exports with a contested name), and
+  `signature_exports_resolve_the_same_in_any_interning_order` re-keys a
+  signature-bearing project, which the interning-order test had not covered.
+  Five planted bugs fail: a child test that accepts any proper ancestor (the
+  property, and the lockstep in 14 cases of `resolve_module_opens` and its
+  neighbours); an access root read one segment up (the property, and the
+  lockstep in 10 cases across the suite, `case_access_grid` and
+  `value_access_open_grid` among them); re-keying that skips the exports'
+  names, or a signature's stashed exports (the interning-order tests, by the
+  debug tag check, the second only in the new signature case); a signature
+  export materialised with a value path its container contests
+  (`exported_names`); and an export's name interned from the definition's
+  spelling (the `ExportName` check, in `exported_names`, `resolve_project`
+  and `resolve_scoping`). An access root read at the path's last segment
+  instead of at its own length fails only the property: the walk never makes
+  an access root as long as the path.
+
+**Measured** (6c, on 6b at `0b97b6e6`, whose sema main's `24dc0a9a` matches): `resolve_file` 864.7 → 861.3
+instructions per byte (−0.4%), allocations 0.693 → 0.686 per byte (−1.0%);
+the whole tree as one project (`resolve_project`, the throwaway variant of
+5a) 876.7 → 868.4 (−0.9%), allocations 0.617 → 0.609 per byte (−1.3%); infer
+173.2 → 173.3; parse 514.8 → 510.0, with its code unchanged. As for 6a and 6b,
+the stage buys the identity domain, not speed. The whole-corpus dump of 6b,
+with each export printed as its name, value path and the rest of its fields
+in 6b's layout, and extended by every directory holding a `.fsi` folded as
+one project with each signature before its implementation (1,185
+implementation files and 361 signature slots, 6,595 signature-derived
+exports), is byte-identical before and after.
+
 ### Stage 7: `Ty` paths on ids
 
 **Dependencies**: Stage 3, and 5c for `completion`'s member lookups by path.
@@ -899,6 +974,84 @@ identity, that equality and hashing agree with the string form's, and that
 
 **Expected**: small on today's inference, which publishes few types: infer is
 about 6% of the pipeline.
+
+**Premise, re-measured** at 6c's head (`7cf250bd`): infer 173.3 instructions
+per byte beside resolve's 861.0 and parse's 510; a Time Profiler run of
+`sema_counts` (1,700 samples in `infer_file`) puts `Ty`'s drop at 4.4%
+inclusive, `Vec<String>` and `String` clones at 3.5% each, `Ty`'s clone at
+2.6%: the paths' copies were most of what `Ty` cost, as D4 says.
+
+**Implemented** (`ty.rs`, `ty/reference.rs`):
+
+- **`TyPath`.** `Ty::Named` and `Ty::Project` carry a `TyPath`, a `PathId`
+  interned when the type is built, so a nullary type clones without
+  allocating and two paths compare as integers. It is public, opaque, and
+  has no `Ord`; `segments(env)` reads it back. Building a type
+  (`Ty::named(env, …)`, `TyPath::of`) and rendering one (`render(env)`,
+  `render_fsharp(env)`) take the env it belongs to, as `Def::spelling` does.
+  The read sites that compare a path with a constant (`unit`, `obj`, the
+  sealed primitives, the builtin operator kinds) read its segments or ask
+  `TyPath::is`, which builds nothing; the ones that ask the env by
+  `&[String]` (`wake_member`, `satisfies`, `is_sealed`, the overload
+  matcher) spell it there.
+- **Inference's path maps.** `project_types`, `ProjectRecords`,
+  `sealed_project_types` and `PrecedingTypes`' earlier-file types hold
+  `TyPath`s, interned once per declared type. A file's contribution sorts its
+  records by the paths' text, so two contributions compare whatever order
+  their tables met the paths in.
+- **Outside sema.** Hover's two type renderings take the env the fold ran
+  against, completion spells the receiver's path through it, and
+  corpus-diff's `parse_canonical` reads FCS's text into a table of its own.
+  The LSP's incremental-against-cold inference test re-keys the warm fold
+  onto the cold env's table (`test_support::names::rekeyed_inference`).
+- **Lockstep.** Under `interning-reference` in a debug build a `TyPath`
+  carries the segments it was built from (an `Arc`): construction asserts
+  that its id spells them, and reading it, comparing two, asking `is`, and
+  both renderers (against `reference`'s string-form renderers, over the
+  carried segments) assert their answer agrees.
+- **Oracles.** `ty::spelled_form` holds the interned form to the string form
+  it replaced (`reference::SpelledTy`, with the renderers as they read
+  segments) over generated types, whose paths share prefixes and include
+  every path the renderers treat specially, in a table pre-filled with
+  decoys: converting to and from the string form is the identity, two types
+  are equal exactly when their spellings are, a path `is` exactly its own
+  segments, and both renderings are the string form's. The interning-order test gains inference: a generated
+  two-file project (assembly types, FSharp.Core applications, the first
+  file's record and union, a member access) and the corpus sample, each
+  inferred against two tables, publish the same rendered types and the
+  same fold after re-keying. Both were written against the string-keyed
+  `Ty` first and passed there.
+- **Planted bugs.** Five fail: interning a path under its parent (the
+  construction check, in 20 cases of `ty::` and 126 of the inference
+  differentials and the interning-order test); rendering a project type
+  without its first segment (the property, the render lockstep in 8
+  inference differentials and the interning-order corpus sample); `is`
+  answering for a prefix of the path (the property `is` was added for: no
+  test reached the shape before, since `unit` and `obj` have no longer path
+  in use); re-keying an inference without its receiver types (the
+  interning-order test's whole-fold comparison, by the debug tag check, once
+  its generator wrote a member access); and sorting a contribution's records
+  by arity alone, which leaves their order to the map's (an incremental fold
+  stops reusing the files after an unchanged one,
+  `body_edit_preserves_full_inference_reuse`).
+
+**Measured** (on 6c at `7cf250bd`): `infer_file` 173.3 → 158.6 instructions
+per byte (−8.5%), allocations 0.128 → 0.093 per byte (−27%), bytes allocated
+10.0 → 7.5 per byte; `resolve_file` 861.0 → 860.8 and `resolve_project`
+868.9 → 867.3, unchanged as expected; parse 509.9 → 510.7, its code
+unchanged. The whole-corpus dump of 6c, extended by every directory's
+implementation files inferred as one project (each file's node and binder
+types and every export's published type: 6,748 file inferences, the signed
+directories' included), is
+byte-identical before and after, each type printed in 6c's Debug layout.
+
+**Not part of this stage**: the string keys 6c listed as left over from 5a,
+`ExportedItem::repr_access_root` with `ProjectItems::case_repr_roots`, and
+the signature screen's `exported_value_paths` and `exported_case_paths`.
+They are resolver paths, not `Ty` paths, and belong with the rest of 5a's
+not-converted list (`namespace_paths`, the hidden-value and opaque-case
+sets, the simple-name indexes): a follow-up to 5a, to be taken when a profile
+of resolve shows them, which none has.
 
 ### Stage 8 (gated): hash-consed `Ty`
 

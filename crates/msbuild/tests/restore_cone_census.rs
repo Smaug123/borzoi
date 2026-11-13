@@ -674,6 +674,72 @@ fn dedicated_bucket(parsed: &borzoi_msbuild::ParsedProject, item_type: &str) -> 
     })
 }
 
+/// How our captured items' metadata compares with MSBuild's, item by item, for
+/// a list whose identities agree with MSBuild's in order.
+///
+/// A metadatum we hold and do not mark uncertain must be MSBuild's value (an
+/// absent one reads as ""), or the census panics: a target batching over the
+/// list would read it. A name is counted as agreeing when every item agrees
+/// on it, uncertain when we mark it so on some item, and missing when some
+/// item lacks a value MSBuild gives it.
+fn metadata_verdict(
+    key: &str,
+    item_type: &str,
+    rows: &[borzoi_msbuild::test_support::ItemRow],
+    theirs: &[&Value],
+) -> String {
+    let mut agree = BTreeSet::new();
+    let mut uncertain = BTreeSet::new();
+    let mut missing = BTreeSet::new();
+    for (row, item) in rows.iter().zip(theirs) {
+        let msbuild: BTreeMap<String, &str> = item["metadata"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.as_str().unwrap()))
+            .collect();
+        let names: BTreeSet<&String> = msbuild.keys().chain(row.metadata.keys()).collect();
+        for name in names {
+            let expected = msbuild.get(name).copied().unwrap_or_default();
+            if row.uncertain_metadata.contains(name) {
+                uncertain.insert(name.clone());
+                continue;
+            }
+            match row.metadata.get(name) {
+                Some(ours) => {
+                    assert!(
+                        ours == expected,
+                        "{key}: {item_type} item {:?} has %({name}) {ours:?} in our tables, \
+                         {expected:?} in MSBuild's",
+                        row.identity
+                    );
+                    agree.insert(name.clone());
+                }
+                None if !row.metadata_complete => {
+                    uncertain.insert(name.clone());
+                }
+                None if expected.is_empty() => {
+                    agree.insert(name.clone());
+                }
+                None => {
+                    missing.insert(name.clone());
+                }
+            }
+        }
+    }
+    agree.retain(|name| !uncertain.contains(name) && !missing.contains(name));
+    let mut verdict = format!(", metadata agrees on {} names", agree.len());
+    if !uncertain.is_empty() {
+        let names: Vec<&str> = uncertain.iter().map(String::as_str).collect();
+        verdict.push_str(&format!(", uncertain {}", names.join(" ")));
+    }
+    if !missing.is_empty() {
+        let names: Vec<&str> = missing.iter().map(String::as_str).collect();
+        verdict.push_str(&format!(", missing {}", names.join(" ")));
+    }
+    verdict
+}
+
 /// A short, host-independent spelling of why a value is untrusted.
 fn cause(cause: &borzoi_msbuild::UntrustedCause) -> String {
     use borzoi_msbuild::UntrustedCause::*;
@@ -699,8 +765,9 @@ fn cause(cause: &borzoi_msbuild::UntrustedCause) -> String {
 /// A property value we hold and trust must be MSBuild's, or the census panics:
 /// that is the value a target would read. Everything else is a verdict: unset
 /// where MSBuild sets it, untrusted, or inexact, which is A₁.3's worklist. An
-/// item type's verdict says how many items MSBuild's evaluation holds, and
-/// whether our tables hold the same identities untainted.
+/// item type's verdict says how many items MSBuild's evaluation holds, whether
+/// our tables hold the same identities untainted, and how their metadata
+/// compares ([`metadata_verdict`]).
 ///
 /// Our evaluation resolves the SDK the cone ran under, at its real path, as
 /// the oracle does.
@@ -860,19 +927,12 @@ fn reads(
                     } else {
                         "identities differ"
                     };
-                    let names: BTreeSet<String> = theirs
-                        .iter()
-                        .flat_map(|i| i["metadata"].as_object().unwrap().keys())
-                        .map(|k| k.to_ascii_lowercase())
-                        .collect();
-                    let kept: BTreeSet<&String> =
-                        rows.iter().flat_map(|r| r.metadata.keys()).collect();
-                    verdict.push_str(&format!(
-                        "; ours {}, {agreement}, metadata kept for {} of {} names",
-                        rows.len(),
-                        kept.len(),
-                        names.len()
-                    ));
+                    verdict.push_str(&format!("; ours {}, {agreement}", rows.len()));
+                    // A list that is not exact makes no claim: two declarations may
+                    // share an identity and differ in metadata.
+                    if identities == msbuild_identities && read.exact {
+                        verdict.push_str(&metadata_verdict(&subject.key, item_type, rows, &theirs));
+                    }
                 }
             }
             if read.tainted {
@@ -880,6 +940,9 @@ fn reads(
             }
             if read.untracked {
                 verdict.push_str(", untracked");
+            }
+            if !read.exact && !read.tainted && !read.untracked {
+                verdict.push_str(", not exact");
             }
         }
         if text.written_items.contains(&item_type.to_ascii_lowercase()) {

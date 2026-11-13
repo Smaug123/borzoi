@@ -512,11 +512,12 @@ use crate::hash::{HashMap, HashSet};
 use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
+use crate::names::NameTable;
 use crate::node_span::NodeSpans;
 use crate::overload::arity_window;
 use crate::qnof::QualifiedNameOfFile;
 use crate::resolve::{CaseKind, ItemId, Resolution, ResolvedFile};
-use crate::ty::{MAX_TYPE_DEPTH, Ty, TyVid, TypeBudgetExceeded};
+use crate::ty::{MAX_TYPE_DEPTH, Ty, TyPath, TyVid, TypeBudgetExceeded};
 use crate::unify::{InferTable, TypeWalks};
 
 /// Per-file inference result. Two views, both populated only when a type can be
@@ -561,7 +562,7 @@ pub struct InferredFile {
     /// [`Ty::Project`], with their path and arity, so a later file's
     /// annotation naming one ([`Resolution::EarlierFileType`]) bridges exactly
     /// as this file's would.
-    project_types: HashMap<DefId, (Vec<String>, usize)>,
+    project_types: HashMap<DefId, (TyPath, usize)>,
     /// The cases of this file's unions inference types, by the case's item,
     /// so a later file's use of one types exactly as this file's would.
     project_cases: HashMap<ItemId, ProjectCase>,
@@ -579,6 +580,59 @@ pub struct InferredFile {
 }
 
 impl InferredFile {
+    /// This file's inference with every type's paths translated from `from`'s
+    /// table to `to`'s, so it compares with an inference made against `to`.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey_names(&self, from: &NameTable, to: &NameTable) -> InferredFile {
+        let InferredFile {
+            types,
+            def_types,
+            member_resolutions,
+            incompleteness,
+            receiver_types,
+            module_values,
+            project_types,
+            project_cases,
+            constructor_names,
+            project_records,
+            deepest_expr_depth,
+            type_budget_exceeded,
+            type_walks,
+        } = self;
+        let tys = |map: &HashMap<TextRange, Ty>| {
+            map.iter()
+                .map(|(range, ty)| (*range, ty.rekey(from, to)))
+                .collect()
+        };
+        InferredFile {
+            types: tys(types),
+            def_types: def_types
+                .iter()
+                .map(|(def, ty)| (*def, ty.rekey(from, to)))
+                .collect(),
+            member_resolutions: member_resolutions.clone(),
+            incompleteness: incompleteness.clone(),
+            receiver_types: tys(receiver_types),
+            module_values: module_values
+                .iter()
+                .map(|(def, value)| (*def, value.rekey(from, to)))
+                .collect(),
+            project_types: project_types
+                .iter()
+                .map(|(def, (path, arity))| (*def, (path.rekey(from, to), *arity)))
+                .collect(),
+            project_cases: project_cases
+                .iter()
+                .map(|(id, case)| (*id, case.rekey(from, to)))
+                .collect(),
+            constructor_names: constructor_names.clone(),
+            project_records: rekey_records(project_records, from, to),
+            deepest_expr_depth: *deepest_expr_depth,
+            type_budget_exceeded: *type_budget_exceeded,
+            type_walks: *type_walks,
+        }
+    }
+
     /// How deeply the walk nested expressions at its deepest: the most
     /// expression levels it had open at once. The walk recurses once per
     /// level, so this is what its stack grows with; the stack-bound test
@@ -694,7 +748,7 @@ impl InferredFile {
 
     /// Every type this file declares that an annotation bridges, with its
     /// path and arity. See [`Self::project_types`](InferredFile).
-    pub(crate) fn project_types(&self) -> &HashMap<DefId, (Vec<String>, usize)> {
+    pub(crate) fn project_types(&self) -> &HashMap<DefId, (TyPath, usize)> {
         &self.project_types
     }
 
@@ -1006,7 +1060,7 @@ pub(crate) struct ProjectCase {
 
 /// The records of the project inference reads field accesses on, by the
 /// path and arity of their [`Ty::Project`] (one type per assembly, FS0249).
-pub(crate) type ProjectRecords = HashMap<(Vec<String>, usize), ProjectRecord>;
+pub(crate) type ProjectRecords = HashMap<(TyPath, usize), ProjectRecord>;
 
 /// A record the project declares, as inference reads a field access on it
 /// ([`Gen::project_type_schemes`]).
@@ -1020,6 +1074,34 @@ pub(crate) struct ProjectRecord {
     /// file's record (as [`ProjectCase::scope`]); such a record is never
     /// published.
     scope: Option<TextRange>,
+}
+
+/// `records`, their types' paths translated from `from`'s table to `to`'s.
+#[cfg(feature = "test-support")]
+pub(crate) fn rekey_records(
+    records: &ProjectRecords,
+    from: &NameTable,
+    to: &NameTable,
+) -> ProjectRecords {
+    records
+        .iter()
+        .map(|((path, arity), record)| {
+            let ProjectRecord {
+                record: ty,
+                fields,
+                scope,
+            } = record;
+            let record = ProjectRecord {
+                record: ty.rekey(from, to),
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.rekey(from, to)))
+                    .collect(),
+                scope: *scope,
+            };
+            ((path.rekey(from, to), *arity), record)
+        })
+        .collect()
 }
 
 impl ProjectRecord {
@@ -1041,6 +1123,27 @@ enum DeclaredFields {
 }
 
 impl ProjectCase {
+    /// The case with its scheme's paths translated from `from`'s table to
+    /// `to`'s.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> ProjectCase {
+        let ProjectCase {
+            name,
+            scheme,
+            key,
+            scope,
+        } = self;
+        ProjectCase {
+            name: name.clone(),
+            scheme: UnionCaseScheme {
+                fields: scheme.fields.iter().map(|f| f.rekey(from, to)).collect(),
+                union: scheme.union.rekey(from, to),
+            },
+            key: *key,
+            scope: *scope,
+        }
+    }
+
     /// Whether a later file may read the case.
     pub(crate) fn publishable(&self) -> bool {
         self.scope.is_none()
@@ -1696,7 +1799,7 @@ struct Gen<'a> {
     /// where that path is provably the written one
     /// ([`Self::project_type_paths`]); a type absent here is not bridged.
     /// Computed once in [`infer_file`].
-    project_types: HashMap<DefId, (Vec<String>, usize)>,
+    project_types: HashMap<DefId, (TyPath, usize)>,
     /// The path of the implicit module a headerless file's contents live
     /// under, when the file's name is known and FCS's spelling of it is
     /// modelled ([`infer_named_file`]); `None` for any other file.
@@ -1724,7 +1827,7 @@ struct Gen<'a> {
     /// [`Self::project_records`]) and those earlier files published. F#
     /// seals both, so no type coerces into one ([`Self::no_subsumption_ty`]).
     /// Computed once in [`infer_file`].
-    sealed_project_types: HashMap<Vec<String>, HashSet<usize>>,
+    sealed_project_types: HashMap<TyPath, HashSet<usize>>,
     /// The defining ranges of the in-file binders a use of which F# may reject
     /// for their attributes ([`Self::rejected_use_defs`]); computed once in
     /// [`infer_file`].
@@ -2206,7 +2309,7 @@ impl<'a> Gen<'a> {
     /// - the type is declared twice: another definition in its container has
     ///   its name and arity (FS0037), or an earlier file published its path
     ///   (FS0249). FCS rejects the second and keeps one, so neither is read.
-    fn project_type_paths(&self, file: &ImplFile) -> HashMap<DefId, (Vec<String>, usize)> {
+    fn project_type_paths(&self, file: &ImplFile) -> HashMap<DefId, (TyPath, usize)> {
         let env = self.env;
         let type_names: HashSet<String> = file
             .syntax()
@@ -2332,6 +2435,7 @@ impl<'a> Gen<'a> {
                 continue;
             }
             let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
+            let path = TyPath::new(env.names(), &path);
             if self.preceding.declares_type(&path, arity) {
                 continue;
             }
@@ -2365,7 +2469,7 @@ impl<'a> Gen<'a> {
         }
         // Two blocks of one namespace are one container: a path and arity
         // computed twice is a type declared twice.
-        let mut paths: HashMap<(Vec<String>, usize), usize> = HashMap::default();
+        let mut paths: HashMap<(TyPath, usize), usize> = HashMap::default();
         for key in out.values() {
             *paths.entry(key.clone()).or_default() += 1;
         }
@@ -3447,7 +3551,7 @@ impl<'a> Gen<'a> {
         if self.env.entity_full_name(handle) != path.join(".") {
             return None;
         }
-        Some(Ty::named_path(path))
+        Some(Ty::named_path(self.env.names(), &path))
     }
 
     /// Bridge a **generic application** whose head resolved to `handle` and
@@ -3535,7 +3639,10 @@ impl<'a> Gen<'a> {
         ) {
             return None;
         }
-        Some(Ty::Named { path, args })
+        Some(Ty::Named {
+            path: TyPath::new(self.env.names(), &path),
+            args,
+        })
     }
 
     /// On a **complete** function binding, emit `Eq(slot, binder_var)` for each
@@ -3648,7 +3755,7 @@ impl<'a> Gen<'a> {
             // `Expr::MeasureLit`, not `Expr::Const`, so it is excluded
             // structurally — its inner numeric token is *not* the measured type.
             Expr::Const(c) => {
-                let Some(ty) = literal_ty(c) else {
+                let Some(ty) = literal_ty(self.env.names(), c) else {
                     // A deferred literal (`USER_NUM_LIT`, a source-location
                     // identifier) is unmodelled — its type is not fixed even in
                     // isolation — so the binding must not generalise.
@@ -4477,7 +4584,7 @@ impl<'a> Gen<'a> {
                 .iter()
                 .map(|v| self.table.resolve(&Ty::Var(*v)))
                 .collect();
-            let verdict = builtin_verdict(&builtin, &tys);
+            let verdict = builtin_verdict(self.env.names(), &builtin, &tys);
             if let Err(gap) = verdict {
                 self.mark_incomplete(Incomplete::Builtin(gap));
             }
@@ -4959,7 +5066,7 @@ impl<'a> Gen<'a> {
                     }
                     let v = self.table.fresh();
                     self.poison.push(v);
-                    if e != Ty::named(OBJECT) {
+                    if !e.is_named(self.env.names(), &OBJECT_PATH) {
                         self.bounded_flex.push(v);
                     }
                     Ty::Var(v)
@@ -5021,7 +5128,7 @@ impl<'a> Gen<'a> {
             // The static receiver's type is the rooting entity itself, ground at
             // generation time.
             let recv = self.table.fresh();
-            self.eq(Ty::Var(recv), Ty::named_path(path));
+            self.eq(Ty::Var(recv), Ty::named_path(self.env.names(), &path));
             let result = self.table.fresh();
             self.has_member(
                 recv,
@@ -5506,7 +5613,9 @@ impl<'a> Gen<'a> {
         match ty {
             // A sealed BCL primitive; `obj` and other nullary named types are
             // not.
-            Ty::Named { path, args } if args.is_empty() => is_sealed_primitive(path),
+            Ty::Named { path, args } if args.is_empty() => {
+                is_sealed_primitive(&path.segments_in(self.env.names()))
+            }
             // A sealed generic application (`'a list`, `int option`, a generic
             // record or struct): a sealed type has no subtype to coerce into
             // it, and its arguments are invariant, so the equality FCS tries
@@ -5523,7 +5632,7 @@ impl<'a> Gen<'a> {
             // with subtypes.
             Ty::Project { path, args } => self
                 .sealed_project_types
-                .get(path.as_slice())
+                .get(path)
                 .is_some_and(|arities| arities.contains(&args.len())),
             // Arrays, functions, and quantified `Param`s (never bound into the
             // table) are all excluded.
@@ -5673,7 +5782,7 @@ impl<'a> Gen<'a> {
                             .ident()
                             .is_some_and(|tok| self.is_first_occurrence(&tok)) =>
                     {
-                        self.eq(Ty::Var(slot), Ty::named("System.Boolean"))
+                        self.eq(Ty::Var(slot), Ty::named(self.env, "System.Boolean"))
                     }
                     // A condition on a parameter something earlier may have
                     // fixed: FCS reports the condition, it does not retype.
@@ -6056,7 +6165,8 @@ impl<'a> Gen<'a> {
                     ) => {
                         let literal = c.literal().expect("a literal kind");
                         Ok(PatShape::Const(
-                            literal_kind_ty(literal.kind()).expect("a typed literal"),
+                            literal_kind_ty(self.env.names(), literal.kind())
+                                .expect("a typed literal"),
                             literal_ctor(literal.kind(), literal.text()),
                         ))
                     }
@@ -6299,10 +6409,10 @@ impl<'a> Gen<'a> {
     /// [`Self::sealed_project_types`]: every union a case inference reads
     /// belongs to, and every record whose fields it reads, in this file or an
     /// earlier one.
-    fn sealed_project_types(&self) -> HashMap<Vec<String>, HashSet<usize>> {
+    fn sealed_project_types(&self) -> HashMap<TyPath, HashSet<usize>> {
         let own_unions = self.project_cases.values().map(|pc| &pc.scheme.union);
         let own_records = self.project_records.values().map(|r| &r.record);
-        let mut out: HashMap<Vec<String>, HashSet<usize>> = HashMap::default();
+        let mut out: HashMap<TyPath, HashSet<usize>> = HashMap::default();
         for ty in own_unions
             .chain(own_records)
             .chain(self.preceding.sealed_types())
@@ -6405,7 +6515,7 @@ impl<'a> Gen<'a> {
                 t.clone()
             }
             PatShape::Wildcard => Ty::Var(self.table.fresh()),
-            PatShape::Unit => Ty::named(UNIT),
+            PatShape::Unit => Ty::named(self.env, UNIT),
             PatShape::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
             }
@@ -6909,6 +7019,7 @@ impl<'a> Gen<'a> {
                         still_pending.push(m);
                     }
                     Ty::Named { path, .. } => {
+                        let path = path.spelled(self.env.names());
                         if self.wake_member(&path, &m.name, m.result, m.use_range, &m.kind) {
                             woke = true;
                             if m.late(latest_discharge) {
@@ -7398,7 +7509,7 @@ impl<'a> Gen<'a> {
         // `member_ty_ref` from `self.env` would otherwise conflict with the insert
         // / unify below); `type_ref_to_ty` yields an owned `Ty` or `None`, and the
         // void check reads the `TypeRef` while it is still borrowed.
-        let member_ty = type_ref_to_ty(member_ty_ref);
+        let member_ty = type_ref_to_ty(self.env.names(), member_ty_ref);
         // A `void`-returning method's call type is F# `unit`, which this phase does
         // not model — so its type defers even though its identity is known (a data
         // member is never `void`, so this is a no-op for `kind = Data`). Bridging
@@ -7937,14 +8048,14 @@ impl BuiltinKind {
 /// The [`BuiltinKind`] of `ty`, if it is one: exactly the type, with no
 /// argument. An enum, a measure-annotated number and every other type are
 /// not, and a rule over them is not modelled.
-fn builtin_kind(ty: &Ty) -> Option<BuiltinKind> {
+fn builtin_kind(names: &NameTable, ty: &Ty) -> Option<BuiltinKind> {
     let Ty::Named { path, args } = ty else {
         return None;
     };
     if !args.is_empty() {
         return None;
     }
-    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let path = path.segments_in(names);
     let kind = match path.as_slice() {
         ["System", "SByte" | "Int16" | "Int32" | "Int64" | "IntPtr"] => BuiltinKind::Signed,
         [
@@ -7962,8 +8073,8 @@ fn builtin_kind(ty: &Ty) -> Option<BuiltinKind> {
 
 /// Whether `ty` is a type a FSharp.Core conversion function may return: a
 /// number or `char`.
-pub(crate) fn is_conversion_target(ty: &Ty) -> bool {
-    builtin_kind(ty).is_some_and(|k| k.numeric() || k == BuiltinKind::Char)
+pub(crate) fn is_conversion_target(names: &NameTable, ty: &Ty) -> bool {
+    builtin_kind(names, ty).is_some_and(|k| k.numeric() || k == BuiltinKind::Char)
 }
 
 /// The type of an application of `builtin` to operands of types `operands`
@@ -7986,11 +8097,15 @@ pub(crate) fn is_conversion_target(ty: &Ty) -> bool {
 /// fails. Anything else off the list is [`BuiltinGap::Undecided`] — another
 /// type's own operator members (`DateTime - DateTime`), an enum, a unit of
 /// measure.
-fn builtin_verdict(builtin: &Builtin, operands: &[Ty]) -> Result<Ty, BuiltinGap> {
+fn builtin_verdict(
+    names: &NameTable,
+    builtin: &Builtin,
+    operands: &[Ty],
+) -> Result<Ty, BuiltinGap> {
     if !operands.iter().all(Ty::is_ground) {
         return Err(BuiltinGap::OpenOperand);
     }
-    let kinds: Vec<Option<BuiltinKind>> = operands.iter().map(builtin_kind).collect();
+    let kinds: Vec<Option<BuiltinKind>> = operands.iter().map(|t| builtin_kind(names, t)).collect();
     let binary = |admits: &dyn Fn(BuiltinKind) -> bool| match (operands, kinds.as_slice()) {
         ([a, b], [Some(ka), Some(kb)]) if a == b && admits(*ka) => {
             debug_assert_eq!(ka, kb);
@@ -8019,12 +8134,12 @@ fn builtin_verdict(builtin: &Builtin, operands: &[Ty]) -> Result<Ty, BuiltinGap>
         // parameters are independent, so nothing is expected of its right
         // operand and nothing is widened.
         Builtin::Bitwise
-            if operands.get(1) == Some(&Ty::named("System.Int32"))
+            if operands.get(1) == Some(&Ty::named_in(names, "System.Int32"))
                 && operands.first().is_some_and(|a| {
                     [
-                        Ty::named("System.Int64"),
-                        Ty::named("System.IntPtr"),
-                        Ty::named("System.Double"),
+                        Ty::named_in(names, "System.Int64"),
+                        Ty::named_in(names, "System.IntPtr"),
+                        Ty::named_in(names, "System.Double"),
                     ]
                     .contains(a)
                 }) =>
@@ -8033,7 +8148,9 @@ fn builtin_verdict(builtin: &Builtin, operands: &[Ty]) -> Result<Ty, BuiltinGap>
         }
         Builtin::Bitwise => binary(&BuiltinKind::integer),
         Builtin::Shift => match (operands, kinds.as_slice()) {
-            ([a, b], [Some(ka), _]) if ka.integer() && *b == Ty::named("System.Int32") => {
+            ([a, b], [Some(ka), _])
+                if ka.integer() && *b == Ty::named_in(names, "System.Int32") =>
+            {
                 Ok(a.clone())
             }
             ([_, _], [Some(ka), Some(kb)]) if ka.integer() && *kb != BuiltinKind::Decimal => {
@@ -8115,13 +8232,13 @@ fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
         }),
         Ty::Array { elem, .. } => satisfies(env, elem, needs),
         Ty::Named { path, args } if args.is_empty() => {
-            if is_sealed_primitive(path) {
-                if needs == Needs::Comparison && *ty == Ty::named(UNIT) {
+            if is_sealed_primitive(&path.segments_in(env.names())) {
+                if needs == Needs::Comparison && ty.is_named(env.names(), &UNIT_PATH) {
                     return Verdict::Undecided;
                 }
                 return Verdict::Holds;
             }
-            if *ty == Ty::named(OBJECT) {
+            if ty.is_named(env.names(), &OBJECT_PATH) {
                 return match needs {
                     Needs::Equality => Verdict::Holds,
                     Needs::Comparison => Verdict::Fails,
@@ -8130,6 +8247,7 @@ fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
             if needs == Needs::Comparison {
                 return Verdict::Undecided;
             }
+            let path = path.spelled(env.names());
             let Some((name, namespace)) = path.split_last() else {
                 return Verdict::Undecided;
             };
@@ -8546,12 +8664,9 @@ fn free_vars(ty: &Ty, out: &mut Vec<TyVid>) {
     }
 }
 
-fn is_sealed_primitive(path: &[String]) -> bool {
+fn is_sealed_primitive(path: &[&str]) -> bool {
     matches!(
-        path.iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .as_slice(),
+        path,
         ["System", "Int32"]
             | ["System", "SByte"]
             | ["System", "Byte"]
@@ -8579,8 +8694,11 @@ fn is_sealed_primitive(path: &[String]) -> bool {
 /// F#'s `unit`, as FCS names it.
 const UNIT: &str = "Microsoft.FSharp.Core.Unit";
 
+/// [`UNIT`]'s segments.
+const UNIT_PATH: [&str; 4] = ["Microsoft", "FSharp", "Core", "Unit"];
+
 /// `System.Object`, the bound of a loosening every type meets.
-const OBJECT: &str = "System.Object";
+const OBJECT_PATH: [&str; 2] = ["System", "Object"];
 
 /// Whether `ty` is a function taking a parameter — of any curried group, or
 /// any element of a tupled one — of a known type that is not sealed: one FCS
@@ -8634,9 +8752,12 @@ fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
         // which are not read.
         Ty::Project { .. } => false,
         Ty::Named { path, args } => {
-            if (args.is_empty() && is_sealed_primitive(path)) || *ty == Ty::named(UNIT) {
+            if (args.is_empty() && is_sealed_primitive(&path.segments_in(env.names())))
+                || ty.is_named(env.names(), &UNIT_PATH)
+            {
                 return true;
             }
+            let path = path.spelled(env.names());
             let Some((name, namespace)) = path.split_last() else {
                 return false;
             };
@@ -8669,8 +8790,8 @@ fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
     }
 }
 
-fn literal_ty(c: &ConstExpr) -> Option<Ty> {
-    literal_kind_ty(c.literal()?.kind())
+fn literal_ty(names: &NameTable, c: &ConstExpr) -> Option<Ty> {
+    literal_kind_ty(names, c.literal()?.kind())
 }
 
 /// The value a constant pattern's literal spells, as reachability compares
@@ -8717,8 +8838,8 @@ fn literal_ctor(kind: SyntaxKind, text: &str) -> Ctor<UnionId> {
 
 /// The type of a literal token of `kind`, where it is fixed in isolation
 /// ([`literal_ty`]).
-fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
-    let prim = |path: &str| Some(Ty::named(path));
+fn literal_kind_ty(names: &NameTable, kind: SyntaxKind) -> Option<Ty> {
+    let prim = |path: &str| Some(Ty::named_in(names, path));
     match kind {
         // Integers (default and every explicit suffix).
         SyntaxKind::INT32_LIT => prim("System.Int32"),
@@ -8748,7 +8869,7 @@ fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
         SyntaxKind::BYTE_STRING_LIT
         | SyntaxKind::VERBATIM_BYTE_STRING_LIT
         | SyntaxKind::TRIPLE_BYTE_STRING_LIT => Some(Ty::Array {
-            elem: Box::new(Ty::named("System.Byte")),
+            elem: Box::new(Ty::named_in(names, "System.Byte")),
             rank: 1,
         }),
         // Deferred even in a no-expected-type position: a user-defined numeric
@@ -8787,7 +8908,7 @@ fn constructor_names(
 ) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::default();
     for e in resolved.exports().iter() {
-        *counts.entry(e.name().to_string()).or_default() += 1;
+        *counts.entry(e.name(env).to_string()).or_default() += 1;
     }
     if is_headerless(file) {
         for def in resolved.defs() {
@@ -9113,7 +9234,12 @@ mod tests {
         inferred
             .def_types()
             .iter()
-            .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+            .map(|(id, ty)| {
+                (
+                    resolved.def(*id).spelling(&env).into_owned(),
+                    ty.render(&env),
+                )
+            })
             .collect()
     }
 
@@ -9132,7 +9258,7 @@ mod tests {
         let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default());
-        inferred.types().values().map(super::Ty::render).collect()
+        inferred.types().values().map(|t| t.render(&env)).collect()
     }
 
     #[test]
@@ -10104,7 +10230,7 @@ mod tests {
             .types()
             .iter()
             .find(|(r, _)| u32::from(r.start()) as usize == y_use_at && r.len() == 1.into())
-            .map(|(_, ty)| ty.render());
+            .map(|(_, ty)| ty.render(&env));
         assert_eq!(
             y_use.as_deref(),
             Some("System.String"),
@@ -10247,11 +10373,12 @@ mod tests {
                 })
                 .or_else(|| file.syntax().descendants_of::<ConstExpr>().next())
                 .expect("a const literal");
-            let ty = super::literal_ty(&cst);
+            let names = crate::names::NameTable::default();
+            let ty = super::literal_ty(&names, &cst);
             match ty {
                 // Every named literal type must be a sealed primitive.
                 Some(super::Ty::Named { ref path, .. }) => assert!(
-                    super::is_sealed_primitive(path),
+                    super::is_sealed_primitive(&path.segments_in(&names)),
                     "{lit}: literal_ty gave named {path:?} but is_sealed_primitive says no"
                 ),
                 // A byte string is an array — not a sealed *named* primitive.

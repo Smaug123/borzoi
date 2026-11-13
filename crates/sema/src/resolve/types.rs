@@ -820,7 +820,7 @@ impl<'a> Resolver<'a> {
                     let item_idx = self.items.len();
                     let item_id = ItemId::new(self.item_base as usize + item_idx);
                     self.items.push(ExportedItem {
-                        name: case_name.to_string(),
+                        name: self.export_name(use_id, case_name),
                         qualified: None,
                         id: item_id,
                         def: super::model::ExportDef::Own(use_id),

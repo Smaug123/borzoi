@@ -3571,7 +3571,7 @@ mod tests {
         Access, AssemblyIdentity, AssemblyProjectionSkips, EntityKind, FSharpResource,
         FsharpOverlayKind, ImportError, SkippedFsharpOverlay, UnionCases, Version,
     };
-    use borzoi_sema::test_support::names::rekeyed;
+    use borzoi_sema::test_support::names::{rekeyed, rekeyed_inference};
     use lsp_types::Uri;
     use std::fs;
     use tempfile::TempDir;
@@ -3884,8 +3884,8 @@ mod tests {
         );
         assert!(parses.files[1].file.as_impl().is_some());
 
-        let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &Vfs::new())
+        let (resolved, env) = sema
+            .resolved_project_and_env_for(&proj, &mut ws, &Vfs::new())
             .expect("a .fsi-bearing project resolves (Stage 1)");
         assert_eq!(resolved.len(), 3);
         // The signature slot owns no exports of its own; its surface rides
@@ -3898,7 +3898,7 @@ mod tests {
             .file(1)
             .exports()
             .iter()
-            .map(|e| e.name().to_string())
+            .map(|e| e.name(&env).to_string())
             .collect();
         assert_eq!(
             names,
@@ -4214,19 +4214,20 @@ mod tests {
         let parses = sema
             .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("project parses");
+        let env = AssemblyEnv::default();
         let resolved = resolve_file(
             parses.files[0]
                 .file
                 .as_impl()
                 .expect("an impl Compile item"),
             &ProjectItems::default(),
-            &AssemblyEnv::default(),
+            &env,
             &parses.files[0].recovery,
         );
         let names: Vec<_> = resolved
             .exports()
             .iter()
-            .map(|e| e.name().to_string())
+            .map(|e| e.name(&env).to_string())
             .collect();
         assert_eq!(names, vec!["on".to_string()]);
     }
@@ -6935,14 +6936,14 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &docs)
+        let (resolved, env) = sema
+            .resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("resolved project");
         let names: Vec<_> = resolved
             .file(0)
             .exports()
             .iter()
-            .map(|e| e.name().to_string())
+            .map(|e| e.name(&env).to_string())
             .collect();
         assert_eq!(names, vec!["buffer".to_string()]);
     }
@@ -7054,17 +7055,21 @@ mod tests {
             "a first fold is cold"
         );
 
-        let cold = |docs: &Vfs| {
-            let mut ws = Workspace::default();
-            let mut sema = SemanticState::new();
-            sema.inferred_prefix_for(&proj, 2, &mut ws, docs)
-                .expect("cold fold")
-                .2
-        };
+        // A cold fold builds a fresh env, so the warm fold is compared in the
+        // cold one's table.
+        let assert_matches_cold =
+            |warm: &(Arc<ResolvedProject>, Arc<AssemblyEnv>, Arc<InferredProject>), docs: &Vfs| {
+                let mut ws = Workspace::default();
+                let mut sema = SemanticState::new();
+                let (_, cold_env, cold) = sema
+                    .inferred_prefix_for(&proj, 2, &mut ws, docs)
+                    .expect("cold fold");
+                assert_eq!(rekeyed_inference(&warm.2, &warm.1, &cold_env), *cold);
+            };
 
         docs.insert(a_uri.clone(), "module A\nlet x = (1)\n".to_string());
         sema.invalidate_project(&proj);
-        let (_, _, warm) = sema
+        let warm = sema
             .inferred_prefix_for(&proj, 2, &mut ws, &docs)
             .expect("fold after a body edit");
         assert_eq!(
@@ -7077,11 +7082,11 @@ mod tests {
             2,
             "A's contribution is unchanged, so B and C are reused"
         );
-        assert_eq!(*warm, *cold(&docs));
+        assert_matches_cold(&warm, &docs);
 
         docs.insert(a_uri, "module A\nlet x = \"s\"\n".to_string());
         sema.invalidate_project(&proj);
-        let (_, _, warm) = sema
+        let warm = sema
             .inferred_prefix_for(&proj, 2, &mut ws, &docs)
             .expect("fold after a type-changing edit");
         assert_eq!(
@@ -7094,7 +7099,7 @@ mod tests {
             0,
             "A's `x` changed type, so B and C are inferred afresh"
         );
-        assert_eq!(*warm, *cold(&docs));
+        assert_matches_cold(&warm, &docs);
     }
 
     /// A stale-suffix guard: removing a cross-file export must invalidate the
