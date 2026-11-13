@@ -420,7 +420,7 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         .collect();
     let spec = scratch.normalised(&string(&answer, "dgspec"));
     let executed = executed(&answer);
-    let seam = seam(oracle, project, &scratch, &answer, &loaded);
+    let seam = seam(project, &answer, &loaded);
     Cone {
         sdk_dir: sdk_dir.to_path_buf(),
         targets,
@@ -442,48 +442,31 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
 /// decline's shape (without the item index or value, which are not
 /// host-independent).
 ///
-/// The entries come from a second build after the census's (the
-/// `restoreGraphEntries` op), with `GenerateRestoreGraphFile`'s
-/// `RemoveDuplicates` applied here: the first item of each spec, compared
-/// ignoring case. The NuGet identity is that of the `NuGet.Commands` the
-/// census build loaded, and the environment is the oracle's scrubbed one.
-fn seam(
-    oracle: &mut Oracle,
-    project: &Path,
-    scratch: &Scratch,
-    answer: &Value,
-    loaded: &BTreeMap<PathBuf, String>,
-) -> String {
+/// The entries are the task's own input, as the census build logged it: after
+/// `RemoveDuplicates` and after any target hooked in before the task. The
+/// NuGet identity is that of the `NuGet.Commands` the census build loaded,
+/// and the environment is the oracle's scrubbed one.
+fn seam(project: &Path, answer: &Value, loaded: &BTreeMap<PathBuf, String>) -> String {
     use borzoi_nuget::dgspec::{
         NuGetIdentity, RestoreGraphItem, RestoreItemsDecline, write_restore_graph,
     };
 
-    let entries = oracle.restore_graph_entries(project, &scratch.globals());
-    assert_eq!(
-        entries["succeeded"],
-        Value::Bool(true),
-        "{}: _GenerateRestoreGraph failed: {}",
-        project.display(),
-        entries["errors"]
-    );
-    let mut seen: Vec<String> = Vec::new();
-    let mut items = Vec::new();
-    for item in entries["items"].as_array().expect("items") {
-        let identity = string(item, "identity");
-        if seen.iter().any(|s| s.eq_ignore_ascii_case(&identity)) {
-            continue;
-        }
-        seen.push(identity.clone());
-        let metadata = item["metadata"]
-            .as_object()
-            .expect("metadata")
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_str().expect("string metadata").to_owned()))
-            .collect();
-        items.push(RestoreGraphItem { identity, metadata });
-    }
+    let items: Vec<RestoreGraphItem> = answer["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|item| RestoreGraphItem {
+            identity: string(item, "identity"),
+            metadata: item["metadata"]
+                .as_object()
+                .expect("metadata")
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_str().expect("string metadata").to_owned()))
+                .collect(),
+        })
+        .collect();
     // The task's bool parameter, as MSBuild converts the property.
-    let recursive = match entries["restoreRecursive"].as_str().unwrap_or_default() {
+    let recursive = match answer["restoreRecursive"].as_str().unwrap_or_default() {
         v if v.eq_ignore_ascii_case("true") => true,
         v if v.is_empty() || v.eq_ignore_ascii_case("false") => false,
         other => panic!("RestoreRecursive is {other:?}, which the census does not convert"),
@@ -866,9 +849,23 @@ const HOOKED: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <Compile Include="App.fs" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- An escaped `;` in metadata the writer writes: the item seam must see it
+         as the task does, unescaped. -->
+    <PackageReference Include="Fake.Package" Version="1.0.0" Aliases="x%3By" />
+  </ItemGroup>
   <Target Name="UserHookBeforeRestoreGraphEntry" BeforeTargets="_GenerateRestoreGraphProjectEntry"
           Condition="'$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)'">
     <Message Text="a user target in the restore cone" />
+  </Target>
+  <!-- Edits the entries after `_GenerateRestoreGraph` and before the writer runs:
+       the item seam must be graded on what the writer is handed. -->
+  <Target Name="UserHookEditsRestoreGraphEntries" BeforeTargets="GenerateRestoreGraphFile">
+    <ItemGroup>
+      <_RestoreGraphEntry Condition="'%(_RestoreGraphEntry.Type)' == 'ProjectSpec'">
+        <Version>9.9.9</Version>
+      </_RestoreGraphEntry>
+    </ItemGroup>
   </Target>
 </Project>
 "#;

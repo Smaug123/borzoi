@@ -61,23 +61,18 @@
 ///   {"op":"restoreCone","project":s,"globals":{name:value, ..}}
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"msbuildDirectory":s,
 ///         "sdkVersion":s,"targets":[..],"tasks":[..],"files":{..},
-///         "assemblies":{..},"loadedDuringBuilds":[..],"dgspec":s|null}
+///         "assemblies":{..},"loadedDuringBuilds":[..],"dgspec":s|null,
+///         "restoreRecursive":s,"entries":[{"identity":s,"metadata":{..}}, ..]}
 ///     The restore-cone census of docs/nuget-dgspec-boundary-plan.md (stage
 ///     8): builds `GenerateRestoreGraphFile` on the project file in-process,
 ///     under exactly `globals`, and reports every target and task that
 ///     executed, the SHA-256 of each file they come from, each task assembly's
 ///     identity, and the spec written to `RestoreGraphOutputPath`. See
-///     `restoreCone` below. Unlike the evaluation ops this one *executes*
+///     `restoreCone` below. `entries` are the items `WriteRestoreGraphTask` was
+///     handed, with their custom metadata as it reads them (unescaped), and
+///     `restoreRecursive` the property its flag comes from: the item seam of
+///     A₁. Unlike the evaluation ops this one *executes*
 ///     targets, so it reaches the SDK's task code.
-///
-///   {"op":"restoreGraphEntries","project":s,"globals":{name:value, ..}}
-///     -> {"ok":true,"succeeded":b,"errors":[..],"restoreRecursive":s,
-///         "items":[{"identity":s,"metadata":{name:value}}, ..]}
-///     The `_RestoreGraphEntry` items `_GenerateRestoreGraph` returns, before
-///     `RemoveDuplicates`, with their custom metadata as
-///     `WriteRestoreGraphTask` reads it (unescaped), and the build's
-///     `RestoreRecursive`: the item seam of A₁ (docs/nuget-dgspec-boundary-
-///     plan.md). Run it after `restoreCone` on the same project.
 ///
 ///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"items":[fullPath, ..]}
@@ -495,6 +490,8 @@ type ConeLogger() =
     let tasks = ResizeArray<TaskRun>()
     let errors = ResizeArray<string>()
     let targetNames = Collections.Generic.Dictionary<struct (int * int * int), string>()
+    let taskNames = Collections.Generic.Dictionary<struct (int * int * int * int), string>()
+    let entries = ResizeArray<Microsoft.Build.Framework.ITaskItem>()
     let mutable verbosity = Microsoft.Build.Framework.LoggerVerbosity.Normal
     let mutable parameters: string = null
 
@@ -504,6 +501,9 @@ type ConeLogger() =
     member internal _.Targets = List.ofSeq targets
     member internal _.Tasks = List.ofSeq tasks
     member internal _.Errors = List.ofSeq errors
+    /// The items `WriteRestoreGraphTask` was handed as `RestoreGraphItems`, as
+    /// MSBuild logs a task's inputs (only when the build sets `LogTaskInputs`).
+    member internal _.RestoreGraphEntries = List.ofSeq entries
 
     interface Microsoft.Build.Framework.ILogger with
         member _.Verbosity
@@ -524,6 +524,9 @@ type ConeLogger() =
                       Project = e.ProjectFile })
 
             source.TaskStarted.Add(fun e ->
+                let c = e.BuildEventContext
+                taskNames[struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)] <- e.TaskName
+
                 let target =
                     match targetNames.TryGetValue(contextKey e.BuildEventContext) with
                     | true, name -> name
@@ -534,6 +537,21 @@ type ConeLogger() =
                       Target = target
                       File = e.TaskFile
                       Assembly = e.TaskAssemblyLocation })
+
+            source.MessageRaised.Add(fun e ->
+                match e with
+                | :? Microsoft.Build.Framework.TaskParameterEventArgs as p when
+                    p.Kind = Microsoft.Build.Framework.TaskParameterMessageKind.TaskInput
+                    && p.ItemType = "RestoreGraphItems"
+                    ->
+                    let c = p.BuildEventContext
+
+                    match taskNames.TryGetValue(struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)) with
+                    | true, "WriteRestoreGraphTask" ->
+                        for item in p.Items do
+                            entries.Add(item :?> Microsoft.Build.Framework.ITaskItem)
+                    | _ -> ()
+                | _ -> ())
 
             source.ErrorRaised.Add(fun e -> errors.Add $"%s{e.File}(%d{e.LineNumber}): %s{e.Code} %s{e.Message}")
 
@@ -592,7 +610,9 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
             collection,
             Loggers = [ logger :> Microsoft.Build.Framework.ILogger ],
             MaxNodeCount = 1,
-            EnableNodeReuse = false
+            EnableNodeReuse = false,
+            // So that `WriteRestoreGraphTask`'s input is logged, and recorded.
+            LogTaskInputs = true
         )
 
     let request =
@@ -656,67 +676,18 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
                name = Reflection.AssemblyName.GetAssemblyName(path).Name
                informationalVersion = Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductVersion |})
         |> List.ofSeq
-       dgspec = dgspec |}
-
-/// The `_RestoreGraphEntry` items `_GenerateRestoreGraph` returns for
-/// `project` under `globals`, in order, before `GenerateRestoreGraphFile`'s
-/// `RemoveDuplicates`: each item's spec and custom metadata, read as
-/// `WriteRestoreGraphTask` reads them (`GetMetadata`, so unescaped), plus the
-/// `RestoreRecursive` the task is handed.
-///
-/// A separate build from `restoreCone`'s, in a fresh collection. Run it after
-/// that census in the same process, so that what the census records as loaded
-/// during its build is not loaded here first.
-let private restoreGraphEntries (project: string) (globals: Collections.Generic.IDictionary<string, string>) =
-    use collection = new ProjectCollection()
-    let logger = ConeLogger()
-
-    let parameters =
-        BuildParameters(
-            collection,
-            Loggers = [ logger :> Microsoft.Build.Framework.ILogger ],
-            MaxNodeCount = 1,
-            EnableNodeReuse = false
-        )
-
-    let target = "_GenerateRestoreGraph"
-
-    let request =
-        BuildRequestData(project, globals, null, [| target |], null, BuildRequestDataFlags.ProvideProjectStateAfterBuild)
-
-    let result = BuildManager.DefaultBuildManager.Build(parameters, request)
-    let succeeded = result.OverallResult = BuildResultCode.Success
-
-    let items =
-        match result.ResultsByTarget.TryGetValue target with
-        | true, outputs ->
-            outputs.Items
-            |> Seq.map (fun item ->
-                let names =
-                    item.CloneCustomMetadata().Keys
-                    |> Seq.cast<string>
-                    |> Seq.sort
-                    |> List.ofSeq
-
-                {| identity = item.ItemSpec
-                   metadata = names |> List.map (fun name -> (name, item.GetMetadata name)) |> dict |})
-            |> List.ofSeq
-        | _ -> []
-
-    let state = result.ProjectStateAfterBuild
-
-    {| ok = true
-       succeeded = succeeded
-       errors = logger.Errors
-       restoreRecursive = (if isNull state then null else state.GetPropertyValue "RestoreRecursive")
-       items = items |}
-
-let private respondRestoreGraphEntries (root: JsonElement) : string =
-    let project = root.GetProperty("project").GetString()
-
-    match readGlobals root with
-    | null -> JsonSerializer.Serialize {| error = "restoreGraphEntries needs a globals object" |}
-    | globals -> JsonSerializer.Serialize(restoreGraphEntries project globals)
+       dgspec = dgspec
+       restoreRecursive = property "RestoreRecursive"
+       entries =
+        logger.RestoreGraphEntries
+        |> List.map (fun item ->
+            {| identity = item.ItemSpec
+               metadata =
+                item.CloneCustomMetadata().Keys
+                |> Seq.cast<string>
+                |> Seq.sort
+                |> Seq.map (fun name -> (name, item.GetMetadata name))
+                |> dict |}) |}
 
 let private respondRestoreCone (root: JsonElement) : string =
     let project = root.GetProperty("project").GetString()
@@ -848,7 +819,6 @@ let main argv =
                     | "items" -> respondItems root
                     | "itemsMeta" -> respondItemsMeta root
                     | "restoreCone" -> respondRestoreCone root
-                    | "restoreGraphEntries" -> respondRestoreGraphEntries root
                     | "targetItems" -> respondTargetItems root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->

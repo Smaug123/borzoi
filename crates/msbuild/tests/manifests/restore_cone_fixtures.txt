@@ -5,8 +5,8 @@
 10.0.112 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.0.11+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.0.3.0 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42308 10.0.112-servicing.26422.108+95017c711e6afc1085133d440e42b4bd78155701
-10.0.112 census	resolved=0 forced=3 targets=51 target-files=10 user-targets=1 tasks=27 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
-10.0.112 file fixture:hooked/App.fsproj	sha256:543fce04ecd17fcc
+10.0.112 census	resolved=0 forced=3 targets=52 target-files=10 user-targets=2 tasks=27 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
+10.0.112 file fixture:hooked/App.fsproj	sha256:cf2116d03408b142
 10.0.112 file sdk:NuGet.targets	sha256:32d847234c43b287
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets	sha256:39edebe465572be7
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets	sha256:eaf05ceeec1f3c30
@@ -104,6 +104,7 @@
 10.0.112 forced hooked/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
 10.0.112 forced hooked/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced hooked/App.fsproj target UserHookBeforeRestoreGraphEntry	fixture:hooked/App.fsproj
+10.0.112 forced hooked/App.fsproj target UserHookEditsRestoreGraphEntries	fixture:hooked/App.fsproj
 10.0.112 forced hooked/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets
 10.0.112 forced hooked/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets
 10.0.112 forced hooked/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets
@@ -253,8 +254,8 @@
 10.0.401 assembly sdk:Microsoft.Build.dll	Microsoft.Build 15.1.0.0 18.9.11+e34a38d2ae1fc26406a317517196e55c68ff83ab
 10.0.401 assembly sdk:NuGet.Build.Tasks.dll	NuGet.Build.Tasks 7.9.0.0 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
 10.0.401 assembly sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.14.42413 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
-10.0.401 census	resolved=3 forced=0 targets=51 target-files=10 user-targets=1 tasks=27 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
-10.0.401 file fixture:hooked/App.fsproj	sha256:543fce04ecd17fcc
+10.0.401 census	resolved=3 forced=0 targets=52 target-files=10 user-targets=2 tasks=27 task-assemblies=4 user-tasks=0 loaded-sdk-assemblies=19
+10.0.401 file fixture:hooked/App.fsproj	sha256:cf2116d03408b142
 10.0.401 file sdk:NuGet.targets	sha256:ce10b22f34950346
 10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets	sha256:39edebe465572be7
 10.0.401 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Publish.targets	sha256:ea5fe130702f2fc8
@@ -371,6 +372,7 @@
 10.0.401 resolved hooked/App.fsproj target ProcessFrameworkReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
 10.0.401 resolved hooked/App.fsproj target UpdateAspNetToFrameworkReference	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved hooked/App.fsproj target UserHookBeforeRestoreGraphEntry	fixture:hooked/App.fsproj
+10.0.401 resolved hooked/App.fsproj target UserHookEditsRestoreGraphEntries	fixture:hooked/App.fsproj
 10.0.401 resolved hooked/App.fsproj target _CheckForLanguageAndFeatureCombinationSupport	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.RuntimeIdentifierInference.targets
 10.0.401 resolved hooked/App.fsproj target _CheckForObsoleteDotNetCliToolReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.ObsoleteReferences.targets
 10.0.401 resolved hooked/App.fsproj target _CheckForUnsupportedCppNETCoreVersion	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets

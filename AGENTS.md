@@ -82,8 +82,8 @@ This is a Cargo workspace with nine members:
   (stage 8 of `docs/nuget-dgspec-boundary-plan.md`), under the global
   properties `borzoi_oracle_harness::restore_globals` holds to `restore.rs`'s
   command line.
-  `restoreGraphEntries` builds `_GenerateRestoreGraph` and returns the
-  `_RestoreGraphEntry` items `WriteRestoreGraphTask` is handed. The census
+  `restoreCone` also returns the `_RestoreGraphEntry` items
+  `WriteRestoreGraphTask` was handed, logged as its input. The census
   puts each cone's entries through `borzoi_nuget`'s `write_restore_graph`
   and pins the item seam's verdict, which must be the cone's own spec, byte
   for byte, or a decline.

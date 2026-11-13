@@ -1491,16 +1491,20 @@ What it does not cover:
 
 #### A₁.2: the seam on real projects — landed
 
-`tools/msbuild-condition-oracle`'s `restoreGraphEntries` op builds
-`_GenerateRestoreGraph` in-process under `restore_globals`. It returns the
-target's outputs: each item's spec and its custom metadata, read as the task
-reads them, plus the `RestoreRecursive` the task is handed.
+`tools/msbuild-condition-oracle`'s `restoreCone` op runs the census build
+with `LogTaskInputs` set, and records the `RestoreGraphItems` that
+`WriteRestoreGraphTask` is handed: each item's spec and custom metadata, read
+as the task reads them. It also returns the `RestoreRecursive` property its
+flag comes from. Because these are the writer's own inputs, they arrive after
+`RemoveDuplicates` and after any target hooked in before the writer.
 
-`restore_cone_census.rs` runs the op on every cone, after the census build in
-the same process, so that the census's record of what its build loaded is
-unchanged. It then applies `GenerateRestoreGraphFile`'s `RemoveDuplicates`
-(the first item of each spec, compared ignoring case) and puts the entries
-through `write_restore_graph` with two further inputs:
+Review of a first cut found that this is the only sound source. That cut
+built `_GenerateRestoreGraph` separately and modelled `RemoveDuplicates`, so
+it missed hooks and .NET's case folding. The `hooked` fixture now edits the
+entries before the writer runs and carries an escaped `;` in its metadata.
+
+`restore_cone_census.rs` puts every cone's entries through
+`write_restore_graph` with two further inputs:
 - the identity of the `NuGet.Commands` the census build loaded;
 - the oracle's scrubbed environment.
 

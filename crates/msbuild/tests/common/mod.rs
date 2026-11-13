@@ -391,31 +391,6 @@ impl Oracle {
         }))
     }
 
-    /// The `_RestoreGraphEntry` items `_GenerateRestoreGraph` returns for
-    /// `project` under `globals` (the `restoreGraphEntries` op). Call it after
-    /// [`Self::restore_cone`] on the same oracle.
-    pub fn restore_graph_entries(
-        &mut self,
-        project: &Path,
-        globals: &[(&str, std::ffi::OsString)],
-    ) -> serde_json::Value {
-        let globals: serde_json::Map<String, serde_json::Value> = globals
-            .iter()
-            .map(|(name, value)| {
-                let value = value.to_str().expect("UTF-8 global property value");
-                (
-                    (*name).to_owned(),
-                    serde_json::Value::String(value.to_owned()),
-                )
-            })
-            .collect();
-        self.request(&serde_json::json!({
-            "op": "restoreGraphEntries",
-            "project": project.to_str().expect("UTF-8 project path"),
-            "globals": globals,
-        }))
-    }
-
     /// Ask the real MSBuild evaluator for the condition's truth against
     /// `props`. `Some(bool)` is the value MSBuild computed; `None` means
     /// MSBuild rejects the condition as illegal (`InvalidProjectFileException`).
