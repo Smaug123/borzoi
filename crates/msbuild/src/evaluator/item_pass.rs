@@ -2334,14 +2334,20 @@ fn note_update_batch_leftovers(target: &str, node: Node<'_, '_>, state: &mut Sta
         .map(|fragment| fragment.to_ascii_lowercase())
         .collect();
     if fragments.len() > 1 {
+        // One pass, with this spec's own fragments so far in a set: linear in
+        // the spec's length.
+        let mut earlier = HashSet::new();
+        let repeats_at_second_or_later = fragments.iter().enumerate().any(|(i, fragment)| {
+            let repeated = earlier.contains(fragment.as_str())
+                || state.package_update_fragments.contains(fragment);
+            earlier.insert(fragment.as_str());
+            i > 0 && repeated
+        });
         let leaves_entries = expansion.had_issue()
             || fragments
                 .iter()
                 .any(|fragment| !is_package_id_shape(fragment))
-            || fragments.iter().enumerate().skip(1).any(|(i, fragment)| {
-                fragments[..i].contains(fragment)
-                    || state.package_update_fragments.contains(fragment)
-            });
+            || repeats_at_second_or_later;
         if leaves_entries {
             state.note_package_uncertain(
                 PackageReferenceUncertaintyCauseKind::DuplicateUpdateIdentity {
