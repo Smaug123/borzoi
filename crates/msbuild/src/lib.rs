@@ -1097,13 +1097,15 @@ pub fn parse_fsproj_with_imports(
         environment,
         sdk_resolver,
         glob_resolver,
+        #[cfg(any(test, feature = "test-support"))]
         None,
     )
-    .map(|(parsed, _)| parsed)
+    .map(|walked| walked.project)
 }
 
 /// [`parse_fsproj_with_imports`], also answering `probe` from the end of the
-/// walk when one is given (see [`evaluator::reads`]).
+/// walk when one is given (see [`evaluator::reads`]). Only the differential
+/// tests pass a probe, so a build without them has no `probe` parameter.
 pub(crate) fn parse_fsproj_probed(
     source: &str,
     project_path: &Path,
@@ -1111,8 +1113,8 @@ pub(crate) fn parse_fsproj_probed(
     environment: &HashMap<String, String>,
     sdk_resolver: Option<&SdkResolver<'_>>,
     glob_resolver: Option<&GlobResolver<'_>>,
-    probe: Option<&evaluator::reads::ReadProbe>,
-) -> Result<(ParsedProject, Option<evaluator::reads::EvaluationReads>), ParseError> {
+    #[cfg(any(test, feature = "test-support"))] probe: Option<&evaluator::reads::ReadProbe>,
+) -> Result<evaluator::Walked, ParseError> {
     validate_inputs(project_path, extra_properties)?;
     // Detection only — we follow the props/targets ourselves and
     // suppress the per-kind `ImplicitImportPresent` diagnostic that
@@ -1139,7 +1141,7 @@ pub(crate) fn parse_fsproj_probed(
         }
     }
     let doc = roxmltree::Document::parse(source)?;
-    let (parsed, reads) = evaluator::walk_with_imports(
+    let mut walked = evaluator::walk_with_imports(
         &doc,
         project_path,
         extra_properties,
@@ -1150,17 +1152,13 @@ pub(crate) fn parse_fsproj_probed(
         sdk_resolver,
         glob_resolver,
         &observer,
+        #[cfg(any(test, feature = "test-support"))]
         probe,
     );
     let (read_set, read_counts) = observer.finish();
-    Ok((
-        ParsedProject {
-            read_set,
-            read_counts,
-            ..parsed
-        },
-        reads,
-    ))
+    walked.project.read_set = read_set;
+    walked.project.read_counts = read_counts;
+    Ok(walked)
 }
 
 /// Input-validation shared between the pure and with-imports entry

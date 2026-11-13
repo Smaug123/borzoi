@@ -85,11 +85,13 @@ use super::{
 
 mod item_pass;
 mod item_spec;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod reads;
 use item_pass::{
     CapturedPackageReference, CurrentFile, DeferredGroupKind, DeferredItemGroup,
     RetainedImportedFile, item_key, replay_deferred_item_groups,
 };
+#[cfg(any(test, feature = "test-support"))]
 use reads::{EvaluationReads, ReadProbe};
 
 /// Maximum recursion depth for `<Import>` following. MSBuild itself
@@ -236,8 +238,8 @@ pub fn walk_with_imports<'r>(
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
     observer: &'r Observer,
-    probe: Option<&ReadProbe>,
-) -> (ParsedProject, Option<EvaluationReads>) {
+    #[cfg(any(test, feature = "test-support"))] probe: Option<&ReadProbe>,
+) -> Walked {
     let walk = |target_framework_reads| {
         walk_in_msbuild_order(
             doc,
@@ -251,16 +253,37 @@ pub fn walk_with_imports<'r>(
             glob_resolver,
             observer,
             target_framework_reads,
+            #[cfg(any(test, feature = "test-support"))]
             probe,
         )
     };
     let (exact, observations) = walk(TargetFrameworkReads::Exact);
-    if !observations.target_framework_read_exempted || observations.builds_its_own_target_framework
+    let (project, observations) = if !observations.target_framework_read_exempted
+        || observations.builds_its_own_target_framework
     {
-        return (exact, observations.reads);
+        (exact, observations)
+    } else {
+        walk(TargetFrameworkReads::CarvedOut)
+    };
+    let WalkObservations {
+        #[cfg(any(test, feature = "test-support"))]
+        reads,
+        ..
+    } = observations;
+    Walked {
+        project,
+        #[cfg(any(test, feature = "test-support"))]
+        reads,
     }
-    let (carved_out, observations) = walk(TargetFrameworkReads::CarvedOut);
-    (carved_out, observations.reads)
+}
+
+/// [`walk_with_imports`]'s result.
+pub struct Walked {
+    pub project: ParsedProject,
+    /// The walk's answer to the caller's [`ReadProbe`], when it passed one.
+    /// Only the differential tests probe the walk.
+    #[cfg(any(test, feature = "test-support"))]
+    pub reads: Option<EvaluationReads>,
 }
 
 /// How [`State::undefined_read_is_exact`] treats an undefined
@@ -289,7 +312,7 @@ fn walk_in_msbuild_order<'r>(
     glob_resolver: Option<&'r GlobResolver<'r>>,
     observer: &'r Observer,
     target_framework_reads: TargetFrameworkReads,
-    probe: Option<&ReadProbe>,
+    #[cfg(any(test, feature = "test-support"))] probe: Option<&ReadProbe>,
 ) -> (ParsedProject, WalkObservations) {
     // Pass 1: the eager before-body `Directory.Build.props` splice
     // (historical behaviour). This is *only* a fallback result for the
@@ -314,6 +337,7 @@ fn walk_in_msbuild_order<'r>(
         observer,
         false,
         target_framework_reads,
+        #[cfg(any(test, feature = "test-support"))]
         probe,
     );
     // Skip the deferred second pass whenever it could not possibly change
@@ -344,6 +368,7 @@ fn walk_in_msbuild_order<'r>(
         observer,
         true,
         target_framework_reads,
+        #[cfg(any(test, feature = "test-support"))]
         probe,
     );
     // Pass 2 is the faithful single-pass model: it fires
@@ -392,6 +417,7 @@ struct WalkObservations {
     /// MSBuild's `IsCrossTargetingBuild` is false for it.
     builds_its_own_target_framework: bool,
     /// The walk's answer to the caller's [`ReadProbe`], when it passed one.
+    #[cfg(any(test, feature = "test-support"))]
     reads: Option<EvaluationReads>,
 }
 
@@ -430,7 +456,7 @@ fn walk_once<'r>(
     observer: &'r Observer,
     defer_directory_build_props: bool,
     target_framework_reads: TargetFrameworkReads,
-    probe: Option<&ReadProbe>,
+    #[cfg(any(test, feature = "test-support"))] probe: Option<&ReadProbe>,
 ) -> (ParsedProject, WalkObservations) {
     let root = doc.root_element();
     let local_overrides = collect_local_overrides(root);
@@ -764,6 +790,7 @@ fn walk_once<'r>(
         directory_build_props_pending_unconsumed: state.pending_directory_build_props.is_some(),
         target_framework_read_exempted: state.target_framework_read_exempted.get(),
         builds_its_own_target_framework,
+        #[cfg(any(test, feature = "test-support"))]
         reads: probe.map(|probe| state.read_probe(probe)),
     };
     (state.into_project(), observations)
@@ -1739,11 +1766,16 @@ struct EvaluatedItem {
     /// cannot be known: a body holding more than text and comments, or a value
     /// MSBuild's Unix path fixup may rewrite, depending on its working
     /// directory. The dependency capture keeps its own reading of those.
+    ///
+    /// The read census is that reader today, and only the differential tests
+    /// run it, so this and `metadata_complete` exist only in their build.
+    #[cfg(any(test, feature = "test-support"))]
     exact_metadata: HashMap<String, Option<String>>,
     /// Whether `exact_metadata` names every metadatum the item carries. False
     /// for an item copied from a type whose metadata this crate models
     /// elsewhere (`@(ProjectReference)`), where a name it lacks is unknown
     /// rather than absent.
+    #[cfg(any(test, feature = "test-support"))]
     metadata_complete: bool,
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
 }
