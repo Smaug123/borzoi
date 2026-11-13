@@ -151,7 +151,7 @@ fn hand_picked_corners() {
         ("'%(Identity)' == 'x'", props(&[]), Verdict::Unsupported),
         // A `%XX` escape (percent + two hex digits) is *unescaped* by MSBuild at
         // the operand leaf — `'%74rue' == 'true'` is true — and we model that
-        // now (stage E2 of `docs/msbuild-escaped-value-plan.md`). These used to
+        // now (stage E2 of `docs/completed/msbuild-escaped-value-plan.md`). These used to
         // degrade the whole condition: fail-safe, but it cost every gate an
         // escape appeared in. The oracle round-trip is what makes committing them
         // safe rather than brave.

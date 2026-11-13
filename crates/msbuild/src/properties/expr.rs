@@ -505,7 +505,7 @@ pub(super) fn evaluate(
     props: &PropertyMap,
     fs_probes_allowed: bool,
 ) -> Option<Evaluated> {
-    // Stage E3 of `docs/msbuild-escaped-value-plan.md`. The evaluator runs
+    // Stage E3 of `docs/completed/msbuild-escaped-value-plan.md`. The evaluator runs
     // *inside* the escaped domain, mirroring MSBuild's `Expander`
     // (`Expander.cs:3982/4010/4129`): a property splice contributes its escaped
     // value (leave-escaped), a `.NET` method unescapes its receiver and each
@@ -877,6 +877,13 @@ fn eval_static(
                 .map(|p| str_result(&p))
                 .ok_or(Unsupported)
         }
+        "System.IO.Path" if member_name.eq_ignore_ascii_case("GetFileNameWithoutExtension") => {
+            let [arg] = args else { return Err(Unsupported) };
+            let s = eval_string_arg(arg, props, issues, depth)?;
+            file_name_without_extension(&s)
+                .map(str_result)
+                .ok_or(Unsupported)
+        }
         "System.IO.Path" if member_name.eq_ignore_ascii_case("IsPathRooted") => {
             let [arg] = args else { return Err(Unsupported) };
             // `eval_string_arg`'s declines (nested functions, indexer-to-`Char`,
@@ -1121,11 +1128,15 @@ fn eval_msbuild_static(
                 // implicit default rather than a name the source mentions, so
                 // its absence is a decline. The empty substitution an undefined
                 // `$(…)` would get is exactly the empty starting directory
-                // MSBuild errors on.
+                // MSBuild errors on. Its stored text is the directory's path as
+                // written (the `MSBuildThisFile*` values are spliced raw), so it
+                // is taken as it is: a directory named `a%20b` is searched,
+                // not `a b`.
                 let this_dir = props
                     .get("MSBuildThisFileDirectory")
                     .ok_or(Unsupported)?
-                    .unescape();
+                    .as_escaped()
+                    .to_string();
                 if !path_args_are_bare(&[file]) {
                     return Err(Unsupported);
                 }
@@ -1210,6 +1221,25 @@ fn version_lt(a: &[i64], b: &[i64]) -> bool {
         }
     }
     false
+}
+
+/// `[System.IO.Path]::GetFileNameWithoutExtension(s)` for a separator-free
+/// name: everything before the last `.` (`a.b.c` → `a.b`, `.a` → `""`), or
+/// the whole name when it has none. Declines anything outside non-empty ASCII
+/// alphanumerics, `.`, `-` and `_` — a separator brings in .NET's per-host
+/// path splitting and MSBuild's backslash fixup, whitespace and escapes their
+/// own trimming and decoding rules, none of which this needs to model to serve
+/// the Publish SDK's `$(PublishProfile)`. Graded by
+/// `get_file_name_without_extension_sweep`.
+fn file_name_without_extension(name: &str) -> Option<&str> {
+    let in_domain = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    if !in_domain {
+        return None;
+    }
+    Some(name.rfind('.').map_or(name, |dot| &name[..dot]))
 }
 
 /// `[System.IO.Path]::IsPathRooted(s)`: pinned against dotnet msbuild
@@ -1550,7 +1580,7 @@ mod tests {
         evaluate(inner, props, false).map(|e| (e.value.unescape(), e.issues))
     }
 
-    /// Stage E3 of `docs/msbuild-escaped-value-plan.md`: the evaluator runs
+    /// Stage E3 of `docs/completed/msbuild-escaped-value-plan.md`: the evaluator runs
     /// inside the escaped domain — unescape receiver/args in, escape result out —
     /// instead of declining any escape-bearing expression. Every row pinned
     /// against `dotnet msbuild` 10.0.301 (2026-07-12).
@@ -1950,6 +1980,9 @@ mod tests {
                 "",
             ),
             ("[MSBuild]::GetTargetPlatformIdentifier('net472')", ""),
+            // The empty TFM: what the Web SDK's `Sdk.props` reads before the
+            // project body defines `TargetFramework`.
+            ("[MSBuild]::GetTargetPlatformIdentifier('')", ""),
             ("[MSBuild]::GetTargetPlatformVersion('net10.0')", "0.0"),
             ("[MSBuild]::GetTargetPlatformVersion('net10.0', 2)", "0.0"),
             ("[MSBuild]::GetTargetPlatformVersion('net10.0', 1)", "0"),

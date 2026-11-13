@@ -26,10 +26,14 @@ use borzoi_assembly::{
 
 use crate::def::SemanticClass;
 use crate::hash::{HashMap, HashSet};
+use crate::names::{NameKey, NameTable, PathIdSet, PathKey, PathMap};
 use crate::resolve::{ActivePatternShape, DeclineCause};
 
 mod il_types;
+mod type_index;
+
 pub use il_types::IlTypeDefinition;
+use type_index::TypeIndex;
 
 /// Fuel bound for chasing a chain of type-abbreviation markers
 /// (`type A = B; type B = C; …`) in [`AssemblyEnv::resolve_abbreviation_target`].
@@ -374,7 +378,7 @@ pub(crate) enum AheadOfType {
 /// shadow every earlier open (the generation barrier) and demote this open's
 /// own entries to opaque — an unlisted name can outrank them and fold order
 /// within the container is no longer decidable.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpenFoldSurface {
     /// Every enumerated bare name, in FCS fold order.
     pub entries: Vec<OpenFoldName>,
@@ -428,6 +432,16 @@ impl OpenFoldSurface {
     }
 }
 
+/// The one surface of a namespace that declares no top-level type directly but
+/// may hold an abbreviation nobody can see (see
+/// [`AssemblyEnv::open_namespace_fold_surfaces`]).
+static RESIDUE_ONLY_SURFACE: OpenFoldSurface = OpenFoldSurface {
+    entries: Vec::new(),
+    residue: true,
+    residue_below_vals: false,
+    contestant_names: Vec::new(),
+};
+
 /// The precomputed answer for the closure-fixed arms of
 /// [`AssemblyEnv::assembly_bare_value_surface_could_supply`].
 ///
@@ -453,13 +467,16 @@ struct BareValueIndex {
 /// is unavailable rather than merely documented. Construct with
 /// [`AssemblyEnv::namespace_value_surface`] or
 /// [`AssemblyEnv::module_value_surface`].
+///
+/// A namespace's surfaces are borrowed from the env's memo; a module's are
+/// built for the query.
 #[derive(Debug, Clone)]
-pub struct ValueSurface {
-    surfaces: Vec<OpenFoldSurface>,
+pub struct ValueSurface<'a> {
+    surfaces: std::borrow::Cow<'a, [OpenFoldSurface]>,
     uncertain: bool,
 }
 
-impl ValueSurface {
+impl ValueSurface<'_> {
     /// Whether this container could put a **value** named `name` into bare
     /// expression scope. `true` when the container is uncertain at all — a
     /// deferral, never a resolution, so over-approximating is sound.
@@ -481,7 +498,7 @@ impl ValueSurface {
     /// Add every value name this container definitely contributes to `out`.
     /// Meaningful only when [`Self::is_uncertain`] is `false`.
     pub fn collect_value_names(&self, out: &mut crate::hash::HashSet<String>) {
-        for surface in &self.surfaces {
+        for surface in self.surfaces.iter() {
             for e in &surface.entries {
                 if matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both) {
                     out.insert(e.name.clone());
@@ -805,30 +822,6 @@ fn presence(kind: ExtensionKind, channel: Channel) -> Presence {
     }
 }
 
-/// The top-level entities declared directly in one exact namespace, indexed by
-/// the name F# source writes and by either name [`seg_name_matches`] reads.
-/// Every vector keeps interning order and every cross-assembly/arity
-/// collision.
-#[derive(Debug, Default, Clone)]
-struct NamespaceTypes {
-    all: Vec<EntityHandle>,
-    by_source_name: HashMap<String, NamedTypes>,
-    /// Each handle in `all` under its IL `name` and, when it differs, under its
-    /// `source_name`: the two names [`seg_name_matches`] compares a segment, or
-    /// a mangled segment's base, against. The candidate index behind
-    /// [`AssemblyEnv::types_at_logical_segment`].
-    by_il_or_source_name: HashMap<String, Vec<EntityHandle>>,
-}
-
-/// Every top-level entity at one exact `(namespace, source name)`. `all` is the
-/// collision-preserving query population; `first_by_arity` is the deterministic
-/// type-position slot used by [`AssemblyEnv::lookup_type`].
-#[derive(Debug, Default, Clone)]
-struct NamedTypes {
-    all: Vec<EntityHandle>,
-    first_by_arity: HashMap<usize, EntityHandle>,
-}
-
 /// A flattened, name-indexed view over referenced assemblies' entities. See the
 /// module docs.
 #[derive(Debug, Default, Clone)]
@@ -840,13 +833,13 @@ pub struct AssemblyEnv {
     /// `printfn` / `id` / operators). The resolver folds them into its
     /// open-type set so a bare `printfn` resolves to the module's static
     /// member — see `Resolver::open_auto_open_modules_in`.
-    auto_open_modules: HashMap<Vec<String>, Vec<EntityHandle>>,
+    auto_open_modules: PathMap<Vec<EntityHandle>>,
     /// The same closure as [`Self::auto_open_modules`], as **paths** — what an
     /// `open` of the namespace makes answerable by a short name, which is a
     /// question about paths rather than entities. Built in the same walk, so
     /// the two indexes cannot drift; see
     /// [`Self::auto_open_module_paths_in_namespace`].
-    auto_open_module_paths: HashMap<Vec<String>, Vec<Vec<String>>>,
+    auto_open_module_paths: PathMap<Vec<Vec<String>>>,
     /// The nested types that are *union-case carriers* — see
     /// [`Self::index_union_case_carriers`], which fills it.
     union_case_carriers: HashSet<EntityHandle>,
@@ -976,13 +969,13 @@ pub struct AssemblyEnv {
     /// source name. The namespace-wide vector feeds extension-surface queries;
     /// the name buckets feed the hot head-slot and collision queries. Every
     /// bucket keeps all handles in interning order.
-    types_by_namespace: HashMap<Vec<String>, NamespaceTypes>,
+    types_by_namespace: TypeIndex,
     /// Every prefix of a namespace containing a public top-level type. Prefixes
     /// are segment-structured, so a quoted identifier containing `.` cannot
     /// collide with a multi-segment namespace. Includes the empty prefix exactly
     /// when at least one public top-level type exists, matching
     /// [`Self::has_namespace`]'s historical empty-path behaviour.
-    public_namespace_paths: HashSet<Vec<String>>,
+    public_namespace_paths: PathIdSet,
     /// **Namespace** paths the referenced assemblies' assembly-level
     /// `[<assembly: AutoOpen("…")>]` attributes implicitly open — what drives
     /// the resolver's implicit opens (plan
@@ -1086,10 +1079,20 @@ pub struct AssemblyEnv {
     /// whose in-scope namespaces had no drop still commits (unlike the global
     /// [`Self::extension_surface_unknowable`]). Populated by
     /// [`Self::mark_namespace_dropped_type`] (the LSP host).
-    namespaces_with_dropped_types: HashSet<Vec<String>>,
+    namespaces_with_dropped_types: PathIdSet,
     /// Every prefix of each of [`Self::namespaces_with_dropped_types`], each
     /// namespace itself included.
-    dropped_type_namespace_prefixes: HashSet<Vec<String>>,
+    dropped_type_namespace_prefixes: PathIdSet,
+    /// The names and paths this env's indexes are keyed by, interned as they
+    /// are built (the seed), and every name and path a walk against this env
+    /// interns after ([`Self::names`]). Because every key is interned, a
+    /// namespace or name the table does not hold is in no index. Shared
+    /// across clones, like the memo caches: a clone holds the same entities,
+    /// so the same ids mean the same text.
+    names: std::sync::Arc<NameTable>,
+    /// How many entries [`Self::names`] held once the env's indexes were
+    /// built: its seed, which [`Self::interned_count`] leaves out.
+    seeded_entries: usize,
 }
 
 /// The top-level type index key: namespace segments, simple name, and generic
@@ -1381,6 +1384,48 @@ enum InterfaceChain {
 }
 
 impl AssemblyEnv {
+    /// The name table of this env (`docs/sema-interning-plan.md`, D2): a
+    /// [`Name`](crate::names::Name) or [`PathId`](crate::names::PathId) from
+    /// it is an index into this env, as an [`EntityHandle`] is.
+    pub(crate) fn names(&self) -> &NameTable {
+        &self.names
+    }
+
+    /// A copy of this env with a name table of its own, for tests that
+    /// resolve the same input against two tables: the table interns `first`,
+    /// in order, and then the env's indexes are re-keyed onto it, so its seed
+    /// takes ids after `first`'s.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn with_fresh_names(&self, first: &[Vec<String>]) -> Self {
+        let names = std::sync::Arc::new(NameTable::default());
+        for path in first {
+            names.intern_path(path);
+        }
+        let from = self.names();
+        AssemblyEnv {
+            types_by_namespace: self.types_by_namespace.rekey(from, &names),
+            auto_open_modules: self.auto_open_modules.rekey(from, &names),
+            auto_open_module_paths: self.auto_open_module_paths.rekey(from, &names),
+            public_namespace_paths: self.public_namespace_paths.rekey(from, &names),
+            namespaces_with_dropped_types: self.namespaces_with_dropped_types.rekey(from, &names),
+            dropped_type_namespace_prefixes: self
+                .dropped_type_namespace_prefixes
+                .rekey(from, &names),
+            seeded_entries: names.entry_count(),
+            names,
+            ..self.clone()
+        }
+    }
+
+    /// How many names and paths this env's table holds beyond its seed (the
+    /// namespaces and type names its indexes are keyed by). The table only
+    /// grows, by each distinct name and path the walks against this env meet,
+    /// so a long-lived host bounds it by dropping the env once this passes a
+    /// cap.
+    pub fn interned_count(&self) -> usize {
+        self.names.entry_count().saturating_sub(self.seeded_entries)
+    }
+
     /// Build the env from already-enumerated top-level entities (the pure core).
     /// On a `(namespace, name)` collision across assemblies the first-enumerated
     /// wins — a deterministic, refine-later choice (real FCS resolution has
@@ -1638,28 +1683,18 @@ impl AssemblyEnv {
                 signature_non_authoritative,
             );
             self.top_level_types.push(handle);
-            let namespace_types = self
-                .types_by_namespace
-                .entry(namespace.clone())
-                .or_default();
-            namespace_types.all.push(handle);
-            for name in std::iter::once(il_name).chain(distinct_source_name) {
-                namespace_types
-                    .by_il_or_source_name
-                    .entry(name)
-                    .or_default()
-                    .push(handle);
-            }
-            namespace_types
-                .by_source_name
-                .entry(key.1.clone())
-                .or_default()
-                .all
-                .push(handle);
+            self.types_by_namespace.insert(
+                &self.names,
+                &namespace,
+                &il_name,
+                distinct_source_name.as_deref(),
+                &key.1,
+                handle,
+            );
             if is_public {
                 for length in 0..=namespace.len() {
                     self.public_namespace_paths
-                        .insert(namespace[..length].to_vec());
+                        .insert(&self.names, &namespace[..length]);
                 }
             }
             if !deferred {
@@ -1692,13 +1727,13 @@ impl AssemblyEnv {
                     paths.push(p);
                 }
                 self.auto_open_modules
-                    .entry(namespace.clone())
-                    .or_default()
-                    .extend(closure);
+                    .update(&self.names, &namespace, |modules| {
+                        modules.extend(closure.iter().copied())
+                    });
                 self.auto_open_module_paths
-                    .entry(namespace)
-                    .or_default()
-                    .extend(paths);
+                    .update(&self.names, &namespace, |modules| {
+                        modules.extend(paths.iter().cloned())
+                    });
             }
         }
         for (key, handle) in source_named_type_keys
@@ -1708,6 +1743,7 @@ impl AssemblyEnv {
             self.index_first_type(key, handle);
         }
         self.index_union_case_carriers();
+        self.seeded_entries = self.names.entry_count();
     }
 
     /// Record every **union-case carrier**: the compiler-generated nested type a
@@ -1782,14 +1818,7 @@ impl AssemblyEnv {
     fn index_first_type(&mut self, key: TypeKey, handle: EntityHandle) {
         let (namespace, name, arity) = key;
         self.types_by_namespace
-            .get_mut(namespace.as_slice())
-            .expect("type namespace was indexed before its first-wins slot")
-            .by_source_name
-            .get_mut(name.as_str())
-            .expect("type source name was indexed before its first-wins slot")
-            .first_by_arity
-            .entry(arity)
-            .or_insert(handle);
+            .fill_first_slot(&self.names, &namespace, &name, arity, handle);
     }
 
     /// Build the env from referenced-assembly views, enumerating each one's
@@ -2166,7 +2195,7 @@ impl AssemblyEnv {
     /// The top-level types declared in exactly `namespace` whose logical name
     /// matches `segment` ([`seg_name_matches`]), in interning order: what the
     /// test-only `types_at_logical_segment_by_scan` reference finds, read off
-    /// [`NamespaceTypes::by_il_or_source_name`] rather than a scan of every
+    /// [`TypeIndex::il_or_source_named`] rather than a scan of every
     /// top-level type.
     ///
     /// A segment matches through its own spelling or, when it is
@@ -2179,14 +2208,11 @@ impl AssemblyEnv {
         namespace: &[String],
         segment: &'a str,
     ) -> impl Iterator<Item = EntityHandle> + 'a {
-        let buckets = self
-            .types_by_namespace
-            .get(namespace)
-            .map(|types| &types.by_il_or_source_name);
+        let names = self.names();
+        let namespace = PathKey::of(names, namespace);
         let bucket = |name: &str| {
-            buckets
-                .and_then(|b| b.get(name))
-                .map_or(&[][..], Vec::as_slice)
+            self.types_by_namespace
+                .il_or_source_named(names, namespace, NameKey::of(names, name))
         };
         let spelled = bucket(segment);
         let mangled_base = match segment.rsplit_once('`') {
@@ -2711,7 +2737,23 @@ impl AssemblyEnv {
         name: &str,
         arity: usize,
     ) -> Option<EntityHandle> {
-        self.indexed_type(namespace, name, arity)
+        let names = self.names();
+        self.lookup_type_at(
+            PathKey::of(names, namespace),
+            NameKey::of(names, name),
+            arity,
+        )
+    }
+
+    /// [`Self::lookup_type`] by keys the caller already holds.
+    pub(crate) fn lookup_type_at(
+        &self,
+        namespace: PathKey<'_>,
+        name: NameKey<'_>,
+        arity: usize,
+    ) -> Option<EntityHandle> {
+        self.types_by_namespace
+            .first_by_arity(self.names(), namespace, name, arity)
     }
 
     /// [`Self::lookup_type`], **paired with the namespace's drop marker** — the
@@ -2741,19 +2783,6 @@ impl AssemblyEnv {
         (!self.namespace_has_dropped_type(namespace))
             .then(|| self.lookup_type(namespace, name, arity))
             .flatten()
-    }
-
-    /// The first-wins top-level type-position slot at
-    /// `(namespace, source name, generic arity)`. Every lookup is borrowed: the
-    /// construction-owned namespace/name keys are never recreated on this path.
-    fn indexed_type(&self, namespace: &[String], name: &str, arity: usize) -> Option<EntityHandle> {
-        self.types_by_namespace
-            .get(namespace)?
-            .by_source_name
-            .get(name)?
-            .first_by_arity
-            .get(&arity)
-            .copied()
     }
 
     /// Whether some referenced assembly declares a top-level entity named
@@ -2806,7 +2835,17 @@ impl AssemblyEnv {
     /// an IL heuristic FCS does not share, so excluding on it would be a guess
     /// in the direction that manufactures denials.
     pub fn declares_type_at_any_arity(&self, namespace: &[String], name: &str) -> bool {
-        self.types_named(namespace, name).iter().any(|&handle| {
+        let names = self.names();
+        self.declares_type_at_any_arity_at(PathKey::of(names, namespace), NameKey::of(names, name))
+    }
+
+    /// [`Self::declares_type_at_any_arity`] by keys the caller already holds.
+    pub(crate) fn declares_type_at_any_arity_at(
+        &self,
+        namespace: PathKey<'_>,
+        name: NameKey<'_>,
+    ) -> bool {
+        self.types_named_at(namespace, name).iter().any(|&handle| {
             self.is_public(handle) && self.entity_class(handle) != Some(SemanticClass::Module)
         })
     }
@@ -2833,7 +2872,8 @@ impl AssemblyEnv {
     /// not hide a public same-keyed type from another assembly and make its
     /// namespace disappear.
     pub fn has_namespace(&self, namespace: &[String]) -> bool {
-        self.public_namespace_paths.contains(namespace)
+        self.public_namespace_paths
+            .contains(self.names(), PathKey::of(self.names(), namespace))
     }
 
     /// The `(kind, is_struct)` of every **public** top-level type named `name`
@@ -2846,10 +2886,20 @@ impl AssemblyEnv {
     /// evicts a bare `Color` too (probe Ageneric). Only *public* types are
     /// cross-assembly reachable and so can occupy the slot.
     pub fn public_types_named(&self, namespace: &[String], name: &str) -> Vec<(EntityKind, bool)> {
+        let names = self.names();
+        self.public_types_named_at(PathKey::of(names, namespace), NameKey::of(names, name))
+    }
+
+    /// [`Self::public_types_named`] by keys the caller already holds.
+    pub(crate) fn public_types_named_at(
+        &self,
+        namespace: PathKey<'_>,
+        name: NameKey<'_>,
+    ) -> Vec<(EntityKind, bool)> {
         // Keep every collision rather than consulting the first-wins
         // type-position slot: a constructible class indexed after a
         // non-constructible collision still occupies FCS's head slot.
-        self.types_named(namespace, name)
+        self.types_named_at(namespace, name)
             .iter()
             .copied()
             .filter(|&handle| self.is_public(handle))
@@ -2911,7 +2961,23 @@ impl AssemblyEnv {
         name: &str,
         arity: usize,
     ) -> Vec<EntityHandle> {
-        self.types_named(namespace, name)
+        let names = self.names();
+        self.public_types_named_at_arity_at(
+            PathKey::of(names, namespace),
+            NameKey::of(names, name),
+            arity,
+        )
+    }
+
+    /// [`Self::public_types_named_at_arity`] by keys the caller already
+    /// holds.
+    pub(crate) fn public_types_named_at_arity_at(
+        &self,
+        namespace: PathKey<'_>,
+        name: NameKey<'_>,
+        arity: usize,
+    ) -> Vec<EntityHandle> {
+        self.types_named_at(namespace, name)
             .iter()
             .copied()
             .filter(|&handle| {
@@ -2948,7 +3014,17 @@ impl AssemblyEnv {
     /// Reads the same complete exact-name bucket as
     /// [`Self::public_types_named`].
     pub fn public_entities_named(&self, namespace: &[String], name: &str) -> Vec<EntityHandle> {
-        self.types_named(namespace, name)
+        let names = self.names();
+        self.public_entities_named_at(PathKey::of(names, namespace), NameKey::of(names, name))
+    }
+
+    /// [`Self::public_entities_named`] by keys the caller already holds.
+    pub(crate) fn public_entities_named_at(
+        &self,
+        namespace: PathKey<'_>,
+        name: NameKey<'_>,
+    ) -> Vec<EntityHandle> {
+        self.types_named_at(namespace, name)
             .iter()
             .copied()
             .filter(|&handle| self.is_public(handle))
@@ -3382,7 +3458,7 @@ impl AssemblyEnv {
             let uncertain = self.namespace_uncertain(&ns);
             uncertain_namespace |= uncertain;
             for s in self.open_namespace_fold_surfaces(&ns) {
-                surfaces.push((s, true, uncertain));
+                surfaces.push((s.clone(), true, uncertain));
             }
         }
         let others = self
@@ -3394,7 +3470,7 @@ impl AssemblyEnv {
             let uncertain = self.namespace_uncertain(&ns);
             uncertain_namespace |= uncertain;
             for s in self.open_namespace_fold_surfaces(&ns) {
-                surfaces.push((s, false, uncertain));
+                surfaces.push((s.clone(), false, uncertain));
             }
         }
         for &(h, effectively_public) in &self.auto_open_module_handles {
@@ -3452,18 +3528,18 @@ impl AssemblyEnv {
     /// never a wrong target.
     pub(crate) fn namespace_could_supply_slot_type(
         &self,
-        namespace: &[String],
-        name: &str,
+        namespace: PathKey<'_>,
+        name: NameKey<'_>,
     ) -> bool {
-        self.namespace_uncertain(namespace)
+        self.namespace_uncertain(namespace.text)
             || self
-                .public_types_named(namespace, name)
+                .public_types_named_at(namespace, name)
                 .into_iter()
                 .any(|(kind, is_struct)| type_name_is_value_slot_contestant(kind, is_struct))
             || self
-                .auto_open_modules_in_namespace(namespace)
+                .auto_open_modules_in_namespace_at(namespace)
                 .iter()
-                .any(|&m| self.module_children_supply_slot_type(m, name))
+                .any(|&m| self.module_children_supply_slot_type(m, name.text))
     }
 
     /// Whether a public nested type of module `module` named `name` takes the
@@ -3486,27 +3562,29 @@ impl AssemblyEnv {
     /// the auto-open list itself is unknown. (The implicit namespaces are among
     /// a file's open readings, so the caller asks of them per reading.)
     pub(crate) fn implicit_surface_could_supply_slot_type(&self, name: &str) -> bool {
+        let names = self.names();
+        let name = NameKey::of(names, name);
         self.extension_surface_unknowable
             || self
                 .contested_auto_opens
                 .iter()
-                .any(|(_, ns)| self.namespace_could_supply_slot_type(ns, name))
-            || self.namespace_could_supply_slot_type(&[], name)
+                .any(|(_, ns)| self.namespace_could_supply_slot_type(PathKey::of(names, ns), name))
+            || self.namespace_could_supply_slot_type(PathKey::new(Some(names.root()), &[]), name)
             || self.auto_open_module_handles.iter().any(|&(h, _)| {
-                self.module_children_supply_slot_type(h, name)
+                self.module_children_supply_slot_type(h, name.text)
                     || self
                         .auto_open_descendants(h)
                         .iter()
-                        .any(|&(d, _)| self.module_children_supply_slot_type(d, name))
+                        .any(|&(d, _)| self.module_children_supply_slot_type(d, name.text))
             })
     }
 
     /// The bare-visible **value** surface of `namespace`: its fold surfaces plus
     /// the namespace-scoped uncertainty they cannot encode. The only sanctioned
     /// way to ask whether a namespace could supply a value.
-    pub fn namespace_value_surface(&self, namespace: &[String]) -> ValueSurface {
+    pub fn namespace_value_surface(&self, namespace: &[String]) -> ValueSurface<'_> {
         ValueSurface {
-            surfaces: self.open_namespace_fold_surfaces(namespace),
+            surfaces: std::borrow::Cow::Borrowed(self.open_namespace_fold_surfaces(namespace)),
             uncertain: self.namespace_uncertain(namespace),
         }
     }
@@ -3514,9 +3592,9 @@ impl AssemblyEnv {
     /// The same, for a module opened by a module-shaped manifest `AutoOpen`. Its
     /// uncertainty is that of the namespace that *owns* it — the marker is
     /// namespace-keyed, and forgetting it here was the audit's finding.
-    pub fn module_value_surface(&self, handle: EntityHandle) -> ValueSurface {
+    pub fn module_value_surface(&self, handle: EntityHandle) -> ValueSurface<'static> {
         ValueSurface {
-            surfaces: vec![self.open_fold_surface(handle)],
+            surfaces: std::borrow::Cow::Owned(vec![self.open_fold_surface(handle)]),
             uncertain: self.namespace_uncertain(&self.nodes[handle.index()].owning_namespace),
         }
     }
@@ -4357,22 +4435,59 @@ impl AssemblyEnv {
     /// abbreviations from the namespace entirely (they live only in the pickle),
     /// so a residue-only surface is appended: an unseen constructible abbreviation
     /// could contest the module half, which must therefore defer.
-    pub fn open_namespace_fold_surfaces(&self, namespace: &[String]) -> Vec<OpenFoldSurface> {
-        // The public top-level entities declared *directly* in the namespace. The
-        // direct `[<AutoOpen>]` modules are a subset of this; we fold them
-        // recursively below (`fold_container_into` descends into their nested
-        // auto-opens). We deliberately do NOT iterate
-        // `auto_open_modules_in_namespace`, which is the transitive *closure* — the
-        // recursion would then fold every nested module a second time.
+    ///
+    /// Memoised per namespace: the surfaces are built once per env (and again
+    /// after a `mark_*` mutator) and borrowed from then on.
+    pub fn open_namespace_fold_surfaces(&self, namespace: &[String]) -> &[OpenFoldSurface] {
+        let names = self.names();
+        let key = PathKey::of(names, namespace);
+        match self.types_by_namespace.fold_memo(names, key) {
+            Some(memo) => memo.get_or_init(|| {
+                let direct: Vec<EntityHandle> = self
+                    .types_by_namespace
+                    .types_in_namespace(names, key)
+                    .iter()
+                    .copied()
+                    .filter(|&h| self.is_public(h))
+                    .collect();
+                self.build_namespace_fold_surfaces(namespace, &direct)
+            }),
+            // No top-level type is declared directly in `namespace`, so the only
+            // surface it can have is the residue of abbreviations nobody can see.
+            None if self.unknowable_abbreviations_in_namespace(namespace) => {
+                std::slice::from_ref(&RESIDUE_ONLY_SURFACE)
+            }
+            None => &[],
+        }
+    }
+
+    /// [`Self::open_namespace_fold_surfaces`] without the memo or the namespace
+    /// index: the scan of every top-level type the memo is held to.
+    #[cfg(test)]
+    fn open_namespace_fold_surfaces_by_scan(&self, namespace: &[String]) -> Vec<OpenFoldSurface> {
         let direct: Vec<EntityHandle> = self
             .top_level_types
             .iter()
             .copied()
             .filter(|&h| self.is_public(h) && self.entity(h).namespace.as_slice() == namespace)
             .collect();
+        self.build_namespace_fold_surfaces(namespace, &direct)
+    }
+
+    /// Build [`Self::open_namespace_fold_surfaces`] from `direct`, the public
+    /// top-level entities declared *directly* in `namespace`, in interning order.
+    /// The direct `[<AutoOpen>]` modules are a subset of these, folded
+    /// recursively (`fold_container_into` descends into their nested
+    /// auto-opens). `auto_open_modules_in_namespace` is the transitive
+    /// *closure*, so iterating it here would fold every nested module twice.
+    fn build_namespace_fold_surfaces(
+        &self,
+        namespace: &[String],
+        direct: &[EntityHandle],
+    ) -> Vec<OpenFoldSurface> {
         // The distinct contributing assemblies, in first-seen order.
         let mut assemblies: Vec<AssemblyIdentity> = Vec::new();
-        for &h in &direct {
+        for &h in direct {
             let a = &self.entity(h).assembly;
             if !assemblies.iter().any(|x| x == a) {
                 assemblies.push(a.clone());
@@ -4890,6 +5005,7 @@ impl AssemblyEnv {
     pub fn mark_extension_surface_unknowable(&mut self) {
         self.extension_surface_unknowable = true;
         self.invalidate_bare_value_index();
+        self.invalidate_fold_surfaces();
     }
 
     /// Whether the env's loaded-DLL **identity set is incomplete**: some DLL is
@@ -4923,6 +5039,7 @@ impl AssemblyEnv {
         // The core library is named only over a complete identity set.
         self.core_library = Default::default();
         self.invalidate_attribute_aliases();
+        self.invalidate_fold_surfaces();
     }
 
     /// Record that a referenced assembly **dropped an undecodable type** in
@@ -4935,13 +5052,16 @@ impl AssemblyEnv {
     pub fn mark_namespace_dropped_type(&mut self, namespace: Vec<String>) {
         for len in 0..=namespace.len() {
             self.dropped_type_namespace_prefixes
-                .insert(namespace[..len].to_vec());
+                .insert(&self.names, &namespace[..len]);
         }
-        self.namespaces_with_dropped_types.insert(namespace);
+        self.namespaces_with_dropped_types
+            .insert(&self.names, &namespace);
+        self.seeded_entries = self.names.entry_count();
         // The core library is named only over a `System` with no drop.
         self.core_library = Default::default();
         self.invalidate_bare_value_index();
         self.invalidate_attribute_aliases();
+        self.invalidate_fold_surfaces();
     }
 
     /// Drop the memoised [`Self::core_attribute_aliases`],
@@ -4953,6 +5073,16 @@ impl AssemblyEnv {
         self.core_attribute_alias = std::sync::OnceLock::new();
         self.custom_operation_alias = std::sync::OnceLock::new();
         self.slot_attribute_alias = std::sync::OnceLock::new();
+    }
+
+    /// Drop every namespace's memoised [`Self::open_namespace_fold_surfaces`].
+    ///
+    /// Called by every `mark_*` mutator. The fold reads none of what they mark
+    /// today, but it is built from helpers shared with code that does, and a
+    /// stale surface would be a wrong answer where a rebuild costs one fold per
+    /// namespace queried again.
+    fn invalidate_fold_surfaces(&mut self) {
+        self.types_by_namespace.reset_fold_memos();
     }
 
     /// Drop the memoised [`Self::bare_value_index`],
@@ -4975,13 +5105,15 @@ impl AssemblyEnv {
     /// type there may have been dropped, making a lone surviving entry's identity
     /// unreliable. The applicability matcher's named-argument affirmation reads this.
     pub(crate) fn namespace_has_dropped_type(&self, namespace: &[String]) -> bool {
-        self.namespaces_with_dropped_types.contains(namespace)
+        self.namespaces_with_dropped_types
+            .contains_path(self.names(), namespace)
     }
 
     /// Whether `path` is a prefix of (or is) a namespace a referenced assembly
     /// dropped a type in ([`Self::namespace_has_dropped_type`]).
     pub(crate) fn prefixes_a_dropped_type_namespace(&self, path: &[String]) -> bool {
-        self.dropped_type_namespace_prefixes.contains(path)
+        self.dropped_type_namespace_prefixes
+            .contains_path(self.names(), path)
     }
 
     /// Whether any referenced assembly dropped an undecodable type, anywhere.
@@ -5031,6 +5163,44 @@ impl AssemblyEnv {
     /// prove what this open imports.
     pub(crate) fn any_split_of_a_module_path_has_a_dropped_type(&self, path: &[String]) -> bool {
         (0..=path.len()).any(|k| self.namespace_has_dropped_type(&path[..k]))
+    }
+
+    /// [`Self::any_split_of_a_module_path_has_a_dropped_type`] of `prefix`
+    /// extended by `tail`, asked by id without building the path: the splits
+    /// are `prefix`'s ancestors, itself included, and `prefix` extended by
+    /// each prefix of `tail`. An extension the table never interned is in no
+    /// set, and neither is anything below it.
+    pub(crate) fn any_split_under_has_a_dropped_type(
+        &self,
+        prefix: PathKey<'_>,
+        tail: &[String],
+    ) -> bool {
+        let names = self.names();
+        prefix.check(names);
+        let dropped = &self.namespaces_with_dropped_types;
+        let found = !dropped.is_empty() && {
+            let own_splits = match prefix.id {
+                Some(id) => std::iter::successors(Some(id), |&at| names.split(at).map(|(p, _)| p))
+                    .map(Some)
+                    .collect(),
+                None => names.lookup_extension(Some(names.root()), prefix.text).ids,
+            };
+            let below = names.lookup_extension(prefix.id, tail).ids;
+            own_splits
+                .into_iter()
+                .chain(below.into_iter().skip(1))
+                .any(|id| dropped.contains_id(names, id))
+        };
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            let full: Vec<String> = prefix.text.iter().chain(tail).cloned().collect();
+            assert_eq!(
+                found,
+                self.any_split_of_a_module_path_has_a_dropped_type(&full),
+                "the dropped-type splits disagree with their reference at {full:?}"
+            );
+        }
+        found
     }
 
     /// **EX-1 — the name-keyed extension gate.** Whether any referenced-assembly
@@ -5142,7 +5312,7 @@ impl AssemblyEnv {
         is_static: bool,
         contributor: AssemblyId,
     ) -> bool {
-        self.namespaces_with_dropped_types.contains(namespace)
+        self.namespace_has_dropped_type(namespace)
             || self.types_in_namespace(namespace).iter().any(|&h| {
                 self.assembly_provenance(h) == Some(contributor)
                     && self.entity_tree_has_extension_named(h, name, is_static)
@@ -5160,18 +5330,22 @@ impl AssemblyEnv {
     /// [`Self::types_by_namespace`] index lookup, empty if none. Replaces a linear
     /// [`Self::top_level_types`] scan in the hot extension-gate queries.
     fn types_in_namespace(&self, namespace: &[String]) -> &[EntityHandle] {
+        let names = self.names();
         self.types_by_namespace
-            .get(namespace)
-            .map_or(&[], |types| types.all.as_slice())
+            .types_in_namespace(names, PathKey::of(names, namespace))
     }
 
     /// The top-level type handles at exactly `(namespace, source name)`, across
     /// all arities and assemblies, in interning order.
     fn types_named(&self, namespace: &[String], name: &str) -> &[EntityHandle] {
+        let names = self.names();
+        self.types_named_at(PathKey::of(names, namespace), NameKey::of(names, name))
+    }
+
+    /// [`Self::types_named`] by keys the caller already holds.
+    fn types_named_at(&self, namespace: PathKey<'_>, name: NameKey<'_>) -> &[EntityHandle] {
         self.types_by_namespace
-            .get(namespace)
-            .and_then(|types| types.by_source_name.get(name))
-            .map_or(&[], |types| types.all.as_slice())
+            .types_named(self.names(), namespace, name)
     }
 
     /// The per-namespace half of [`Self::extension_named_in_scope`]: whether any
@@ -5186,7 +5360,7 @@ impl AssemblyEnv {
         name: &str,
         is_static: bool,
     ) -> bool {
-        self.namespaces_with_dropped_types.contains(namespace)
+        self.namespace_has_dropped_type(namespace)
             || self
                 .types_in_namespace(namespace)
                 .iter()
@@ -5311,7 +5485,18 @@ impl AssemblyEnv {
     /// namespaces' auto-open modules.
     pub fn auto_open_modules_in_namespace(&self, namespace: &[String]) -> &[EntityHandle] {
         self.auto_open_modules
-            .get(namespace)
+            .get(self.names(), namespace)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// [`Self::auto_open_modules_in_namespace`] by a key the caller already
+    /// holds.
+    pub(crate) fn auto_open_modules_in_namespace_at(
+        &self,
+        namespace: PathKey<'_>,
+    ) -> &[EntityHandle] {
+        self.auto_open_modules
+            .get_key(self.names(), namespace)
             .map_or(&[], Vec::as_slice)
     }
 
@@ -5328,7 +5513,7 @@ impl AssemblyEnv {
         namespace: &[String],
     ) -> &[Vec<String>] {
         self.auto_open_module_paths
-            .get(namespace)
+            .get(self.names(), namespace)
             .map_or(&[], Vec::as_slice)
     }
 
@@ -5416,7 +5601,20 @@ impl AssemblyEnv {
         namespace: &[String],
         name: &str,
     ) -> bool {
-        self.auto_open_modules_in_namespace(namespace)
+        self.auto_open_modules_in_namespace_shadow_type_named_at(
+            PathKey::of(self.names(), namespace),
+            name,
+        )
+    }
+
+    /// [`Self::auto_open_modules_in_namespace_shadow_type_named`] by a key the
+    /// caller already holds.
+    pub(crate) fn auto_open_modules_in_namespace_shadow_type_named_at(
+        &self,
+        namespace: PathKey<'_>,
+        name: &str,
+    ) -> bool {
+        self.auto_open_modules_in_namespace_at(namespace)
             .iter()
             .any(|handle| self.auto_open_module_shadows_type_named(*handle, name))
     }
@@ -8348,7 +8546,7 @@ pub(crate) mod from_views_tests {
                         })
                         .map(|(_, entity)| entity.assembly.name.as_str());
                     let indexed = env
-                        .indexed_type(&namespace, &name, arity)
+                        .lookup_type(&namespace, &name, arity)
                         .map(|handle| env.entity(handle).assembly.name.as_str());
                     prop_assert_eq!(indexed, expected);
                     let public = env
@@ -11180,6 +11378,238 @@ pub(crate) mod from_views_tests {
                 "a forwarded chase resolved through a hop",
                 hits.forwarded_resolved_through_a_hop,
             ),
+        ] {
+            assert!(
+                count > 0,
+                "the generator never reached a case where {what}: {hits:?}"
+            );
+        }
+    }
+
+    /// The names an entity in [`fold_surface_env`] is spelled with, and the
+    /// names of its union cases and module values: one shared spelling (`X`)
+    /// so that cases, values and type names collide across surfaces.
+    const FOLD_NAMES: [&str; 4] = ["X", "Y", "N", "Ex"];
+    /// [`INDEX_NAMESPACES`] plus a namespace below a type-free prefix.
+    const FOLD_NAMESPACES: [&[&str]; 5] = [&[], &["N"], &["N", "X"], &["M"], &["P", "Q"]];
+
+    /// One entity of [`fold_surface_env`], `depth` levels of nesting below:
+    /// every kind the namespace fold treats differently, public or not,
+    /// auto-open or `[<RequireQualifiedAccess>]` or neither, with known or
+    /// unknowable union cases and static values.
+    fn fold_entity(dll: &'static str, depth: u32) -> BoxedStrategy<Entity> {
+        let nested = if depth == 0 {
+            Just(Vec::new()).boxed()
+        } else {
+            prop::collection::vec(fold_entity(dll, depth - 1), 0..3).boxed()
+        };
+        let cases = prop_oneof![
+            Just(None),
+            prop::collection::vec(prop::sample::select(&FOLD_NAMES[..]), 0..3).prop_map(Some),
+        ];
+        (
+            (
+                prop::sample::select(&FOLD_NAMES[..]),
+                prop::sample::select(&FOLD_NAMESPACES[..]),
+                prop::sample::select(
+                    &[
+                        EntityKind::Class,
+                        EntityKind::Module,
+                        EntityKind::Union,
+                        EntityKind::Exception,
+                        EntityKind::Abbreviation,
+                        EntityKind::Struct,
+                    ][..],
+                ),
+                prop::bool::weighted(0.8),
+                any::<bool>(),
+                prop::bool::weighted(0.2),
+            ),
+            cases,
+            prop::collection::vec(prop::sample::select(&FOLD_NAMES[..]), 0..3),
+            nested,
+        )
+            .prop_map(
+                move |(
+                    (name, namespace, kind, public, auto_open, rqa),
+                    cases,
+                    values,
+                    nested_types,
+                )| Entity {
+                    kind,
+                    access: if public {
+                        Access::Public
+                    } else {
+                        Access::Internal
+                    },
+                    is_auto_open: auto_open,
+                    is_require_qualified_access: rqa,
+                    union_cases: match cases {
+                        None => UnionCases::Unknowable,
+                        Some(names) => UnionCases::Known(
+                            names
+                                .iter()
+                                .zip(0..)
+                                .map(|(n, i)| borzoi_assembly::UnionCase::unread(*n, i))
+                                .collect(),
+                        ),
+                    },
+                    members: values.iter().map(|v| static_int_prop(v)).collect(),
+                    nested_types,
+                    ..module_entity(dll, namespace, name)
+                },
+            )
+            .boxed()
+    }
+
+    /// A mutator applied to a [`fold_surface_env`] after its memo has filled.
+    #[derive(Debug, Clone)]
+    enum FoldMark {
+        DroppedType(Vec<String>),
+        ExtensionSurfaceUnknowable,
+        ReferencedAssembliesIncomplete,
+    }
+
+    /// One to four DLLs drawn from [`INDEX_DLLS`] (names may repeat), each
+    /// with top-level entities from [`fold_entity`] and either knowable or
+    /// unknowable abbreviations and extension index, plus the marks applied
+    /// once the memo is full.
+    fn fold_surface_env() -> impl Strategy<Value = (AssemblyEnv, Vec<FoldMark>)> {
+        let dll = (
+            prop::sample::select(&INDEX_DLLS[..]),
+            any::<bool>(),
+            prop::bool::weighted(0.2),
+        )
+            .prop_flat_map(|(dll, abbreviations_unknowable, extensions_unknowable)| {
+                (
+                    Just((dll, abbreviations_unknowable, extensions_unknowable)),
+                    prop::collection::vec(fold_entity(dll, 2), 0..6),
+                )
+            });
+        let mark = prop_oneof![
+            prop::sample::select(&FOLD_NAMESPACES[..])
+                .prop_map(|ns| FoldMark::DroppedType(ns.iter().map(|s| s.to_string()).collect())),
+            Just(FoldMark::ExtensionSurfaceUnknowable),
+            Just(FoldMark::ReferencedAssembliesIncomplete),
+        ];
+        (
+            prop::collection::vec(dll, 1..5),
+            prop::collection::vec(mark, 0..4),
+        )
+            .prop_map(|(dlls, marks)| {
+                let inputs = dlls
+                    .into_iter()
+                    .map(
+                        |((dll, abbreviations_unknowable, extensions_unknowable), roots)| {
+                            super::AssemblyProjectionInput {
+                                abbreviation_visibility: if abbreviations_unknowable {
+                                    super::AbbreviationVisibility::Unknowable
+                                } else {
+                                    super::AbbreviationVisibility::Modelled
+                                },
+                                extension_index_unknowable: extensions_unknowable,
+                                ..forwarder_input(dll, roots, Vec::new())
+                            }
+                        },
+                    )
+                    .collect();
+                (
+                    AssemblyEnv::from_assemblies_with_projection_knowability(inputs),
+                    marks,
+                )
+            })
+    }
+
+    /// How often [`namespace_fold_surface_memo_agrees_with_the_scan`] reached
+    /// each case it exists to cover.
+    #[derive(Debug, Default)]
+    struct FoldMemoHits {
+        surfaces_with_entries: usize,
+        two_surfaces: usize,
+        residue_only: usize,
+        contestants: usize,
+        marked_after_fill: usize,
+    }
+
+    /// [`AssemblyEnv::open_namespace_fold_surfaces`], memoised and read from
+    /// the namespace index, answers exactly what the scan of every top-level
+    /// type does, for every namespace and every prefix of one, before and after
+    /// each `mark_*` mutator lands on a filled memo, and in a clone taken before
+    /// the marks.
+    #[test]
+    fn namespace_fold_surface_memo_agrees_with_the_scan() {
+        use proptest::test_runner::{Config, TestRunner};
+        use std::cell::RefCell;
+
+        let namespaces: Vec<Vec<String>> = FOLD_NAMESPACES
+            .iter()
+            .map(|ns| ns.iter().map(|s| (*s).to_string()).collect())
+            .chain([
+                vec!["P".to_string()],
+                vec!["N".to_string(), "Z".to_string()],
+            ])
+            .collect();
+        let hits = RefCell::new(FoldMemoHits::default());
+        let agree = |env: &AssemblyEnv, when: &str| -> Result<(), TestCaseError> {
+            let mut hits = hits.borrow_mut();
+            for ns in &namespaces {
+                // Twice: the first fills the memo, the second reads it.
+                for _ in 0..2 {
+                    let memo = env.open_namespace_fold_surfaces(ns);
+                    let scan = env.open_namespace_fold_surfaces_by_scan(ns);
+                    prop_assert_eq!(memo, scan.as_slice(), "namespace {:?}, {}", ns, when);
+                }
+                let surfaces = env.open_namespace_fold_surfaces(ns);
+                hits.surfaces_with_entries +=
+                    usize::from(surfaces.iter().any(|s| !s.entries.is_empty()));
+                hits.two_surfaces += usize::from(surfaces.len() >= 2);
+                hits.contestants +=
+                    usize::from(surfaces.iter().any(|s| !s.contestant_names.is_empty()));
+                hits.residue_only += usize::from(
+                    env.types_by_namespace
+                        .fold_memo(env.names(), crate::names::PathKey::of(env.names(), ns))
+                        .is_none()
+                        && !surfaces.is_empty(),
+                );
+            }
+            Ok(())
+        };
+        let mut runner = TestRunner::new(Config {
+            cases: 256,
+            failure_persistence: None,
+            ..Config::default()
+        });
+        let outcome = runner.run(&fold_surface_env(), |(mut env, marks)| {
+            agree(&env, "before any mark")?;
+            let before_marks = env.clone();
+            for mark in &marks {
+                match mark {
+                    FoldMark::DroppedType(ns) => env.mark_namespace_dropped_type(ns.clone()),
+                    FoldMark::ExtensionSurfaceUnknowable => env.mark_extension_surface_unknowable(),
+                    FoldMark::ReferencedAssembliesIncomplete => {
+                        env.mark_referenced_assemblies_incomplete()
+                    }
+                }
+                hits.borrow_mut().marked_after_fill += 1;
+                agree(&env, &format!("after {mark:?}"))?;
+            }
+            agree(&before_marks, "in a clone taken before the marks")?;
+            Ok(())
+        });
+        if let Err(failure) = outcome {
+            panic!("{failure}");
+        }
+        let hits = hits.into_inner();
+        eprintln!("{hits:?}");
+        for (what, count) in [
+            ("a surface listed a name", hits.surfaces_with_entries),
+            ("two assemblies contributed surfaces", hits.two_surfaces),
+            (
+                "a type-free namespace had a residue surface",
+                hits.residue_only,
+            ),
+            ("a surface named a contestant", hits.contestants),
+            ("a mark landed on a filled memo", hits.marked_after_fill),
         ] {
             assert!(
                 count > 0,
