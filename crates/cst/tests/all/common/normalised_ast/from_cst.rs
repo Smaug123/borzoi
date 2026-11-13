@@ -11,13 +11,14 @@ use borzoi_cst::syntax::{
     IdentExpr, IfThenElseExpr, ImplFile, ImplicitCtor, IndexRangeExpr, InterpStringExpr,
     InterpStringPart, JoinInExpr, LibraryOnlyFieldGetExpr, LongIdent, LongIdentAppType,
     LongIdentExpr, LongIdentPat, LongIdentType, MatchBangExpr, MatchClause, MatchExpr,
-    MatchLambdaExpr, Measure, MeasureLitExpr, MeasurePowerType, MemberDefn, MemberLeading,
-    MemberSig, MemberSigLeading, ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NamedPat,
-    NewExpr, ObjExpr, OpenDecl, ParenExpr, ParenPat, Pat, RationalConst, RecordField,
-    RecordFieldDecl, SigDecl, SigFile, StaticOptCondition, StaticOptimizationExpr, SyntaxKind,
-    SyntaxToken, TraitCallExpr, TupleExpr, TuplePat, TupleSegment, TupleType, TyparConstraint,
-    TyparConstraintKind, TyparDecl, TyparDeclsForm, Type, TypeAppExpr, TypeDefn, TypeDefnRepr,
-    TypeTestExpr, TypedExpr, TypedPat, UnionCase, UnionCaseField, UpcastExpr, ValField, VarType,
+    MatchLambdaExpr, Measure, MeasureLitExpr, MeasureLitPat, MeasurePowerType, MemberDefn,
+    MemberLeading, MemberSig, MemberSigLeading, ModuleDecl, ModuleOrNamespace,
+    ModuleOrNamespaceKind, NamedPat, NewExpr, ObjExpr, OpenDecl, ParenExpr, ParenPat, Pat,
+    RationalConst, RecordField, RecordFieldDecl, SigDecl, SigFile, StaticOptCondition,
+    StaticOptimizationExpr, SyntaxKind, SyntaxToken, TraitCallExpr, TupleExpr, TuplePat,
+    TupleSegment, TupleType, TyparConstraint, TyparConstraintKind, TyparDecl, TyparDeclsForm, Type,
+    TypeAppExpr, TypeDefn, TypeDefnRepr, TypeTestExpr, TypedExpr, TypedPat, UnionCase,
+    UnionCaseField, UpcastExpr, ValField, VarType,
 };
 
 use super::decode::*;
@@ -1884,6 +1885,7 @@ fn normalise_pat(p: &Pat, counter: &mut u32) -> NormalisedPat {
         Pat::Wildcard(_) => NormalisedPat::Wildcard,
         Pat::Paren(p) => NormalisedPat::Paren(Box::new(normalise_paren_pat(p, counter))),
         Pat::Const(c) => NormalisedPat::Const(normalise_const_pat(c)),
+        Pat::MeasureLit(m) => NormalisedPat::Const(normalise_measure_lit_pat(m)),
         Pat::Null(n) => {
             assert_eq!(
                 n.keyword().map(|t| t.text().to_string()).as_deref(),
@@ -3963,6 +3965,21 @@ fn normalise_measure_lit(m: &MeasureLitExpr) -> NormalisedConst {
         .expect("MEASURE_LIT_EXPR must contain a measure child");
     NormalisedConst::Measure {
         constant: Box::new(normalise_const(&constant)),
+        measure: normalise_measure(&measure),
+    }
+}
+
+/// Project a `MEASURE_LIT_PAT` to `NormalisedConst::Measure` — the pattern
+/// twin of [`normalise_measure_lit`], FCS's `SynPat.Const(SynConst.Measure(…))`.
+fn normalise_measure_lit_pat(m: &MeasureLitPat) -> NormalisedConst {
+    let constant = m
+        .const_pat()
+        .expect("MEASURE_LIT_PAT must contain a CONST_PAT child");
+    let measure = m
+        .measure()
+        .expect("MEASURE_LIT_PAT must contain a measure child");
+    NormalisedConst::Measure {
+        constant: Box::new(normalise_const_pat(&constant)),
         measure: normalise_measure(&measure),
     }
 }

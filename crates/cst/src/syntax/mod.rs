@@ -2401,6 +2401,22 @@ impl ConstPat {
     }
 }
 
+impl MeasureLitPat {
+    /// The underlying numeric constant — the sole [`ConstPat`] child (the `0`
+    /// in `0<m>`), carrying FCS's `SynConst.Measure.constant`. Its literal is
+    /// not the pattern's type: that is the measured one.
+    pub fn const_pat(&self) -> Option<ConstPat> {
+        accessor!("MeasureLitPat::const_pat");
+        child(&self.0)
+    }
+
+    /// The measure annotation — the sole [`Measure`] child (the `<m>`).
+    pub fn measure(&self) -> Option<Measure> {
+        accessor!("MeasureLitPat::measure");
+        child(&self.0)
+    }
+}
+
 impl NullPat {
     /// The single [`SyntaxKind::NULL_TOK`] child carrying the `null`
     /// keyword. Exposed for source-range recovery; the pattern's

@@ -105,6 +105,25 @@ impl AstNode for ConstPat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MeasureLitPat(pub(crate) SyntaxNode);
+
+impl AstNode for MeasureLitPat {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(kind, SyntaxKind::MEASURE_LIT_PAT)
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(Self(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NullPat(pub(crate) SyntaxNode);
 
 impl AstNode for NullPat {
@@ -358,6 +377,7 @@ pub enum Pat {
     Wildcard(WildcardPat),
     Paren(ParenPat),
     Const(ConstPat),
+    MeasureLit(MeasureLitPat),
     Null(NullPat),
     Typed(TypedPat),
     Tuple(TuplePat),
@@ -382,6 +402,7 @@ impl AstNode for Pat {
                 | SyntaxKind::WILDCARD_PAT
                 | SyntaxKind::PAREN_PAT
                 | SyntaxKind::CONST_PAT
+                | SyntaxKind::MEASURE_LIT_PAT
                 | SyntaxKind::NULL_PAT
                 | SyntaxKind::TYPED_PAT
                 | SyntaxKind::TUPLE_PAT
@@ -404,6 +425,7 @@ impl AstNode for Pat {
             SyntaxKind::WILDCARD_PAT => WildcardPat::cast(node).map(Pat::Wildcard),
             SyntaxKind::PAREN_PAT => ParenPat::cast(node).map(Pat::Paren),
             SyntaxKind::CONST_PAT => ConstPat::cast(node).map(Pat::Const),
+            SyntaxKind::MEASURE_LIT_PAT => MeasureLitPat::cast(node).map(Pat::MeasureLit),
             SyntaxKind::NULL_PAT => NullPat::cast(node).map(Pat::Null),
             SyntaxKind::TYPED_PAT => TypedPat::cast(node).map(Pat::Typed),
             SyntaxKind::TUPLE_PAT => TuplePat::cast(node).map(Pat::Tuple),
@@ -427,6 +449,7 @@ impl AstNode for Pat {
             Pat::Wildcard(n) => n.syntax(),
             Pat::Paren(n) => n.syntax(),
             Pat::Const(n) => n.syntax(),
+            Pat::MeasureLit(n) => n.syntax(),
             Pat::Null(n) => n.syntax(),
             Pat::Typed(n) => n.syntax(),
             Pat::Tuple(n) => n.syntax(),

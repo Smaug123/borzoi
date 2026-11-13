@@ -251,9 +251,15 @@ fn collect(
         }
         // Refutable heads that introduce no names. `IsInst` (`:? T`) tests a
         // type and binds nothing on its own; the `x` in `:? T as x` is bound by
-        // the surrounding `As`, not the `IsInst`. `Quote` (`<@ … @>`) is a
+        // the surrounding `As`, not the `IsInst`. A measured literal (`0<m>`)
+        // is a constant like `Const`. `Quote` (`<@ … @>`) is a
         // parameterised active-pattern *argument* expression, not a binder.
-        Pat::Wildcard(_) | Pat::Const(_) | Pat::Null(_) | Pat::IsInst(_) | Pat::Quote(_) => {}
+        Pat::Wildcard(_)
+        | Pat::Const(_)
+        | Pat::MeasureLit(_)
+        | Pat::Null(_)
+        | Pat::IsInst(_)
+        | Pat::Quote(_) => {}
         Pat::Paren(p) => {
             if let Some(inner) = p.inner() {
                 collect(

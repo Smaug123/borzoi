@@ -1,5 +1,5 @@
 //! Differential test (`parser::parse` vs FCS): unit-of-measure annotated
-//! numeric literals in expression position — FCS's `rawConstant
+//! numeric literals, in expression and pattern position — FCS's `rawConstant
 //! HIGH_PRECEDENCE_TYAPP measureTypeArg` (`pars.fsy:3521`), projecting to
 //! `SynConst.Measure(constant, range, SynMeasure, trivia)`.
 //!
@@ -241,4 +241,32 @@ fn recovery_measure_adjacent_paren_atom() {
             "{src:?}: {errors:?}"
         );
     }
+}
+
+/// A measured literal in pattern position — `atomicPattern: constant` takes the
+/// measure arm of `constant` (`pars.fsy:3520`) as it takes a bare literal, so
+/// each is `SynPat.Const(SynConst.Measure(…))`. Covers a `function` clause, a
+/// parenthesised `let` head, `match` clauses with a float, a negative literal
+/// (sign-folded into the token), a compound measure and the anonymous `<_>`,
+/// and a tuple and an or-pattern of them.
+#[test]
+fn diff_ast_measure_literal_pattern() {
+    for src in [
+        "let f = function 0<m> -> 0 | _ -> 1\n",
+        "let (0<m>) = 0\n",
+        "let g x =\n    match x with\n    | 1.5<kg> -> 1\n    | -2<m> -> 2\n    | 3<kg m/s^2> -> 3\n    | 4<_> -> 4\n    | _ -> 5\n",
+        "let h x =\n    match x with\n    | (1<m>, 2<s>) -> 1\n    | 3<m> | 4<m> -> 2\n    | _ -> 3\n",
+    ] {
+        assert_asts_match(src);
+    }
+}
+
+/// A measured literal in a pattern sits at the same adjacency the lex filter
+/// marks for a type application, so a spaced `<` is no measure: it is the
+/// comparison operator, which no pattern takes, and both parsers reject it.
+#[test]
+fn diff_ast_measure_literal_pattern_spaced_is_not_a_measure() {
+    assert!(!crate::common::assert_parse_verdicts_match(
+        "let f = function 0 <m> -> 0 | _ -> 1\n"
+    ));
 }
