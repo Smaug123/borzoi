@@ -1926,7 +1926,7 @@ fn wholesale_extension_contribution(rf: &ResolvedFile, assemblies: &AssemblyEnv)
 /// answer is always safe (the file is recomputed); a false *positive* is
 /// impossible (distinct instances never compare equal), so a reuse decision
 /// built on this can never serve a resolution from the wrong tree.
-fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
+pub(crate) fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
     prev.qnof == new.qnof
         // The same tree read with a different [`SyntaxRecovery`] is not the same
         // input: recovery is an argument to `resolve_file`, and it decides

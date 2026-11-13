@@ -1,7 +1,8 @@
 # An incremental LSP: file state, derived values and the edit loop
 
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness)
-> implemented. Tracks [#544](https://github.com/WoofWare/borzoi/issues/544).
+> and Stage 1 (the inference cutoff) implemented. Tracks
+> [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
 > the committed harness no longer carries.
@@ -723,6 +724,89 @@ calling the new reuse.
 from 117 M toward the 9.7 M measured with `E` next to `L`. The keystroke total
 goes from 164 M to about 57 M, and allocations fall by about 130 k per
 keystroke.
+
+**Implemented** (`crates/sema/src/infer_project.rs`), as planned:
+
+- `FileContribution` borrows from the file's resolution and inference, and
+  `PrecedingTypes::merge` clones it into the table; `publish` is gone. Its
+  constructor names, cases and records are sorted by key, so that equality
+  does not depend on a hash map's iteration order. The case and record types
+  already had `Eq`; the sort needed `Ord` on `ItemId`.
+- The per-file reuse key (`FileInputs`) is the `ResolvedFile` allocation, the
+  Compile item (its tree by identity and its QNOF, compared with the
+  resolver's own `same_tree`), whether a signature screens the file, and
+  whether it repeats an earlier implementation's QNOF. That last is now
+  computed with a running set rather than a scan of the earlier files, since
+  every file now asks it.
+- `infer_project_reusing_with_reuse` returns the per-file reuse vector, and
+  the LSP keeps its count as `SemanticState::last_inference_reused_files`
+  (`incremental_inference_reuses_what_the_cutoff_allows`).
+- `InferredFile`, `PrecedingTypes` and `InferredProject` gained value
+  equality, which the differential compares. The project's ignores the reuse
+  key, which is how the result was computed and not what it is.
+- Once a file's contribution differs, every later file is inferred afresh,
+  including files that read nothing from the changed export, as the
+  resolver's `in_sync` does. A finer cutoff would need each file's read set
+  of exports.
+
+The oracle is as planned, with these additions:
+
+- The scenario generator moved from `resolve_incremental_diff.rs` to
+  `tests/all/common/edit_script.rs`, which both differentials use. Its edits
+  never changed a type behind unchanged exports: every literal was an `int`. So
+  it gained bodies of other types (a string, a tuple, a generic lambda,
+  `None`), uses of an earlier file's union case, field reads of an earlier
+  file's record, and a union case gaining or losing a payload. This changes
+  the case space `resolve_incremental_diff` runs over, too.
+- `generator_exercises_the_cutoff` asserts that the seeded scripts reuse a file
+  after an earlier one is inferred afresh, and that some file whose resolution
+  the resolver reused has its inference redone with a different result: the
+  case a cutoff that took unequal contributions as equal would serve stale.
+- `body_edit_preserves_full_inference_reuse` makes three edits that keep a
+  file's contribution: a leading comment, every literal bumped, and every
+  literal body swapped with a `let` body of the same type, which renumbers
+  every definition after it.
+- An ignored corpus sample, `incremental_equals_batch_over_a_corpus_sample`,
+  runs in CI beside `infer_corpus_diff`. It takes 24 windows of 6 consecutive
+  Compile items from the corpus's `.fsproj` files (signatures included) and
+  edits every file four ways: a leading comment, a binding appended, its first
+  `int` literal made a string, and its first module-level body made
+  `failwith "edit"`. Wherever the resolver reused every file but the commented
+  one, inference must too: 126 of 126 comment edits did.
+
+Two planted bugs were caught, then removed:
+
+- Taking unequal contributions as equal fails `incremental_equals_batch`,
+  `generator_exercises_the_cutoff`, two pinned cases, and the corpus sample.
+  The corpus sample caught it only after the `failwith` edit was added; before
+  that, no edit of the sample changed an export's type behind a reused
+  resolution.
+- Reusing past a changed prefix (the flag dropped from the reuse condition)
+  fails the same five tests.
+
+**Measured** on WoofWare.Incremental from 5f98f07b, the minimum over 20
+keystrokes:
+
+| message, per keystroke | instructions before | after | allocs before | after |
+|---|---:|---:|---:|---:|
+| `didChange E` | 0.17 M | 0.17 M | 98 | 98 |
+| `diagnostic E` | 4.89 M | 4.89 M | 1,526 | 1,526 |
+| `diagnostic L` (`unchanged`) | 3.36 M | 3.35 M | 1,522 | 1,522 |
+| `semanticTokens E` | 24.6 M | 24.5 M | 8,610 | 8,611 |
+| `semanticTokens L` | 14.1 M | 14.1 M | 18,440 | 18,440 |
+| `hover L` | **117.2 M** | **6.43 M** | 140,624 | 7,015 |
+| **keystroke total** | **164.4 M** | **53.5 M** | 170,820 | 37,212 |
+
+On WoofWare.PawPrint.Domain (minimum over 10 keystrokes), `hover L` falls
+from 165.8 M to 9.6 M and the keystroke total from 242.9 M to 86.6 M.
+
+`hover L` falls further than the 9.7 M expected, which was measured with `E`
+at index 79 and so re-inferred three files; here only `E` is inferred afresh.
+The cold rows move by under 1%: a cold `hover L` is 122.7 M before and
+122.3 M after, with 146,314 and 146,618 allocations (the extra 304 are the
+reuse keys). One-shot inference is unchanged: `sema_counts` over the corpus's
+`src` reads `resolve_file` 1135.7 → 1135.4 and `infer_file` 175.4 → 175.4
+instructions per byte, with allocations identical.
 
 ### Stage 2a: source reads are observed and counted
 

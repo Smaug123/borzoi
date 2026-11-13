@@ -231,6 +231,8 @@ struct CachedParse {
 /// while the env is the same allocation, and only for the leading files whose
 /// resolution is too ([`InferredProject::shared_prefix`]): a file's types
 /// depend on its resolution, the env, and what every earlier file published.
+/// Past those, the next fold reuses what the cutoff allows
+/// ([`borzoi_sema::infer_project_reusing`]).
 #[derive(Debug)]
 struct CachedInference {
     env: Arc<AssemblyEnv>,
@@ -383,6 +385,14 @@ pub struct SemanticState {
     /// both builds (the `otel` labelled fold returns the same reuse vector), so a
     /// test's assertion holds regardless of feature flags.
     last_fold_reused_files: usize,
+    /// How many files the *most recent* inference fold
+    /// ([`Self::inferred_prefix_for`]) reused rather than inferred afresh (0 for
+    /// a cold one). The inference counterpart of
+    /// [`Self::last_fold_reused_files`]: a body edit that changes no export's
+    /// type should reuse every file but the edited one, which no comparison
+    /// with a cold fold can see. Untouched by a request the cached fold
+    /// answers outright.
+    last_inference_reused_files: usize,
     /// A `workspace/semanticTokens/refresh` is owed to the client: an invalidation
     /// (a text-sync edit, or a watched structural / referenced-assembly change)
     /// may have staled an already-open buffer's tokens, but the client only
@@ -499,6 +509,12 @@ impl SemanticState {
     /// project. Not tracked under the `otel` feature.
     pub fn last_fold_reused_files(&self) -> usize {
         self.last_fold_reused_files
+    }
+
+    /// How many files the most recent inference fold reused (see
+    /// [`Self::last_inference_reused_files`]).
+    pub fn last_inference_reused_files(&self) -> usize {
+        self.last_inference_reused_files
     }
 
     /// Take (and clear) the pending `workspace/semanticTokens/refresh` flag — a
@@ -1268,8 +1284,10 @@ impl SemanticState {
     /// env both ran against ([`Self::resolved_prefix_and_env_for`]). A file's
     /// inference reads what every earlier file published for its top-level
     /// values, so a single-file request infers the whole prefix — once: the
-    /// fold is cached, and a later fold reuses each leading file whose resolved
-    /// file and env are the very ones it was inferred from.
+    /// fold is cached, and a later fold against the same env reuses each file
+    /// whose resolved file is the very one it was inferred from and whose
+    /// earlier files contributed what they did before
+    /// ([`borzoi_sema::infer_project_reusing`]).
     ///
     /// `None` when the project cannot be resolved; the inferred project covers
     /// the same files as the resolved one returned beside it.
@@ -1297,12 +1315,19 @@ impl SemanticState {
         let files = self.project_parses.get(&key)?.files.clone();
         let inferred = {
             let _span = tracing::info_span!("infer_project").entered();
-            Arc::new(match &cached {
-                // Folded against this very env, so its shared leading files
-                // carry over.
-                Some(prev) => borzoi_sema::infer_project_reusing(&files, &resolved, &env, prev),
-                None => borzoi_sema::infer_project(&files, &resolved, &env),
-            })
+            let (inferred, reused) = match &cached {
+                // Folded against this very env, so each file whose inputs and
+                // preceding contributions are unchanged carries over.
+                Some(prev) => {
+                    borzoi_sema::infer_project_reusing_with_reuse(&files, &resolved, &env, prev)
+                }
+                None => (
+                    borzoi_sema::infer_project(&files, &resolved, &env),
+                    Vec::new(),
+                ),
+            };
+            self.last_inference_reused_files = reused.iter().filter(|r| **r).count();
+            Arc::new(inferred)
         };
         self.inferred_projects.insert(
             key,
@@ -6906,6 +6931,75 @@ mod tests {
             *cold,
             "the incremental fold must equal a cold fold of the same buffer state"
         );
+    }
+
+    /// The inference fold, driven through the real caches, reuses every file
+    /// but the edited one after an edit that changes no export's type, and
+    /// infers the suffix afresh after one that changes an export's type and
+    /// not its name, which the resolver still reuses the suffix across. Each
+    /// result equals a cold fold's.
+    #[test]
+    fn incremental_inference_reuses_what_the_cutoff_allows() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fs", "B.fs", "C.fs"]));
+        write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
+        write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
+        write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
+        let a_uri = Uri::from_file_path(tmp.path().join("A.fs")).unwrap();
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let mut docs: HashMap<Uri, String> = HashMap::new();
+        sema.inferred_prefix_for(&proj, 2, &mut ws, &docs)
+            .expect("warm initial");
+        assert_eq!(
+            sema.last_inference_reused_files(),
+            0,
+            "a first fold is cold"
+        );
+
+        let cold = |docs: &HashMap<Uri, String>| {
+            let mut ws = Workspace::default();
+            let mut sema = SemanticState::new();
+            sema.inferred_prefix_for(&proj, 2, &mut ws, docs)
+                .expect("cold fold")
+                .2
+        };
+
+        docs.insert(a_uri.clone(), "module A\nlet x = (1)\n".to_string());
+        sema.invalidate_project(&proj);
+        let (_, _, warm) = sema
+            .inferred_prefix_for(&proj, 2, &mut ws, &docs)
+            .expect("fold after a body edit");
+        assert_eq!(
+            sema.last_fold_reused_files(),
+            2,
+            "the resolver reuses B and C"
+        );
+        assert_eq!(
+            sema.last_inference_reused_files(),
+            2,
+            "A's contribution is unchanged, so B and C are reused"
+        );
+        assert_eq!(*warm, *cold(&docs));
+
+        docs.insert(a_uri, "module A\nlet x = \"s\"\n".to_string());
+        sema.invalidate_project(&proj);
+        let (_, _, warm) = sema
+            .inferred_prefix_for(&proj, 2, &mut ws, &docs)
+            .expect("fold after a type-changing edit");
+        assert_eq!(
+            sema.last_fold_reused_files(),
+            2,
+            "the resolver reuses B and C"
+        );
+        assert_eq!(
+            sema.last_inference_reused_files(),
+            0,
+            "A's `x` changed type, so B and C are inferred afresh"
+        );
+        assert_eq!(*warm, *cold(&docs));
     }
 
     /// A stale-suffix guard: removing a cross-file export must invalidate the

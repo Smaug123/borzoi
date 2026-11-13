@@ -532,7 +532,7 @@ use crate::unify::{InferTable, TypeWalks};
 ///   resolved name uses, and which (unlike an expression-node type) is the same
 ///   at every occurrence of the binder, so it is unaffected by subsumption
 ///   coercions at any individual use site.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct InferredFile {
     types: HashMap<TextRange, Ty>,
     def_types: HashMap<DefId, Ty>,
@@ -552,23 +552,23 @@ pub struct InferredFile {
     /// See [`Self::dot_get_receiver_type`].
     receiver_types: HashMap<TextRange, Ty>,
     /// What this file publishes for each binder a module-level `let` binds:
-    /// its certain type, or why it has none — read by
-    /// [`PrecedingTypes::publish`] for the binders the file exports.
+    /// its certain type, or why it has none — read for the binders the file
+    /// exports by [`FileContribution::of`], like every field below.
+    ///
+    /// [`FileContribution::of`]: crate::infer_project::FileContribution::of
     module_values: HashMap<DefId, ModuleValue>,
     /// The types this file declares that an annotation may name as a
-    /// [`Ty::Project`], with their path and arity — read by
-    /// [`PrecedingTypes::publish`] so a later file's annotation naming one
-    /// ([`Resolution::EarlierFileType`]) bridges exactly as this file's would.
+    /// [`Ty::Project`], with their path and arity, so a later file's
+    /// annotation naming one ([`Resolution::EarlierFileType`]) bridges exactly
+    /// as this file's would.
     project_types: HashMap<DefId, (Vec<String>, usize)>,
-    /// The cases of this file's unions inference types, by the case's item
-    /// — read by [`PrecedingTypes::publish`] so a later file's use of one
-    /// types exactly as this file's would.
+    /// The cases of this file's unions inference types, by the case's item,
+    /// so a later file's use of one types exactly as this file's would.
     project_cases: HashMap<ItemId, ProjectCase>,
-    /// How many constructor-like declarations of each name the file makes —
-    /// read by [`PrecedingTypes::publish`] for later files' case screen.
+    /// How many constructor-like declarations of each name the file makes,
+    /// for later files' case screen.
     constructor_names: HashMap<String, usize>,
-    /// The records this file declares whose fields inference reads — read by
-    /// [`PrecedingTypes::publish`].
+    /// The records this file declares whose fields inference reads.
     project_records: ProjectRecords,
     /// See [`Self::deepest_expression_walk`].
     deepest_expr_depth: usize,

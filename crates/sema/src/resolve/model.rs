@@ -2403,7 +2403,7 @@ pub(super) fn accessible_from(
 /// [`ResolvedProject::item_def`] (cross-file aware) or, for a file's own items,
 /// [`ResolvedFile::resolved_def`] — never by indexing, so the contiguous-range
 /// scheme stays an implementation detail. A single-file caller numbers from 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ItemId(u32);
 
 impl ItemId {
