@@ -1713,6 +1713,8 @@ So A₁.3b's work, in order, is:
 Nothing in the census argues against going on. No trusted read is wrong,
 and the gaps have known causes.
 
+#### A₁.4: the task leaves
+
 These are the 23 non-built-in tasks of stage 8's census. (`RemoveDuplicates`
 and `ConvertToAbsolutePath` are MSBuild built-ins, which A₁.3c covers.) Each
 gets a Rust model and two oracles:
