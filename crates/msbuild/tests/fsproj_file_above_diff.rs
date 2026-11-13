@@ -212,7 +212,6 @@ fn evaluate(
 fn file_above_intrinsics_are_exact_or_declined() {
     let mut oracle = Oracle::spawn();
     let tmp = TempDir::new().unwrap();
-    let root = tmp.path().join("case");
 
     let mut committed_found = 0usize;
     let mut committed_empty = 0usize;
@@ -220,42 +219,48 @@ fn file_above_intrinsics_are_exact_or_declined() {
     let mut msbuild_rejected = 0usize;
     let mut divergences: Vec<String> = Vec::new();
 
-    for placement in 0..(1usize << LEVELS.len()) {
-        let project_path = build_tree(&root, placement);
-        for form in [
-            Form::Path,
-            Form::Dir,
-            Form::PathDefaulted,
-            Form::PathDirectoryComponent,
-        ] {
-            let starts: Vec<&(&str, &str)> = if form.takes_a_start() {
-                STARTS.iter().collect()
-            } else {
-                vec![&STARTS[0]]
-            };
-            for (start_name, start) in starts {
-                let expression = form.expression(start);
-                let xml = project_xml(&expression);
-                let (ours, theirs) = evaluate(&mut oracle, &project_path, &xml);
-                let label = format!("placement={placement:04b} {form:?} start={start_name}");
-                match (&ours, &theirs) {
-                    (Some(ours), Some(theirs)) if ours == theirs => {
-                        if ours.is_empty() {
-                            committed_empty += 1;
-                        } else {
-                            committed_found += 1;
+    // A root named with an escape sequence too: `MSBuildThisFileDirectory` is
+    // spliced raw, while the one-argument form searches the directory the
+    // file is really in.
+    for root_name in ["case", "c%41se"] {
+        let root = tmp.path().join(root_name);
+        for placement in 0..(1usize << LEVELS.len()) {
+            let project_path = build_tree(&root, placement);
+            for form in [
+                Form::Path,
+                Form::Dir,
+                Form::PathDefaulted,
+                Form::PathDirectoryComponent,
+            ] {
+                let starts: Vec<&(&str, &str)> = if form.takes_a_start() {
+                    STARTS.iter().collect()
+                } else {
+                    vec![&STARTS[0]]
+                };
+                for (start_name, start) in starts {
+                    let expression = form.expression(start);
+                    let xml = project_xml(&expression);
+                    let (ours, theirs) = evaluate(&mut oracle, &project_path, &xml);
+                    let label = format!("placement={placement:04b} {form:?} start={start_name}");
+                    match (&ours, &theirs) {
+                        (Some(ours), Some(theirs)) if ours == theirs => {
+                            if ours.is_empty() {
+                                committed_empty += 1;
+                            } else {
+                                committed_found += 1;
+                            }
                         }
-                    }
-                    (Some(ours), Some(theirs)) => divergences.push(format!(
-                        "{label}: committed {ours:?}, MSBuild says {theirs:?}"
-                    )),
-                    (Some(ours), None) => divergences.push(format!(
-                        "{label}: committed {ours:?}, MSBuild rejects the document"
-                    )),
-                    (None, Some(_)) => declined += 1,
-                    (None, None) => {
-                        declined += 1;
-                        msbuild_rejected += 1;
+                        (Some(ours), Some(theirs)) => divergences.push(format!(
+                            "{label}: committed {ours:?}, MSBuild says {theirs:?}"
+                        )),
+                        (Some(ours), None) => divergences.push(format!(
+                            "{label}: committed {ours:?}, MSBuild rejects the document"
+                        )),
+                        (None, Some(_)) => declined += 1,
+                        (None, None) => {
+                            declined += 1;
+                            msbuild_rejected += 1;
+                        }
                     }
                 }
             }

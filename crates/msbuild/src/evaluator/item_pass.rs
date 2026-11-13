@@ -1840,7 +1840,7 @@ impl MatchKey {
     /// the two are compared `OrdinalIgnoreCase` — on every host, unlike file
     /// existence, since the batched path keys an `OrdinalIgnoreCase`
     /// dictionary and the unbatched one compares the same way (both
-    /// oracle-pinned on Linux, `docs/compile-item-fidelity-plan.md`).
+    /// oracle-pinned on Linux, `docs/completed/compile-item-fidelity-plan.md`).
     ///
     /// ASCII case folding is mirrored exactly, and a non-ASCII character never
     /// matches an ASCII one (`ı`, `ſ`, `İ` and the Kelvin sign match no ASCII

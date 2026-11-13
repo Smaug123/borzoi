@@ -1,12 +1,17 @@
-# Compile-item fidelity plan (escapes, path aliasing, Update batching)
+# Compile-item fidelity plan (escapes, path aliasing, Update batching) — COMPLETE
 
-> **Status.** **F1** (`%XX` escapes) has landed, as stages E0–E4 of
-> [`msbuild-escaped-value-plan.md`](completed/msbuild-escaped-value-plan.md):
-> item specs are stored `Escaped` and unescaped once at the point of use, on
-> the literal fast path and across the glob-resolver seam alike. **F0** (the
-> generative compile-order harness) has landed too. The other distinctive
-> Compile-item stages: **F2** (alias matching) and **F3** (batching degrade)
-> have landed; **F4** (ratchet) is outstanding.
+> **Status.** Done. **F1** (`%XX` escapes) landed as stages E0–E4 of
+> [`msbuild-escaped-value-plan.md`](msbuild-escaped-value-plan.md): item specs
+> are stored `Escaped` and unescaped once at the point of use, on the literal
+> fast path and across the glob-resolver seam alike. **F0** built the
+> generative compile-order differential
+> (`crates/msbuild/tests/fsproj_compile_order_generative_diff.rs`), which runs
+> the SDK's own `FSharpSourceCodeCompileOrder` through the oracle's
+> `targetItems` op. **F2** matches compile-order `Update`s by normalised full
+> path, ignoring case. **F3** declines an `Update` whose batch MSBuild strands.
+> **F4** turned every generator dimension on at once. Follow-up: #607 (the glob
+> resolver's case-differing `Exclude`s decline where MSBuild's Linux rule is
+> now pinned).
 
 > Companion to the package-reference certainty work (PR #905, branch
 > `packageref-out-of-order-update`). That branch closed three MSBuild
@@ -197,7 +202,7 @@ analogue bounds silent skipping; the canary pins the plumbing.
 ### Stage F1: model `%XX` unescaping for item paths — landed
 
 **Status**: landed, as stages E0–E4 of
-[`msbuild-escaped-value-plan.md`](completed/msbuild-escaped-value-plan.md).
+[`msbuild-escaped-value-plan.md`](msbuild-escaped-value-plan.md).
 Item specs are stored `Escaped`; `push_include_entry`,
 `route_item_through_resolver`, and `resolve_compile_update_targets` decode
 identities and match targets via `fragment_identity` / `scalar_use`; `Link`
@@ -286,7 +291,15 @@ update targets" flipped on in F0 and green.
 
 ### Stage F4: full-space ratchet
 
-**Status**: outstanding. **Dependencies**: F1–F3.
+**Status**: landed. Every generator dimension was already on together after
+F3 (spellings, case variants, repeated and escaped `Update` targets); F4 adds
+two files whose names MSBuild escapes (`S p.fs`, and
+`S;q.fs`, written `S%3bq.fs`), so escapes meet aliases, case folding and
+batching in one case. 52,000 generated cases (three runs of 4,000 and one of
+40,000) found no divergence. The certain-fraction floor moved from a half to
+55% of the deterministic sample, which sits at 121 of 200. The corpus gates
+(`fsproj_msbuild_corpus_diff`, the whole-project gate) are unmoved.
+**Dependencies**: F1–F3.
 
 All generator dimensions on simultaneously (interactions between escapes,
 aliases, and duplicates are exactly what generative testing is for);

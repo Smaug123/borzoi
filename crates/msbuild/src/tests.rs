@@ -227,7 +227,7 @@ fn compile_update_compile_order_metadata_moves_existing_item() {
 }
 
 /// A compile-order `Update` matches an item by full path, ignoring case, on
-/// every host (oracle-pinned on Linux; `docs/compile-item-fidelity-plan.md`).
+/// every host (oracle-pinned on Linux; `docs/completed/compile-item-fidelity-plan.md`).
 /// Each spelling here names `B.fs`, and each moves it.
 #[test]
 fn compile_update_compile_order_matches_alias_and_case_spellings() {
