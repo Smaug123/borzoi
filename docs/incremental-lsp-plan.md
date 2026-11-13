@@ -1309,17 +1309,19 @@ not new; the one-off `semanticTokens E` row counted it too.
 
 | message | instructions before | after | allocs before | after |
 |---|---:|---:|---:|---:|
-| `didOpen E` (cold, one evaluation) | 320.9 M | 332.8 M | 102,897 | 105,900 |
-| `semanticTokens E` (cold, one evaluation) | 3,078.8 M | 3,095.3 M | 3,516,099 | 3,519,117 |
-| `semanticTokens L` (cold) | 598.7 M | 598.5 M | 377,500 | 377,500 |
-| `hover L` (cold) | 123.7 M | 123.7 M | 147,139 | 147,139 |
-| keystroke total | 37.12 M | 37.12 M | 28,403 | 28,403 |
+| `didOpen E` (cold, one evaluation) | 320.9 M | 328.4 M | 102,897 | 104,615 |
+| `semanticTokens E` (cold, one evaluation) | 3,078.8 M | 3,093.7 M | 3,516,099 | 3,517,846 |
+| `semanticTokens L` (cold) | 598.7 M | 598.4 M | 377,500 | 377,500 |
+| `hover L` (cold) | 123.7 M | 123.8 M | 147,139 | 147,139 |
+| keystroke total | 37.12 M | 37.18 M | 28,403 | 28,403 |
 
-Every keystroke row is unchanged, allocations exactly. Recording costs each
-evaluation about 12 M instructions and 3,000 allocations, 3.7% of the
+Every keystroke row is unchanged within run-to-run noise, allocations
+exactly, and no keystroke runs an evaluation. Recording costs each
+evaluation about 7.5 M instructions and 1,700 allocations, 2.3% of the
 evaluation: one path per call (756 calls) and the listings' names, kept
-until the evaluation ends and de-duplicated into the read set. The cold rows
-that read files are kernel-heavy; both binaries' runs agreed to within 2%.
+until the evaluation ends, then sorted and de-duplicated into the read set.
+The cold rows that read files are kernel-heavy; both binaries' runs agreed
+to within 2%.
 
 Read-set sizes over the 72 projects of the MSBuild corpus differential
 (`fsproj_msbuild_corpus_diff`, which prints them), which bound Stage 3b's
