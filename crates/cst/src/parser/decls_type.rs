@@ -1353,11 +1353,21 @@ impl<'src> Parser<'src> {
         // hooks below record that, keyed off this flag.
         let mut is_delegate = false;
         // Whether the parsed repr admits *bare* trailing members (phase 9.13b,
-        // the no-`with` `type R =⏎ { … }⏎ member …` form): a record or enum
-        // does, a union only when it carries a `|`, an abbreviation (or a pure
-        // object model, whose member loop has already consumed everything)
-        // never — ground-truthed against FCS per arm.
+        // the no-`with` `type R =⏎ { … }⏎ member …` form) behind the body's
+        // `OBLOCKSEP` — a member aligned with the repr. FCS's
+        // `tyconDefnRhsBlock` (`pars.fsy:1730`) admits them after every repr,
+        // but a repr that could still be the first case of a bar-less union (a
+        // lone identifier `A`, or `A of …`) has already shifted the separator
+        // expecting a `|`, and rejects the member. So a record, an enum, a
+        // union carrying a `|`, an explicit `… end` form and every other
+        // abbreviation admit them. A member indented deeper than the repr
+        // arrives with no separator, and every repr but a pure object model
+        // (whose member loop has already consumed it) admits that; see the
+        // bare-members block below. `parser_diff_bare_member_grid` grades
+        // every repr in both layouts.
         let mut admits_bare_members = false;
+        // Whether the repr can take a bare member directly at the cursor.
+        let mut admits_direct_members = true;
         if self.peek_is_record_repr_start() {
             // Record repr — `{ F : T1; … }`, optionally preceded by a repr-level
             // access modifier (`type T = private { … }`). The `{` is a real
@@ -1384,6 +1394,7 @@ impl<'src> Parser<'src> {
             self.parse_kind_marked_repr();
             is_object_model = true;
             explicit_end_form = true;
+            admits_bare_members = true;
         } else if self.peek_is_delegate_repr_start() {
             // Delegate body — `delegate of <topType>` (`pars.fsy:1779`). `delegate`
             // is a raw keyword token (`Token::Delegate`) that no other repr arm
@@ -1404,9 +1415,10 @@ impl<'src> Parser<'src> {
             // `(` as a paren-type start and then chokes on the `#`. The `(`/`)`
             // are owned by the `INLINE_IL_REPR` directly; the closing `)` is
             // LexFilter-swallowed and recovered. Leaves `admits_bare_members`
-            // false (an inline-IL abbreviation admits no trailing members), like
-            // the abbreviation arm below.
+            // false, and `admits_direct_members` too: FCS admits no bare member
+            // after an inline-IL abbreviation in either layout.
             self.parse_inline_il_repr();
+            admits_direct_members = false;
         } else if self.peek_is_object_model_start() {
             // Object-model repr — `member …` (phase 9.7). `member` is a real
             // filtered keyword (`Token::Member`), distinct from every other body
@@ -1416,6 +1428,7 @@ impl<'src> Parser<'src> {
             // the `closed_block` handling below.
             self.parse_object_model_repr();
             is_object_model = true;
+            admits_direct_members = false;
         } else if self.peek_starts_type() {
             // Type abbreviation — FCS's full `typ`. Uses the `typ`-level
             // `peek_starts_type` (not the atomic gate) so a reciprocal-measure
@@ -1423,9 +1436,22 @@ impl<'src> Parser<'src> {
             // `parse_type`. Object-model bodies are a later phase-9 slice, so any
             // other non-type body produces the clean "expected type" error below
             // (never a panic); `parse_type` self-guards and self-drains.
+            let start = self.filtered.pos();
             self.builder.start_node(SyntaxKind::TYPE_ABBREV);
             self.parse_type();
             self.builder.finish_node();
+            // A lone identifier, quoted or not, could still be a bar-less
+            // union's first case, so only it declines a member behind the
+            // separator.
+            let lone_ident = self.filtered.pos() == start + 1
+                && matches!(
+                    self.filtered.tokens().get(start),
+                    Some((
+                        Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
+                        _
+                    ))
+                );
+            admits_bare_members = !lone_ident;
         } else {
             let span = self
                 .peek()
@@ -1458,30 +1484,40 @@ impl<'src> Parser<'src> {
         // the same error as the explicit-`with` form below. So consume them
         // here too (clean recovery, one targeted error) rather than letting the
         // member spill to the module loop as generic "unexpected token" noise.
+        //
+        // All of this needs the body block FCS's `tyconDefnRhsBlock` opens with
+        // its `OBLOCKBEGIN`. A blockless body (the column-0 attribute regime,
+        // `type [<A>]⏎T = class … end`) has only `tyconDefnRhs opt_classDefn`,
+        // and the separator after it is the module's, before a sibling decl.
         let mut parsed_bare_members = false;
-        if admits_bare_members || is_delegate {
-            let at_sep_then_item = matches!(
+        let at_sep_then_item = opened_block
+            && (admits_bare_members || is_delegate)
+            && matches!(
                 self.peek(),
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
-            ) && self.bare_trailing_member_follows();
-            if at_sep_then_item {
-                self.bump_into(SyntaxKind::ERROR); // the OBLOCKSEP
-            }
-            if at_sep_then_item || self.classify_object_model_item().is_some() {
-                // The augmentation's start (the first member item), for the
-                // delegate diagnostic below.
-                let aug_span = self
-                    .peek()
-                    .map(|(_, s)| s.clone())
-                    .unwrap_or_else(|| self.source.len()..self.source.len());
-                self.parse_member_block_items();
-                parsed_bare_members = true;
-                if is_delegate {
-                    self.errors.push(ParseError {
-                        message: DELEGATE_AUGMENTATION_ERROR.to_string(),
-                        span: aug_span,
-                    });
-                }
+            )
+            && self.bare_trailing_member_follows();
+        if at_sep_then_item {
+            self.bump_into(SyntaxKind::ERROR); // the OBLOCKSEP
+        }
+        if at_sep_then_item
+            || (opened_block
+                && admits_direct_members
+                && self.classify_object_model_item().is_some())
+        {
+            // The augmentation's start (the first member item), for the
+            // delegate diagnostic below.
+            let aug_span = self
+                .peek()
+                .map(|(_, s)| s.clone())
+                .unwrap_or_else(|| self.source.len()..self.source.len());
+            self.parse_member_block_items();
+            parsed_bare_members = true;
+            if is_delegate {
+                self.errors.push(ParseError {
+                    message: DELEGATE_AUGMENTATION_ERROR.to_string(),
+                    span: aug_span,
+                });
             }
         }
 
@@ -1613,8 +1649,8 @@ impl<'src> Parser<'src> {
     /// `peek() is BlockSep` caller gate declines and the `do` errors, mirroring
     /// FCS.) When the gate declines, the separator is left for the enclosing
     /// module loop, whose next decl parse flags the stray item — matching FCS's
-    /// "Unexpected keyword 'member'" class of errors (e.g. after an abbreviation,
-    /// or a zero-bar union).
+    /// "Unexpected keyword 'member'" class of errors (e.g. after a lone
+    /// identifier or a zero-bar `A of …`, which could still be a union's first case).
     fn bare_trailing_member_follows(&self) -> bool {
         matches!(
             self.next_non_trivia_filtered_after_pos(),

@@ -3440,7 +3440,7 @@ impl<'src> Parser<'src> {
                 // literal, so it folds into a single `SynConst.Measure` rather
                 // than a `SynExpr.TypeApp`. Wrap the accumulated `CONST_EXPR` at
                 // `cp` in a `MEASURE_LIT_EXPR`.
-                self.parse_measure_lit_tail(cp);
+                self.parse_measure_lit_tail(cp, SyntaxKind::MEASURE_LIT_EXPR);
                 ends = EndsInAdjacentApp::No;
             } else if self.peek_is_tyapp_marker() {
                 // `f<int>` — adjacent generic type application. LexFilter emits
@@ -3464,7 +3464,7 @@ impl<'src> Parser<'src> {
     /// [`Virtual::HighPrecedenceTyApp`] — the adjacency marker LexFilter
     /// inserts between an ident / member name and an adjacent
     /// type-application `<` (`f<int>`, distinct from a comparison `f < int`).
-    fn peek_is_tyapp_marker(&self) -> bool {
+    pub(super) fn peek_is_tyapp_marker(&self) -> bool {
         matches!(
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::HighPrecedenceTyApp)), _)),
@@ -3490,7 +3490,7 @@ impl<'src> Parser<'src> {
     /// The filtered stream is trivia-free and the measure marker directly
     /// follows the numeric token, so the token at `self.filtered.pos() - 1` is exactly the
     /// head literal.
-    fn prev_filtered_is_measure_numeric(&self) -> bool {
+    pub(super) fn prev_filtered_is_measure_numeric(&self) -> bool {
         let Some(prev) = self.filtered.pos().checked_sub(1) else {
             return false;
         };

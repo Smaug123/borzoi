@@ -2959,6 +2959,15 @@ pub enum SyntaxKind {
     /// `SynConst`; the `<measure>` child is one of the `MEASURE_*` nodes below.
     MEASURE_LIT_EXPR,
 
+    /// A measure-annotated numeric literal pattern — FCS's `atomicPattern:
+    /// constant` over the measure arm of `constant` (`pars.fsy:3520`),
+    /// projecting to `SynPat.Const(SynConst.Measure(…))`, as in
+    /// `function 0<m> -> …`. Shape `MEASURE_LIT_PAT > [CONST_PAT, LESS_TOK,
+    /// <measure>, GREATER_TOK]`, the pattern twin of [`Self::MEASURE_LIT_EXPR`]:
+    /// a node of its own, so a reader of [`Self::CONST_PAT`] never takes the
+    /// bare number for the measured literal.
+    MEASURE_LIT_PAT,
+
     /// `SynMeasure.Seq` — a juxtaposition sequence of measure factors, e.g.
     /// `<kg m s>`. Shape `MEASURE_SEQ > [<measure-power>+]`. FCS wraps *every*
     /// `measureTypeExpr` in a `Seq`, so even a single named measure `<m>` is

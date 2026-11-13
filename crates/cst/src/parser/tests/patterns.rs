@@ -2352,3 +2352,22 @@ fn underscore_rooted_pat_is_long_ident() {
         "the second clause's bare `_` stays the wildcard",
     );
 }
+
+/// The unclosed-delimiter diagnostic names the offending token by its source
+/// text, not by the lexer's `Debug` form of it.
+#[test]
+fn unclosed_paren_diagnostic_quotes_the_source_token() {
+    for (src, found) in [
+        ("let x = (1 ]\n", "]"),
+        ("let (a ]) = 0\n", "]"),
+        ("let x = (1 }\n", "}"),
+    ] {
+        let parse = parse(src);
+        let expected = format!("expected `)` to close parenthesised expression, found `{found}`");
+        assert!(
+            parse.errors.iter().any(|e| e.message == expected),
+            "{src:?}: {:?}",
+            parse.errors
+        );
+    }
+}
