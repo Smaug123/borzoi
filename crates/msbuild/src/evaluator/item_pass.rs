@@ -2251,12 +2251,7 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     // capture has read the package names already, and nothing else may steer
     // the walk.
     #[cfg(any(test, feature = "test-support"))]
-    let exact = {
-        let previous = state.quiet_target_framework_reads.replace(true);
-        let exact = read_generic_item_metadata(node, state);
-        state.quiet_target_framework_reads.set(previous);
-        exact
-    };
+    let exact = read_exact_metadata_quietly(node, state);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let origin = state.current_origin();
@@ -2309,13 +2304,7 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
                 #[cfg(any(test, feature = "test-support"))]
                 row: match op {
                     PackageRefOp::Include => {
-                        let mut row = source.row.clone();
-                        if source.direct {
-                            row.exact_metadata =
-                                with_definitions(state, "PackageReference", &row.exact_metadata);
-                        }
-                        row.definitions_applied = source.direct;
-                        row.with_metadata_applied(&exact)
+                        included_row(state, "PackageReference", &source, &exact)
                     }
                     PackageRefOp::Update => EvaluatedItem::bare(&id).with_metadata_applied(&exact),
                 },
@@ -2852,23 +2841,59 @@ fn walk_framework_reference(node: Node<'_, '_>, state: &mut State<'_>) {
         }
         return;
     };
+    #[cfg(any(test, feature = "test-support"))]
+    let exact = read_exact_metadata_quietly(node, state);
     state.note_package_uncertain_from_sdk_property_taint(target);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let framework_count_before = state.framework_references.len();
     for source in resolve_dependency_identity_sources(target, node, state) {
-        let name = source.identity;
-        if excluded.contains(&name.to_ascii_lowercase()) {
+        if excluded.contains(&source.identity.to_ascii_lowercase()) {
             continue;
         }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let row = included_row(state, "FrameworkReference", &source, &exact);
+            state.framework_reference_rows.push(row);
+        }
         state.framework_references.push(FrameworkReference {
-            name: name.to_owned(),
+            name: source.identity,
             span: span.clone(),
         });
     }
     if state.framework_references.len() > framework_count_before {
         state.mark_untracked_item_list("FrameworkReference");
     }
+}
+
+/// Every metadatum `node` declares, as an item table reads it. Quietly: the
+/// dependency capture has read the names it reads already, and nothing else
+/// may steer the walk.
+#[cfg(any(test, feature = "test-support"))]
+fn read_exact_metadata_quietly(node: Node<'_, '_>, state: &mut State<'_>) -> GenericItemMetadata {
+    let previous = state.quiet_target_framework_reads.replace(true);
+    let exact = read_generic_item_metadata(node, state);
+    state.quiet_target_framework_reads.set(previous);
+    exact
+}
+
+/// The row an `Include` of a dependency item of `item_type` adds for
+/// `source`: a literal identity takes the type's definitions, a helper copy
+/// carries the helper item's metadata, and the element's own metadata goes on
+/// top.
+#[cfg(any(test, feature = "test-support"))]
+fn included_row(
+    state: &State<'_>,
+    item_type: &str,
+    source: &DependencyIdentitySource,
+    exact: &GenericItemMetadata,
+) -> EvaluatedItem {
+    let mut row = source.row.clone();
+    if source.direct {
+        row.exact_metadata = with_definitions(state, item_type, &row.exact_metadata);
+    }
+    row.definitions_applied = source.direct;
+    row.with_metadata_applied(exact)
 }
 
 /// The identity set to remove from a package/framework reference's

@@ -31,9 +31,10 @@ use borzoi_msbuild::observed::host_fs;
 use borzoi_msbuild::test_support::{ReadProbe, parse_fsproj_reads};
 use common::{Oracle, SplitMix64};
 
-/// `PackageReference` is captured by the dependency capture, not the generic
-/// tables, and collapses `Update` onto prior `Include`s.
-const ITEM_TYPES: [&str; 3] = ["Helper", "Known", "PackageReference"];
+/// `PackageReference` and `FrameworkReference` are captured by the dependency
+/// capture, not the generic tables; `PackageReference` collapses `Update` onto
+/// prior `Include`s.
+const ITEM_TYPES: [&str; 4] = ["Helper", "Known", "PackageReference", "FrameworkReference"];
 /// What an `Update` names.
 const UPDATES: [&str; 4] = ["a", "A", "b", "@(Helper)"];
 const METADATA: [&str; 3] = ["Version", "Pack", "Flavor"];
@@ -264,6 +265,7 @@ struct Tally {
     clean: usize,
     clean_with_gated: usize,
     clean_package_references: usize,
+    clean_by_type: BTreeMap<&'static str, usize>,
 }
 
 /// Evaluate `xml` both ways and hold every clean list to MSBuild's.
@@ -312,6 +314,7 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
         tally.clean += 1;
         tally.clean_with_gated += usize::from(gated);
         tally.clean_package_references += usize::from(item_type == "PackageReference");
+        *tally.clean_by_type.entry(item_type).or_default() += 1;
         let rows = read.items.as_deref().unwrap_or_default();
         let ours: Vec<&str> = rows.iter().map(|r| r.identity.as_str()).collect();
         let msbuild: Vec<&str> = theirs.iter().map(|(id, _)| id.as_str()).collect();
@@ -373,6 +376,12 @@ fn most_lists_are_clean() {
         tally.rejected,
         tally.cases
     );
+    for item_type in ITEM_TYPES {
+        assert!(
+            tally.clean_by_type.get(item_type).is_some_and(|n| *n > 0),
+            "no exact {item_type} list reached the comparison"
+        );
+    }
     assert!(
         tally.clean_package_references * 10 > tally.cases,
         "only {} of {} cases had an exact PackageReference list",

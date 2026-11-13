@@ -1389,6 +1389,10 @@ struct State<'r> {
     /// these ([`reads`]); the dependency capture reads `package_references`.
     #[cfg(any(test, feature = "test-support"))]
     package_reference_rows: Vec<EvaluatedItem>,
+    /// The `FrameworkReference` items as an item table reads them, as
+    /// [`Self::package_reference_rows`] holds `PackageReference`s.
+    #[cfg(any(test, feature = "test-support"))]
+    framework_reference_rows: Vec<EvaluatedItem>,
     /// Metadata names an `Update` the dependency capture skipped (it writes no
     /// package metadatum) may have written on any `PackageReference`: unknown
     /// on every row.
@@ -2101,6 +2105,8 @@ impl<'r> State<'r> {
             #[cfg(any(test, feature = "test-support"))]
             package_reference_rows: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
+            framework_reference_rows: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
             package_reference_unknown_names: HashSet::new(),
             package_versions: Vec::new(),
             package_versions_untracked: false,
@@ -2645,6 +2651,8 @@ impl<'r> State<'r> {
             package_references,
             #[cfg(any(test, feature = "test-support"))]
                 package_reference_rows: _,
+            #[cfg(any(test, feature = "test-support"))]
+                framework_reference_rows: _,
             #[cfg(any(test, feature = "test-support"))]
                 package_reference_unknown_names: _,
             update_batches: _,
