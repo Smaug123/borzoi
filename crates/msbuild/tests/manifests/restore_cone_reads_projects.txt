@@ -185,7 +185,7 @@
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads property _TargetFrameworkOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads property _TargetFrameworkToBeUsed	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads property _TargetFrameworkVersionWithoutV	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
-10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj retains its targets	0 as MSBuild ran them, 43 not exact
+10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj retains its targets	0 as MSBuild ran them, 42 not exact
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it

@@ -232,7 +232,7 @@
 10.0.401 resolved cpm/app/App.fsproj reads property _TargetFrameworkToBeUsed	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
 10.0.401 resolved cpm/app/App.fsproj reads property _TargetFrameworkVersionWithoutV	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
 10.0.401 resolved cpm/app/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
-10.0.401 resolved cpm/app/App.fsproj retains its targets	0 as MSBuild ran them, 45 not exact
+10.0.401 resolved cpm/app/App.fsproj retains its targets	0 as MSBuild ran them, 44 not exact
 10.0.401 resolved hooked/App.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it

@@ -161,16 +161,34 @@ impl State<'_> {
         }
     }
 
+    /// MSBuild keeps the last definition of a name, comparing names unescaped
+    /// and `OrdinalIgnoreCase`. Within [`plain_target_name`] that comparison
+    /// is ASCII case folding; a name outside it (a `%` escape, whitespace,
+    /// non-ASCII) is one this does not compare, so any such definition, or
+    /// such a query, declines.
+    ///
+    /// The target graph is the files the walk reached. It is MSBuild's when
+    /// the walk is not opaque and walked no `Directory.Build.*` file the
+    /// SDK chain did not ask for: without an SDK reaching its import point,
+    /// the walk splices those files itself, and MSBuild imports neither.
     fn read_target(&self, name: &str) -> TargetRead {
         let definition = self
             .target_definitions
             .iter()
             .rev()
-            .find(|(defined, _)| defined.trim().eq_ignore_ascii_case(name.trim()))
+            .find(|(defined, _)| defined.eq_ignore_ascii_case(name))
             .map(|(_, definition)| definition.clone());
+        let comparable = plain_target_name(name)
+            && self
+                .target_definitions
+                .iter()
+                .all(|(defined, _)| plain_target_name(defined));
+        let graph_is_msbuilds = self.walk_opaque.is_none()
+            && !(self.directory_build_file_walked
+                && !self.sdk_reached_directory_build_targets_import);
         TargetRead {
             definition,
-            exact: self.walk_opaque.is_none(),
+            exact: comparable && graph_is_msbuilds,
         }
     }
 
@@ -380,6 +398,13 @@ impl State<'_> {
             untracked: self.untracked_item_lists.contains(&key),
         }
     }
+}
+
+/// A target name MSBuild's comparison (unescape, then `OrdinalIgnoreCase`)
+/// treats as ASCII case folding: non-empty, printable ASCII, and free of `%`
+/// and whitespace.
+fn plain_target_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_graphic() && b != b'%')
 }
 
 #[cfg(test)]

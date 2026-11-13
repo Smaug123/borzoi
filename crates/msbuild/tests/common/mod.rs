@@ -395,15 +395,30 @@ impl Oracle {
     }
 
     /// The `evaluated` op: MSBuild's evaluation of `project` under `globals`,
-    /// unbuilt, read at `properties` (`null` when unset) and `items` (each
-    /// type's items with their metadata).
+    /// unbuilt, read at `properties` (`null` when unset), `items` (each
+    /// type's items with their metadata) and `targets` (where MSBuild's target
+    /// table puts each definition, as `file`, `line` and `column`, or `null`).
     pub fn evaluated(
         &mut self,
         project: &Path,
         globals: &[(&str, std::ffi::OsString)],
         properties: &[&str],
         items: &[&str],
+        targets: &[&str],
     ) -> serde_json::Value {
+        self.try_evaluated(project, globals, properties, items, targets)
+            .unwrap_or_else(|| panic!("evaluated: MSBuild rejected {}", project.display()))
+    }
+
+    /// [`Self::evaluated`], or `None` when MSBuild rejects the project.
+    pub fn try_evaluated(
+        &mut self,
+        project: &Path,
+        globals: &[(&str, std::ffi::OsString)],
+        properties: &[&str],
+        items: &[&str],
+        targets: &[&str],
+    ) -> Option<serde_json::Value> {
         let globals: serde_json::Map<String, serde_json::Value> = globals
             .iter()
             .map(|(name, value)| {
@@ -420,13 +435,9 @@ impl Oracle {
             "globals": globals,
             "properties": properties,
             "items": items,
+            "targets": targets,
         }));
-        assert_eq!(
-            answer["ok"],
-            serde_json::Value::Bool(true),
-            "evaluated: {answer}"
-        );
-        answer
+        (answer["ok"] == serde_json::Value::Bool(true)).then_some(answer)
     }
 
     /// Ask the real MSBuild evaluator for the condition's truth against
@@ -1493,5 +1504,74 @@ fn gen_grammar_arg_literal(rng: &mut SplitMix64, depth: u32) -> String {
         format!("$({})", gen_grammar_inner(rng, depth))
     } else {
         (*rng.pick(LITS)).to_string()
+    }
+}
+
+/// The 1-based line and column of byte `offset` in `text`, as MSBuild's XML
+/// reader reports an element's location: a line ends at `\n`, `\r\n` or a lone
+/// `\r`, and a column counts UTF-16 code units.
+pub fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut column = 1;
+    let mut chars = text[..offset].chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                chars.next_if_eq(&'\n');
+                line += 1;
+                column = 1;
+            }
+            '\n' => {
+                line += 1;
+                column = 1;
+            }
+            c => column += c.len_utf16(),
+        }
+    }
+    (line, column)
+}
+
+/// Hold our read of one target to MSBuild's answer for the same name (an
+/// entry of the `evaluated` op's `targets`): an exact read must name the
+/// element MSBuild keeps — the same file, line and column — or nothing when
+/// MSBuild has no such target. `Ok(true)` when the exact read agrees,
+/// `Ok(false)` for an inexact read, which makes no claim, and `Err` with what
+/// differs otherwise.
+pub fn check_target(
+    read: &borzoi_msbuild::test_support::TargetRead,
+    theirs: &serde_json::Value,
+) -> Result<bool, String> {
+    if !read.exact {
+        return Ok(false);
+    }
+    match (&read.definition, theirs.is_null()) {
+        (None, true) => Ok(true),
+        (None, false) => Err(format!("we reach no definition; MSBuild keeps {theirs}")),
+        (Some(ours), true) => Err(format!(
+            "we keep {}@{:?}; MSBuild has no such target",
+            ours.file.display(),
+            ours.range
+        )),
+        (Some(ours), false) => {
+            let canonical = |path: &Path| {
+                borzoi_msbuild::observed::host_fs::canonicalize(path)
+                    .unwrap_or_else(|_| path.to_path_buf())
+            };
+            let file = Path::new(theirs["file"].as_str().expect("a target's file"));
+            let text = borzoi_msbuild::observed::host_fs::read_to_string(&ours.file)
+                .unwrap_or_else(|e| panic!("read {}: {e}", ours.file.display()));
+            let (line, column) = line_column(&text, ours.range.start);
+            let same_place = canonical(&ours.file) == canonical(file)
+                && theirs["line"].as_u64() == Some(line as u64)
+                && theirs["column"].as_u64() == Some(column as u64);
+            if same_place {
+                Ok(true)
+            } else {
+                Err(format!(
+                    "we keep {}:{line}:{column}; MSBuild keeps {theirs}",
+                    ours.file.display()
+                ))
+            }
+        }
     }
 }

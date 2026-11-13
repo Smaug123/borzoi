@@ -784,7 +784,25 @@ fn reads(
     let globals = scratch.globals();
     let properties: Vec<&str> = text.properties.values().map(String::as_str).collect();
     let items: Vec<&str> = text.items.values().map(String::as_str).collect();
-    let msbuild = oracle.evaluated(&subject.project, &globals, &properties, &items);
+    // The targets MSBuild ran in this project itself, not in one it references.
+    let canonical =
+        |path: &Path| host_fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let own_project = canonical(&subject.project);
+    let own_targets: Vec<&str> = cone
+        .targets
+        .iter()
+        .filter(|run| canonical(&run.project) == own_project)
+        .map(|run| run.name.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let msbuild = oracle.evaluated(
+        &subject.project,
+        &globals,
+        &properties,
+        &items,
+        &own_targets,
+    );
 
     let dotnet_root = cone.sdk_dir.parent().and_then(Path::parent).unwrap();
     let spec = VersionSpec::with_version(
@@ -818,23 +836,10 @@ fn reads(
         })
         .collect();
     let source = host_fs::read_to_string(&subject.project).unwrap();
-    // The targets MSBuild ran in this project itself, not in one it references.
-    let canonical =
-        |path: &Path| host_fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let own_project = canonical(&subject.project);
-    let own_targets: BTreeSet<(&str, &Path)> = cone
-        .targets
-        .iter()
-        .filter(|run| canonical(&run.project) == own_project)
-        .map(|run| (run.name.as_str(), run.file.as_path()))
-        .collect();
     let probe = ReadProbe {
         properties: properties.iter().map(|p| (*p).to_owned()).collect(),
         item_types: items.iter().map(|i| (*i).to_owned()).collect(),
-        targets: own_targets
-            .iter()
-            .map(|(name, _)| (*name).to_owned())
-            .collect(),
+        targets: own_targets.iter().map(|name| (*name).to_owned()).collect(),
     };
     let (parsed, ours) = parse_fsproj_reads(
         &source,
@@ -969,44 +974,16 @@ fn reads(
         }
         out.push((format!("{prefix} reads item {item_type}"), verdict));
     }
-    // MSBuild ran each target from the last definition of its name in the file
-    // it names. An exact read of ours must be that element.
+    // An exact read of a target must be the definition MSBuild's evaluation
+    // keeps, the one its build ran.
     let mut retained = 0;
     let mut inexact = 0;
-    for (name, file) in &own_targets {
-        let read = &ours.targets[*name];
-        if !read.exact {
-            inexact += 1;
-            continue;
+    for name in &own_targets {
+        match common::check_target(&ours.targets[*name], &msbuild["targets"][*name]) {
+            Ok(true) => retained += 1,
+            Ok(false) => inexact += 1,
+            Err(why) => panic!("{}: target {name}: {why}", subject.key),
         }
-        let ours = read.definition.as_ref().unwrap_or_else(|| {
-            panic!(
-                "{}: MSBuild ran {name} from {}, a definition our walk never reached",
-                subject.key,
-                file.display()
-            )
-        });
-        let source = host_fs::read_to_string(file).unwrap();
-        let doc = roxmltree::Document::parse(&source).unwrap();
-        let theirs = doc
-            .descendants()
-            .rfind(|n| {
-                n.is_element()
-                    && n.tag_name().name() == "Target"
-                    && n.attribute("Name")
-                        .is_some_and(|n| n.trim().eq_ignore_ascii_case(name))
-            })
-            .unwrap()
-            .range();
-        assert!(
-            canonical(&ours.file) == canonical(file) && ours.range == theirs,
-            "{}: our {name} is {}@{:?}, but MSBuild ran the one at {}@{theirs:?}",
-            subject.key,
-            ours.file.display(),
-            ours.range,
-            file.display()
-        );
-        retained += 1;
     }
     out.push((
         format!("{prefix} retains its targets"),

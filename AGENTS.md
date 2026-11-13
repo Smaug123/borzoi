@@ -114,7 +114,9 @@ This is a Cargo workspace with nine members:
   identities and taint, and their metadata) is pinned in
   `restore_cone_reads_*.txt`. That is the worklist for A₁.3's executor.
   The probe also answers where each target the cone ran is defined, and an
-  exact answer that is not the definition MSBuild ran panics.
+  exact answer that is not the definition MSBuild's target table keeps
+  panics. `fsproj_target_definitions_generative_diff` holds those answers to
+  the same table on generated import graphs.
   `fsproj_generic_items_generative_diff` holds the generic item tables the
   probe reads, metadata included, to the `itemsMeta` op on generated
   projects.

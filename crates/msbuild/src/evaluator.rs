@@ -1760,6 +1760,12 @@ struct State<'r> {
     /// ([`reads`]); the walk itself runs no target.
     #[cfg(any(test, feature = "test-support"))]
     target_definitions: Vec<(String, reads::TargetDefinition)>,
+    /// Whether the walk spliced a `Directory.Build.*` file in itself
+    /// ([`walk_directory_build_file`]), as MSBuild's `Microsoft.Common.*`
+    /// imports would: right when an SDK chain reaches that import point,
+    /// and a file MSBuild never imports when none does.
+    #[cfg(any(test, feature = "test-support"))]
+    directory_build_file_walked: bool,
     /// What the walk knows, or doesn't, about each property's stored value —
     /// keyed by lowercase property name. All three forward-uncertainty channels
     /// live in the one [`Trust`] value, so a name cannot be marked on one
@@ -2209,6 +2215,8 @@ impl<'r> State<'r> {
             entry_project_path: project_path.to_path_buf(),
             #[cfg(any(test, feature = "test-support"))]
             target_definitions: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            directory_build_file_walked: false,
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: None,
@@ -2770,6 +2778,8 @@ impl<'r> State<'r> {
                 entry_project_path: _,
             #[cfg(any(test, feature = "test-support"))]
                 target_definitions: _,
+            #[cfg(any(test, feature = "test-support"))]
+                directory_build_file_walked: _,
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
@@ -6597,6 +6607,10 @@ fn walk_directory_build_file(
     kind: DirectoryBuildFile,
     state: &mut State<'_>,
 ) {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        state.directory_build_file_walked = true;
+    }
     match kind {
         DirectoryBuildFile::Props => {
             state.directory_build_props_splice_path =

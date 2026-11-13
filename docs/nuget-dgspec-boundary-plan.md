@@ -1909,16 +1909,32 @@ runs reads it.
 The walk records every `<Target>` element it reaches: its `Name`, the file,
 and the element's byte range there (`State::target_definitions`, test builds
 only). The probe answers a target name with the last definition of it, as
-MSBuild keeps the last and drops the rest, and calls the answer exact when
-the walk is not opaque, so that no file it did not reach can define the name
-later. The executor (A₁.3c) reads a target's XML from that file and range.
+MSBuild keeps the last and drops the rest. The executor (A₁.3c) reads a
+target's XML from that file and range. The answer is exact only when:
+- the walk is not opaque, so no file it did not reach can define the name
+  later;
+- it walked no `Directory.Build.*` file the SDK chain did not ask for.
+  Without an SDK that reaches `Microsoft.Common.targets`, the walk splices
+  those files in itself, and MSBuild imports neither;
+- the name, and every name defined, is plain: printable ASCII, no `%`, no
+  whitespace. MSBuild compares names unescaped, untrimmed and
+  `OrdinalIgnoreCase`, which on plain names is ASCII case folding.
 
-The census probes every target MSBuild ran in the subject project and
-panics if an exact answer is not the last definition of that name in the
-file MSBuild ran it from. On SDK 10.0.401 every single-target corpus project
-and fixture retains every target of its cone that way (39 to 42 each). The
-two multi-targeting outer builds are opaque. No target in these cones is
-defined twice, so the override rule is held by a unit test, not the census.
+The oracle's `evaluated` op reports where MSBuild's own target table keeps
+each definition (file, line, column).
+`fsproj_target_definitions_generative_diff` generates targets before and
+after imports that are taken, skipped or undecidable, a nested import, a
+`Directory.Build.*` file beside the project, and names that differ by case,
+escape, padding and non-ASCII case, and holds every exact read to that
+table. Its soak fails if any of the three conditions is dropped, or if the
+first definition wins.
+
+The census asks MSBuild's target table for every target MSBuild ran in the
+subject project and holds our exact reads to it. On SDK 10.0.401 every
+single-target corpus project and fixture retains every target of its cone
+that way (39 to 42 each). The two multi-targeting outer builds are opaque.
+No target in these cones is defined twice, so the override rule is held by
+the generator, not the census.
 
 #### A₁.4: the task leaves
 
