@@ -32,6 +32,12 @@ use proptest::prelude::*;
 // ============================================================================
 
 fn resolve(source: &str) -> ResolvedFile {
+    resolve_in(source, &AssemblyEnv::default())
+}
+
+/// [`resolve`] against `env`, for a test that reads the result's names,
+/// which only the env it was resolved against spells.
+fn resolve_in(source: &str, env: &AssemblyEnv) -> ResolvedFile {
     let parsed = parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -40,12 +46,7 @@ fn resolve(source: &str) -> ResolvedFile {
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("root is an impl file");
-    resolve_file(
-        &file,
-        &ProjectItems::default(),
-        &AssemblyEnv::default(),
-        &recovery,
-    )
+    resolve_file(&file, &ProjectItems::default(), env, &recovery)
 }
 
 /// [`resolve`] for a snippet that is broken on purpose: it must report the
@@ -459,7 +460,8 @@ fn local_let_value_is_visible_in_the_body() {
     // An expression-level (block) `let` binds a value visible in its body, as a
     // Local (not an exported item — it is interior to `outer`).
     let src = "let outer () =\n    let v = 1\n    v\n";
-    let rf = resolve(src);
+    let env = AssemblyEnv::default();
+    let rf = resolve_in(src, &env);
     // "v": 0 = local binder, 1 = body use.
     assert_resolves_to(&rf, nth(src, "v", 1), nth(src, "v", 0));
     let res = rf.resolution_at(nth(src, "v", 1)).unwrap();
@@ -468,7 +470,7 @@ fn local_let_value_is_visible_in_the_body() {
         "local let value should resolve to a Local, got {res:?}"
     );
     // It is interior, so not exported.
-    let names: Vec<&str> = rf.exports().iter().map(|i| i.name()).collect();
+    let names: Vec<&str> = rf.exports().iter().map(|i| i.name(&env)).collect();
     assert_eq!(names, ["outer"]);
 }
 
@@ -524,8 +526,9 @@ fn type_application_head_resolves_to_its_binder() {
 #[test]
 fn top_level_bindings_are_exported_in_order() {
     let src = "let x = 1\nlet f a = a\n";
-    let rf = resolve(src);
-    let names: Vec<&str> = rf.exports().iter().map(|i| i.name()).collect();
+    let env = AssemblyEnv::default();
+    let rf = resolve_in(src, &env);
+    let names: Vec<&str> = rf.exports().iter().map(|i| i.name(&env)).collect();
     assert_eq!(names, ["x", "f"]);
     // The function is flagged as such; the value is not; the parameter is not
     // exported.

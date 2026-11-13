@@ -19,13 +19,12 @@ use crate::resolve_signatures::project;
 type Published = (String, Option<Vec<String>>, Option<CaseKind>, bool);
 
 fn published(rf: &ResolvedFile, env: &AssemblyEnv) -> Vec<Published> {
-    let _ = env;
     rf.exports()
         .iter()
         .map(|e| {
             (
-                e.name().to_string(),
-                e.qualified_path().map(<[String]>::to_vec),
+                e.name(env).to_string(),
+                e.qualified_path(env),
                 e.case_kind(),
                 e.def().is_none(),
             )
@@ -123,12 +122,22 @@ fn every_export_publishes_its_logical_name_and_value_path() {
             row("op_PlusDot", path(&["Lib", "A", "op_PlusDot"]), None, false),
             row("hidden", path(&["Lib", "A", "hidden"]), None, false),
             row("Plain", path(&["Lib", "A", "Plain"]), union, false),
-            row("Quoted Case", path(&["Lib", "A", "Quoted Case"]), union, false),
+            row(
+                "Quoted Case",
+                path(&["Lib", "A", "Quoted Case"]),
+                union,
+                false
+            ),
             row("X", None, rqa, false),
             row("Y", None, rqa, false),
             row("Red", None, Some(CaseKind::Enum), false),
             row("Green", None, Some(CaseKind::Enum), false),
-            row("Boom", path(&["Lib", "A", "Boom"]), Some(CaseKind::Exception), false),
+            row(
+                "Boom",
+                path(&["Lib", "A", "Boom"]),
+                Some(CaseKind::Exception),
+                false
+            ),
             row("Even", None, None, false),
             row("Odd", None, None, false),
             row("deep", path(&["Lib", "A", "Inner", "deep"]), None, false),
@@ -146,7 +155,12 @@ fn every_export_publishes_its_logical_name_and_value_path() {
         vec![
             // The implementation's own exports, which the signature screens.
             row("quoted val", path(&["Lib", "S", "quoted val"]), None, false),
-            row("op_PlusBang", path(&["Lib", "S", "op_PlusBang"]), None, false),
+            row(
+                "op_PlusBang",
+                path(&["Lib", "S", "op_PlusBang"]),
+                None,
+                false
+            ),
             row("plain", path(&["Lib", "S", "plain"]), None, false),
             row("P", path(&["Lib", "S", "P"]), union, false),
             row("Q q", path(&["Lib", "S", "Q q"]), union, false),
@@ -155,7 +169,12 @@ fn every_export_publishes_its_logical_name_and_value_path() {
             row("inner", path(&["Lib", "S", "Nested", "inner"]), None, false),
             // The signature's, materialised here.
             row("quoted val", path(&["Lib", "S", "quoted val"]), None, true),
-            row("op_PlusBang", path(&["Lib", "S", "op_PlusBang"]), None, true),
+            row(
+                "op_PlusBang",
+                path(&["Lib", "S", "op_PlusBang"]),
+                None,
+                true
+            ),
             row("plain", path(&["Lib", "S", "plain"]), None, true),
             row("P", path(&["Lib", "S", "P"]), union, true),
             row("Q q", path(&["Lib", "S", "Q q"]), union, true),

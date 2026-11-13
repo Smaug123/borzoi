@@ -219,9 +219,10 @@ impl<'a> Resolver<'a> {
                     // contiguous range starting at `item_base`.
                     let item_idx = self.items.len();
                     let item_id = ItemId::new(self.item_base as usize + item_idx);
-                    let qualified = self.qualified_export_path(name);
+                    let decl_path = self.decl_path(&[name]);
+                    let qualified = self.value_export_path(&decl_path);
                     self.items.push(ExportedItem {
-                        name: name.to_string(),
+                        name: self.export_name(id, name),
                         qualified,
                         id: item_id,
                         def: super::model::ExportDef::Own(id),
@@ -240,7 +241,6 @@ impl<'a> Resolver<'a> {
                     // The export-decl-list twin of the `ExportedItem` push: an
                     // ordinary `let` value (no case, no type-qualified path). Its
                     // `value_exports` row derives from the referenced item.
-                    let decl_path = self.decl_path(&[name]);
                     self.push_export_decl(
                         decl_path,
                         range.start(),

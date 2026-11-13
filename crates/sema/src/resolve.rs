@@ -75,7 +75,7 @@ mod contributors;
 mod custom_operations;
 mod decl_path;
 use contributors::FileContributions;
-use decl_path::DeclPath;
+use decl_path::{DeclPath, ExportName};
 use open_scope::OpenScope;
 use path_set::PathSet;
 mod decls;
@@ -1131,24 +1131,24 @@ fn collect_sig_container_exports(
         access_floor.is_none_or(|f| f < container.len()),
         "access_floor must be a proper prefix length of the container"
     );
+    let container_id = names.intern_path(container);
     let mut push = |defs: &mut Vec<Def>,
                     def: Def,
                     qualified: bool,
                     access_root_len: Option<usize>,
                     case: Option<CaseKind>,
-                    type_qualified: Option<Vec<String>>,
+                    type_qualified: Option<DeclPath>,
                     attributed: bool| {
-        let name = names.text(def.name()).to_string();
+        let name = def.name();
+        let text = names.text(name);
         let pos = def.range.start();
         let def_id = DefId::new(defs.len());
         defs.push(def);
-        let mut path = container.to_vec();
-        path.push(name.clone());
-        let qualified = qualified && !contested.contains(&name);
+        let qualified = qualified && !contested.contains(text);
         exports.push(model::SigExport {
-            name,
-            qualified: qualified.then(|| path.clone()),
-            path,
+            name: ExportName::new(names, name, text),
+            qualified,
+            path: DeclPath::under(names, container_id, container, &[text]),
             def: def_id,
             access_root_len,
             case,
@@ -1201,10 +1201,9 @@ fn collect_sig_container_exports(
                     let rqa = !sig_cases_certainly_bare(&defn);
                     let type_contested = contested_types.contains(&type_name);
                     let tq_path = |case: &str| {
-                        let mut p = container.to_vec();
-                        p.push(type_name.clone());
-                        p.push(case.to_string());
-                        (!type_contested).then_some(p)
+                        (!type_contested).then(|| {
+                            DeclPath::under(names, container_id, container, &[&*type_name, case])
+                        })
                     };
                     match defn.repr() {
                         Some(TypeDefnRepr::Union(u)) => {
@@ -1486,11 +1485,14 @@ fn signature_surface(
     // carries an identity for, split by namespace (the case half exempts
     // only the type-qualified case lookups — see
     // [`SigScreen::exported_case_paths`](model::SigScreen)).
-    let exported_value_paths: HashSet<Vec<String>> =
-        exports.iter().filter_map(|e| e.qualified.clone()).collect();
+    let exported_value_paths: HashSet<Vec<String>> = exports
+        .iter()
+        .filter(|e| e.qualified)
+        .map(|e| e.path.spell(names))
+        .collect();
     let exported_case_paths: HashSet<Vec<String>> = exports
         .iter()
-        .filter_map(|e| e.type_qualified.clone())
+        .filter_map(|e| e.type_qualified.as_ref().map(|p| p.spell(names)))
         .collect();
     // The bare names the signature may expose directly under a namespace
     // without an exported identity: in scope, shadowing, naming nothing.
@@ -3346,7 +3348,7 @@ mod export_decl_tests {
             rf.exports
                 .items
                 .iter()
-                .all(|i| i.name != "A" && i.name != "B"),
+                .all(|i| i.name(env()) != "A" && i.name(env()) != "B"),
             "an anonymous-root union case must not be exported"
         );
         let marker_decls: Vec<_> = rf
