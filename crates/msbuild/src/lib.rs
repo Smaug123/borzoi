@@ -1075,13 +1075,15 @@ pub fn parse_fsproj_with_imports(
         environment,
         sdk_resolver,
         glob_resolver,
+        #[cfg(any(test, feature = "test-support"))]
         None,
     )
-    .map(|(parsed, _)| parsed)
+    .map(|walked| walked.project)
 }
 
 /// [`parse_fsproj_with_imports`], also answering `probe` from the end of the
-/// walk when one is given (see [`evaluator::reads`]).
+/// walk when one is given (see [`evaluator::reads`]). Only the differential
+/// tests pass a probe, so a build without them has no `probe` parameter.
 pub(crate) fn parse_fsproj_probed(
     source: &str,
     project_path: &Path,
@@ -1089,8 +1091,8 @@ pub(crate) fn parse_fsproj_probed(
     environment: &HashMap<String, String>,
     sdk_resolver: Option<&SdkResolver<'_>>,
     glob_resolver: Option<&GlobResolver<'_>>,
-    probe: Option<&evaluator::reads::ReadProbe>,
-) -> Result<(ParsedProject, Option<evaluator::reads::EvaluationReads>), ParseError> {
+    #[cfg(any(test, feature = "test-support"))] probe: Option<&evaluator::reads::ReadProbe>,
+) -> Result<evaluator::Walked, ParseError> {
     validate_inputs(project_path, extra_properties)?;
     // Detection only — we follow the props/targets ourselves and
     // suppress the per-kind `ImplicitImportPresent` diagnostic that
@@ -1126,6 +1128,7 @@ pub(crate) fn parse_fsproj_probed(
         cpm_props_path.as_deref(),
         sdk_resolver,
         glob_resolver,
+        #[cfg(any(test, feature = "test-support"))]
         probe,
     ))
 }

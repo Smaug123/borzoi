@@ -217,7 +217,7 @@ mod tests {
             properties: properties.iter().map(|p| (*p).to_owned()).collect(),
             item_types: item_types.iter().map(|i| (*i).to_owned()).collect(),
         };
-        let (_, reads) = crate::parse_fsproj_probed(
+        let walked = crate::parse_fsproj_probed(
             &source,
             &path,
             &HashMap::new(),
@@ -227,7 +227,7 @@ mod tests {
             Some(&probe),
         )
         .unwrap();
-        reads.unwrap()
+        walked.reads.unwrap()
     }
 
     #[test]
