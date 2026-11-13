@@ -9,6 +9,10 @@
 //! language-version flag equal [`filtered_stream`]'s, so each later stage is
 //! held to the code it replaced on every input any test parses.
 //!
+//! [`scans`] is a copy of the parser's three lexer-level diagnostic scans as
+//! they stood before Stage 7 reordered them; every parse asserts the live
+//! scans report what it does.
+//!
 //! Nothing here may change except to delete it.
 
 // The copies keep the items the live code needed, whether or not the
@@ -21,6 +25,7 @@ use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia}
 use crate::language_version::LanguageVersion;
 
 pub mod lexfilter;
+pub mod scans;
 pub mod sign_fold;
 
 /// The filtered stream the productions read for `source`, by the reference
