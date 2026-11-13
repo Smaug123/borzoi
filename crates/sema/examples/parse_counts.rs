@@ -1,8 +1,9 @@
 //! Deterministic per-phase counts for the parser's token pipeline over a
-//! corpus: lexing, the lex-filter, and the whole parse, each reported as
-//! retired instructions, heap allocations and bytes allocated, all per source
-//! byte, beside the wall time. `docs/token-pipeline-soa-plan.md` states each of
-//! its stages' gains in these units.
+//! corpus: lexing, the lexer-level diagnostic scans, the lex-filter, and the
+//! whole parse, each reported as retired instructions, heap allocations and
+//! bytes allocated, all per source byte, beside the wall time.
+//! `docs/token-pipeline-soa-plan.md` states each of its stages' gains in these
+//! units.
 //!
 //! Instruction and allocation counts, unlike wall time, barely move with
 //! machine load, so they are what a claimed gain is measured in; the wall time
@@ -33,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::lexfilter::filter_collect;
-use borzoi_cst::parser::parse_with_symbols;
+use borzoi_cst::parser::{lexical_diagnostics, parse_with_symbols};
 use borzoi_cst::tokens::lex_full_trivia;
 
 /// The system allocator, counting calls and requested bytes.
@@ -179,6 +180,13 @@ fn main() {
             .collect::<Vec<_>>()
     });
     let tokens = lexed.iter().map(|l| l.tokens.len()).sum::<usize>();
+    phase("scans", reps, bytes, || {
+        files
+            .iter()
+            .zip(&lexed)
+            .map(|(s, lexed)| lexical_diagnostics(s, &lexed.tokens))
+            .collect::<Vec<_>>()
+    });
     phase("lex-filter", reps, bytes, || {
         lexed
             .iter()

@@ -3,7 +3,8 @@
 > **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
 > table), Stage 2 (the frozen filter reference), Stage 3 (the filtered
 > token table), Stage 4 (the filter reads the raw table by index),
-> Stage 5 (the newline table) and Stage 6 (the lexer writes the raw table)
+> Stage 5 (the newline table), Stage 6 (the lexer writes the raw table) and
+> Stage 7 (the diagnostic scans, measured and reordered rather than folded)
 > implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
@@ -502,6 +503,59 @@ only where it costs more than a few instructions per byte.
 **Oracle**: the folded diagnostics equal the separate scans' (kept
 test-only), over the generated inputs and every parse; `parse_counts` shows
 the gain that justified the fold.
+
+**Result.** No scan is folded. Measured one at a time over the raw table
+(the corpus's `src/` tree, min of 3), the three cost 21.3 instructions per
+byte between them, 4% of a parse:
+
+| scan | instr/B |
+|---|---|
+| `tab_diagnostics` | 5.9 |
+| `reserved_ident_diagnostics` | 13.6 |
+| `operator_char_diagnostics` | 1.8 |
+
+Two clear the bar, but not for the reason a fold addresses. A fold saves the
+scan's own loop over the kinds, and the loop is cheap: a scan that only
+counts `Ident` kinds costs 0.5, and `operator_char_diagnostics`, which tests
+each kind and reads only the operators' text, costs 1.8 in all. What the two
+expensive scans spent was per-token work ahead of the kind test.
+`reserved_ident_diagnostics` sliced every token's text and span before asking
+whether it was an identifier; testing the kind first takes it to 5.2. And
+`tab_diagnostics` searched every whitespace token for a tab; one search of the
+whole source for a tab byte first, which finds none in most files, takes it to
+0.9. A fold into the lexing pass would keep both costs (the writer would still
+test each identifier against the reserved words, and each whitespace token for
+a tab) and would have to hold back a reserved word until the next token
+arrives, since a glued `#` or `!` decides its warning. So the scans stay pure
+functions of the table, as D6 prefers, with their tests reordered. A
+first-byte dispatch for the reserved-word lookup saved a further 1.2 and was
+not kept: it is a second spelling of `RESERVED_IDENTS` to keep in step.
+
+`parser::lexical_diagnostics` runs the three scans, and `parse_counts` reports
+it as its own phase. `reference::scans` (under `token-reference`) is a copy of
+the scans as they stood before; every parse asserts that the live scans report
+what it does, and `tests/all/scan_reference.rs` checks the same over the
+lexical pairs, `WIDE` pairs, a random walk, and `SCAN_SHAPES` (tab runs in and
+out of whitespace, on directive lines and in inactive regions; each reserved
+word bare, glued to `!` or `#`, spaced, quoted and as a prefix; operators
+holding `:` or `$` in and out of the `>`-headed rule), and that the shapes reach
+each diagnostic. Two planted bugs: starting the tab search at the source's
+second byte fails all three groups on `"\t"`; warning on a reserved word
+glued to `#` fails the pairs and the random walk, and, through the parse's
+lockstep assertion, the parser's own
+`reserved_word_immediately_followed_by_hash_does_not_warn`.
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine (the scans'
+"before" is the sum of the three measured alone):
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 78.1 | 78.2 | 4.05 | 4.05 |
+| scans | 21.3 | 8.6 | 0.00 | 0.00 |
+| lex-filter | 189.5 | 189.9 | 5.76 | 5.76 |
+| parse | 523.5 | 510.9 | 52.44 | 52.44 |
+
+The parse costs 12.6 instructions per byte fewer (2.4%).
 
 ### Stage 8: retire the references
 
