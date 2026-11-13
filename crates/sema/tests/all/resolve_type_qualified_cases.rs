@@ -1020,7 +1020,7 @@ fn cross_file_type_qualified_case_resolves_for_a_non_rec_self_reference() {
     // name equals the type may reference an earlier file's case in its own RHS — the
     // binder is **not** in scope in its own RHS, so the eagerly-interned same-file
     // `let Color` must not shadow the qualifier. FCS-verified: `Lib.Container.Color.Red`
-    // → file0's case (the binding's own value does not count, via `pending_items`).
+    // → file0's case (the binding's own value does not count: it is pending).
     assert_cross_file_case(
         "namespace Lib\nmodule Container =\n    type Color = Red | Blue\n",
         "namespace Lib\nmodule Container =\n    let Color = Lib.Container.Color.Red\n",

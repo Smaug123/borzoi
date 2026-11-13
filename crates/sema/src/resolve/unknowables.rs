@@ -79,7 +79,68 @@ impl Unknowables {
 #[cfg(test)]
 mod tests {
     use super::{Unknowable, Unknowables};
+    use crate::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
+    use borzoi_cst::parser::parse;
+    use borzoi_cst::syntax::{AstNode, ImplFile};
     use proptest::prelude::*;
+
+    /// The reasons resolving `src` alone raises.
+    fn raised(src: &str) -> Vec<Unknowable> {
+        let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("an impl file");
+        let env = AssemblyEnv::default();
+        let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+        assert_eq!(
+            rf.open_extension_unknowable(),
+            rf.unknowables.contains(Unknowable::OpenExtensionSurface)
+        );
+        assert_eq!(
+            rf.augmentation_names_unknowable(),
+            rf.unknowables.contains(Unknowable::AugmentationNames)
+        );
+        if rf.unknowables.contains(Unknowable::AttributeShape) {
+            assert!(rf.attributes_may_declare_extension(&env));
+        }
+        Unknowable::ALL
+            .into_iter()
+            .filter(|&r| rf.unknowables.contains(r))
+            .collect()
+    }
+
+    /// Each construct raises its own reason and no other: a raise site
+    /// that names the wrong reason moves a row. The public accessors agree
+    /// with the set they read.
+    #[test]
+    fn each_construct_raises_exactly_its_reason() {
+        let rows: &[(&str, &[Unknowable])] = &[
+            ("module M\nlet x = 1\n", &[]),
+            (
+                "module M\nopen Nowhere\nlet x = 1\n",
+                &[Unknowable::OpenExtensionSurface],
+            ),
+            (
+                "module M\nopen type Nowhere.T\nlet x = 1\n",
+                &[Unknowable::OpenExtensionSurface],
+            ),
+            ("module M\n[<>]\nlet x = 1\n", &[Unknowable::AttributeShape]),
+            (
+                "module M\ntype T() =\n    member _.X = 1\ntype T with\n    member _.(|Big|_|) x = None\n",
+                &[Unknowable::AugmentationNames],
+            ),
+            (
+                "namespace global\nopen System\ntype U = int\nnamespace A\ntype V = int\n",
+                // In an empty env the `open` is unenumerable too.
+                &[
+                    Unknowable::OpenExtensionSurface,
+                    Unknowable::GlobalBlockOpen,
+                ],
+            ),
+        ];
+        for (src, expected) in rows {
+            assert_eq!(raised(src), *expected, "{src:?}");
+        }
+    }
 
     fn reason() -> impl Strategy<Value = Unknowable> {
         proptest::sample::select(Unknowable::ALL.to_vec())
