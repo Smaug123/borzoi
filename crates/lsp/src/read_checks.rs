@@ -432,6 +432,9 @@ mod host_tests {
             let mut paths = vec![root.clone()];
             for a in 0..NAMES.len() {
                 paths.push(root.join(NAMES[a]));
+                // Spellings the kernel resolves otherwise than by components.
+                paths.push(PathBuf::from(format!("{}/{}/", root.display(), NAMES[a])));
+                paths.push(root.join("l/..").join(NAMES[a]));
                 for b in 0..NAMES.len() {
                     paths.push(root.join(NAMES[a]).join(NAMES[b]));
                 }
