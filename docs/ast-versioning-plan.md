@@ -2,7 +2,8 @@
 
 > **Status (2026-11-13).** A living plan. The decisions below are settled; the
 > work is an eight-PR sequence ([PR sequence](#pr-sequence)), of which PR 1 (the
-> feature table, #15) has landed. Earlier stages that still stand:
+> feature table, #15) and PR 4 (the union behind `unstable-union`, #13, #670)
+> have landed. Earlier stages that still stand:
 > `LanguageVersion` as a parse input (#592/#597/#606), the LSP's
 > `<LangVersion>` wiring (#613), and the generated `syntax::v8` / `syntax::v9`
 > facades (#618 and after). The goal: before the next F# compiler upgrade (a new
@@ -90,7 +91,10 @@ interval bound (`KindInterval::removed`, carried and unused today).
 The union is what sema and the LSP use (they need the maximal, preview tree).
 It sits behind the cargo feature `unstable-union` (D11), which sema, the LSP,
 corpus-diff and cst's own tests enable; without it, `syntax` exports only the
-substrate and the facades.
+substrate (#13, landed in #670). The hand-written union lives in the private
+`syntax::union`. The `v8`/`v9` facades sit behind the same feature for now,
+because they re-export union node types; the deep facades of PR 6 own their
+types and come out from behind it.
 
 ### D3. `LanguageVersion` is a first-class parse input (the index)
 
@@ -231,6 +235,7 @@ pin; a corpus census counts version-dependent files.
 ### D11. Feature flags and the remaining issue decisions
 
 - **#13** — the union sits behind `unstable-union`; paths are unchanged.
+  Done (#670).
 - **#17** — `syntax::preview` sits behind `unstable-preview`, is never
   published, and its lock is always regenerated.
 - **#16** (compile-time type-tag views) stays deferred; `view::<V>()` over a
@@ -338,6 +343,9 @@ PR 6 makes them generic over every (facade, enum) pair.
 - **PR 1 — the feature table** (#15): the TSV, astgen's parser and the
   generated `features.rs`, `#elif` as an ordinary row, the three
   compiler-source tests, and 11.0 in `parser_diff_feature_gates`.
+- **PR 4 — the union behind `unstable-union`** (#13, #670): the hand-written
+  union in a private `syntax::union`, re-exported only under the feature, with a
+  featureless clippy and doc step in CI. `v8`/`v9` are behind it too until PR 6.
 
 ## PR sequence
 
@@ -349,7 +357,8 @@ PR 6 makes them generic over every (facade, enum) pair.
    from-end indexing, `_.` patterns, `for _ =`, `$$"""`, `>|}`
    (`BetterAnonymousRecordParsing`) — each gated, or `Unmodelled` with its
    reason. The three deferred `Kind` rows go live.
-4. **Union behind `unstable-union`** (#13). Independent of 1–3.
+4. **Union behind `unstable-union`** (#13). Independent of 1–3. *Landed*
+   (#670); the `v8`/`v9` facades are behind the feature too until PR 6.
 5. **astgen owns every node** and reads accessor signatures (D4); it emits the
    union's lock only.
 6. **Deep facades for every version and preview** (#14, #17),
