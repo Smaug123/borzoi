@@ -443,15 +443,6 @@ fn parse_inner_stopping_at(
     // parser runs so a signed literal is a single token in both expression
     // and pattern position. See `sign_fold`.
     sign_fold::fold_adjacent_signs(&raw_tokens, &mut filtered_tokens);
-    #[cfg(feature = "token-reference")]
-    assert_filtered_stream_matches_reference(
-        source,
-        symbols,
-        lang,
-        &filtered_tokens,
-        &offside_diagnostics,
-        shape_depends_on_language_version,
-    );
 
     // FS1161 tabs, FS0046 reserved-identifier warnings and `:`/`$` inside an
     // operator lexeme: lexer-level diagnostics, scanned off the raw table
@@ -462,16 +453,6 @@ fn parse_inner_stopping_at(
     // parity the differential harness checks.
     let [tab_errors, reserved_warnings, operator_char_errors] =
         lexical_diagnostics(source, &raw_tokens);
-    #[cfg(feature = "token-reference")]
-    {
-        let reference = crate::reference::scans::lexical_diagnostics(source, &raw_tokens);
-        let live = [&tab_errors, &reserved_warnings, &operator_char_errors];
-        assert!(
-            live.iter().copied().eq(reference.iter()),
-            "lexical diagnostics {live:?} differ from the reference scans' {reference:?} \
-             in {source:?}"
-        );
-    }
 
     // Language-version legality gate. The version never threads into the
     // preprocessor — the driver records the gated `#elif` spans, and we turn
@@ -578,49 +559,6 @@ fn parse_inner_stopping_at(
         lang,
         shape_depends_on_language_version,
     }
-}
-
-/// Under `token-reference`, assert that the filtered stream the productions
-/// are about to read, the lex-filter's offside diagnostics and its
-/// language-version flag are exactly what the frozen reference pipeline
-/// produces for the same source ([`crate::reference::filtered_stream`],
-/// `docs/token-pipeline-soa-plan.md` D7). The two pipelines' token types are
-/// distinct copies with the same derived `Debug`, which is the comparison's
-/// currency.
-#[cfg(feature = "token-reference")]
-fn assert_filtered_stream_matches_reference(
-    source: &str,
-    symbols: &HashSet<String>,
-    lang: LanguageVersion,
-    tokens: &FilteredTokens<'_>,
-    diagnostics: &[OffsideDiagnostic],
-    shape_depends_on_language_version: bool,
-) {
-    let reference = crate::reference::filtered_stream(source, symbols, lang);
-    for i in 0..tokens.len().max(reference.tokens.len()) {
-        let live = tokens.get(i).map(|t| format!("{t:?}"));
-        let want = reference.tokens.get(i).map(|t| format!("{t:?}"));
-        assert!(
-            live == want,
-            "filtered token {i} is {live:?} where the reference pipeline has {want:?}, \
-             at {lang} in {source:?}"
-        );
-    }
-    let live: Vec<String> = diagnostics.iter().map(|d| format!("{d:?}")).collect();
-    let want: Vec<String> = reference
-        .diagnostics
-        .iter()
-        .map(|d| format!("{d:?}"))
-        .collect();
-    assert!(
-        live == want,
-        "offside diagnostics {live:?} differ from the reference pipeline's {want:?}, \
-         at {lang} in {source:?}"
-    );
-    assert!(
-        shape_depends_on_language_version == reference.shape_depends_on_language_version,
-        "the language-version flag differs from the reference pipeline's, at {lang} in {source:?}"
-    );
 }
 
 /// Language-version legality diagnostics: report each construct not available

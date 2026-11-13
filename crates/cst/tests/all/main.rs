@@ -15,7 +15,7 @@ mod corpus;
 mod corpus_walk;
 mod fcs_divergence;
 mod fcs_record_stack_bound;
-mod filter_reference;
+mod filtered_table;
 mod flat_tree_reference;
 mod flat_tree_scans;
 mod kind_name_totality;
@@ -106,7 +106,6 @@ mod parser_ifdef;
 mod parser_panic_sweep;
 mod parser_tree_height;
 mod recovery_sweep;
-mod scan_reference;
 mod shape_sensitivity;
 mod token_table_reference;
 
