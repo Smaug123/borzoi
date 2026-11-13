@@ -22,9 +22,11 @@ use super::model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, EarlierType, ExportDeclKind,
     ExportedItem, ItemId, Resolution, SlotClass,
 };
+use super::open_scope::PrefixRef;
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
 };
+use crate::names::{NameKey, PathKey, Segments};
 use crate::recovery::SyntaxRecovery;
 
 /// Which names a type definition's member bodies see beyond the module scope,
@@ -2022,8 +2024,9 @@ impl<'a> Resolver<'a> {
         // false here. The per-tier [`ShadowVeto`] verdict participates in that
         // *same* walk (V1/V3) — see [`Self::type_position_shadow_at`], the one
         // definition every type-position walk shares.
-        let core = |prefix: &[String]| self.assembly_type_path_core(prefix, names, arity);
-        let shadow_at = |prefix: &[String]| self.type_position_shadow_at(prefix, names);
+        let source = Segments::new(self.assemblies.names(), names.to_vec());
+        let core = |prefix: PathKey<'_>| self.assembly_type_path_core(prefix, &source, arity);
+        let shadow_at = |prefix: PrefixRef<'_>| self.type_position_shadow_at(prefix, names);
 
         // A manifest auto-open — `[<assembly: AutoOpen("N.Ops")>]` naming a
         // module, or `[<assembly: AutoOpen("N")>]` naming a namespace some
@@ -2260,8 +2263,11 @@ impl<'a> Resolver<'a> {
         let [only] = names else {
             return false;
         };
-        self.assembly_prefixes_by_priority()
-            .any(|(_, prefix)| self.assemblies.declares_type_at_any_arity(prefix, only))
+        let only = NameKey::of(self.assemblies.names(), only);
+        self.assembly_prefixes_by_priority().any(|(_, prefix)| {
+            self.assemblies
+                .declares_type_at_any_arity_at(prefix.key(), only)
+        })
     }
 
     /// EX-3 §2(d) (`docs/extension-scope-enumeration-plan.md`): resolve the
@@ -2588,9 +2594,9 @@ impl<'a> Resolver<'a> {
             return true;
         }
         self.assembly_prefixes_by_priority().any(|(_, prefix)| {
-            let mut full = prefix.to_vec();
+            let mut full = prefix.path.to_vec();
             full.extend(names.iter().cloned());
-            (prefix.len()..full.len()).any(|k| {
+            (prefix.path.len()..full.len()).any(|k| {
                 let ns = &full[..k];
                 // The auto-open shadow is asked about the segment supplied
                 // AT this split — the name the lookup would root or extend
@@ -2856,7 +2862,7 @@ impl<'a> Resolver<'a> {
     ///    dotted heads too — asking the module index rather than the type one.
     pub(super) fn type_position_shadow_at(
         &self,
-        prefix: &[String],
+        prefix: PrefixRef<'_>,
         names: &[String],
     ) -> ShadowVeto {
         let Some(head) = names.first() else {
@@ -2864,10 +2870,11 @@ impl<'a> Resolver<'a> {
         };
         if self
             .assemblies
-            .auto_open_modules_in_namespace_shadow_type_named(prefix, head)
+            .auto_open_modules_in_namespace_shadow_type_named_at(prefix.key(), head)
         {
             return ShadowVeto::Vetoed(DeclineCause::AssemblyAutoOpenShadow);
         }
+        let prefix = prefix.path;
         if self.project_shadow_at(prefix, names) {
             return ShadowVeto::Vetoed(DeclineCause::ProjectAutoOpenShadow);
         }
@@ -2928,10 +2935,8 @@ impl<'a> Resolver<'a> {
     /// are vanishingly rare in practice.
     pub(super) fn dropped_type_could_root_this_path(&self, names: &[String]) -> bool {
         self.assembly_prefixes_by_priority().any(|(_, prefix)| {
-            let mut full = prefix.to_vec();
-            full.extend(names.iter().cloned());
             self.assemblies
-                .any_split_of_a_module_path_has_a_dropped_type(&full)
+                .any_split_under_has_a_dropped_type(prefix.key(), names)
         })
     }
 
@@ -3039,11 +3044,12 @@ impl<'a> Resolver<'a> {
         }
         let decline = |cause| Some(TypePathResolution::Deferred(DeclineSite::pre_walk(cause)));
         let names = [name.to_string()];
+        let source = Segments::new(self.assemblies.names(), names.to_vec());
         match self.resolve_assembly_path_over(
             self.explicit_open_reading_prefixes(),
-            |prefix: &[String]| self.assembly_type_path_core(prefix, &names, arity),
+            |prefix: PathKey<'_>| self.assembly_type_path_core(prefix, &source, arity),
             false,
-            |prefix: &[String]| self.type_position_shadow_at(prefix, &names),
+            |prefix: PrefixRef<'_>| self.type_position_shadow_at(prefix, &names),
         ) {
             TieredResolution::Resolved { .. } => return None,
             TieredResolution::ShadowDeferred(_) => {
@@ -3221,13 +3227,13 @@ impl<'a> Resolver<'a> {
             || self.dropped_type_could_root_this_path(&names)
             || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                 self.assemblies
-                    .type_arities_named(prefix, head)
+                    .type_arities_named(prefix.path, head)
                     .next()
                     .is_some()
-                    || (self.assemblies.has_namespace(prefix)
+                    || (self.assemblies.has_namespace(prefix.path)
                         && self
                             .assemblies
-                            .open_namespace_fold_surfaces(prefix)
+                            .open_namespace_fold_surfaces(prefix.path)
                             .iter()
                             .any(|s| s.residue || s.entries.iter().any(|e| e.name == head)))
             })
@@ -3259,7 +3265,7 @@ impl<'a> Resolver<'a> {
             || self.dropped_type_could_root_this_path(&names)
             || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                 self.assemblies
-                    .declares_type_below_arity(prefix, name, arity)
+                    .declares_type_below_arity(prefix.path, name, arity)
             });
         in_file || earlier || assemblies
     }

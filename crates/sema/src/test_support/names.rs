@@ -5,9 +5,10 @@
 
 use crate::AssemblyEnv;
 
-/// `env` with an empty name table of its own.
-pub fn with_fresh_names(env: &AssemblyEnv) -> AssemblyEnv {
-    env.with_fresh_names()
+/// `env` with a name table of its own, which interns `first`, in order,
+/// before the env's own namespaces and type names.
+pub fn with_fresh_names(env: &AssemblyEnv, first: &[Vec<String>]) -> AssemblyEnv {
+    env.with_fresh_names(first)
 }
 
 /// Every path `env`'s table holds (the empty one included), as segments, in
@@ -23,14 +24,4 @@ pub fn interned_paths(env: &AssemblyEnv) -> Vec<Vec<String>> {
                 .collect()
         })
         .collect()
-}
-
-/// Intern each of `paths` into `env`'s table, in order.
-pub fn intern_paths(env: &AssemblyEnv, paths: &[Vec<String>]) {
-    let names = env.names();
-    for path in paths {
-        path.iter().fold(names.root(), |parent, segment| {
-            names.intern_child(parent, names.logical(segment))
-        });
-    }
 }

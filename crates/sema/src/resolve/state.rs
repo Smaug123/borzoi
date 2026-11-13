@@ -20,7 +20,7 @@ use super::model::{
     DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
     ItemId, OpenTrace, ProjectItems, Resolution, SlotClass, TypeSlot,
 };
-use super::open_scope::OpenScope;
+use super::open_scope::{InternedPrefix, OpenScope};
 use super::path_set::PathSet;
 use crate::names::{ChildMap, PathId};
 
@@ -724,7 +724,7 @@ pub(super) enum TieredResolution<R> {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct OpenGroup {
     /// The readings, highest-priority first.
-    pub(super) readings: Vec<Vec<String>>,
+    pub(super) readings: Vec<InternedPrefix>,
 }
 
 /// One entry in [`OpenScope::open_shortening_prefixes`](crate::resolve::open_scope::OpenScope::open_shortening_prefixes): a container some `open`
@@ -1813,7 +1813,9 @@ pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<Shor
 pub(super) fn implicit_open_groups(assemblies: &AssemblyEnv) -> Vec<OpenGroup> {
     implicit_open_namespaces(assemblies)
         .into_iter()
-        .map(|ns| OpenGroup { readings: vec![ns] })
+        .map(|ns| OpenGroup {
+            readings: vec![InternedPrefix::new(assemblies.names(), ns)],
+        })
         .collect()
 }
 
