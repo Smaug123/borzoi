@@ -885,7 +885,7 @@ impl MsbuildOutput {
 /// after each import. The directories hold a space and a `;`, which a seed
 /// escapes; one import is spelled through `..`, which MSBuild resolves; and the
 /// imported files' names are ones .NET splits unlike Rust (`.props`, `Imp.`,
-/// `a..b`, `..x`, `x..`).
+/// `a..b`, `..x`, `x..`), or hold an escape sequence and a `;`.
 #[test]
 fn path_derivable_reserved_properties_match_msbuild() {
     const NAMES: [&str; 7] = [
@@ -898,7 +898,7 @@ fn path_derivable_reserved_properties_match_msbuild() {
         "MSBuildThisFileDirectory",
     ];
     // (import spelling, file on disk, property prefix)
-    const IMPORTS: [(&str, &str, &str); 7] = [
+    const IMPORTS: [(&str, &str, &str); 9] = [
         ("sub dir/Imp.x.props", "sub dir/Imp.x.props", "I"),
         ("sub dir/../other/Odd.props", "other/Odd.props", "D"),
         ("sub dir/.props", "sub dir/.props", "J"),
@@ -906,12 +906,18 @@ fn path_derivable_reserved_properties_match_msbuild() {
         ("sub dir/a..b", "sub dir/a..b", "L"),
         ("sub dir/..x", "sub dir/..x", "M"),
         ("sub dir/x..", "sub dir/x..", "N"),
+        // A directory and files whose names hold an escape sequence and a `;`,
+        // spelled escaped in the `Import`: MSBuild splices the `ThisFile*`
+        // values raw, so `%41` reads back as `A` and `%20` as a space.
+        ("d%2541/a%2520b.props", "d%41/a%20b.props", "E"),
+        ("d%2541/x%3by.props", "d%41/x;y.props", "F"),
     ];
     let tmp = TempDir::new().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
     let dir = root.join("p r;oj");
     std::fs::create_dir_all(dir.join("sub dir")).unwrap();
     std::fs::create_dir_all(dir.join("other")).unwrap();
+    std::fs::create_dir_all(dir.join("d%41")).unwrap();
     // Each property brackets its value so an empty one still reads back.
     let reads = |prefix: &str| -> String {
         NAMES

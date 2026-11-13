@@ -141,6 +141,16 @@ the body and from an import in a subdirectory whose names hold a space and a
 `sdk_chain_decline_attribution.rs` did not move: it measures under its own
 seed tables, not the walker's.
 
+Three things the seeds must do as MSBuild does, each found in review and now
+in the differential: name and extension split as .NET splits them (`.props`
+is `` and `.props`); every path normalised (`sub/../x/Imp.props`, a project
+handed in through `..`); and the `MSBuildThisFile*` values spliced **raw**,
+not escaped like the `MSBuildProject*` seeds, because MSBuild computes them in
+the expander. A file named `a%20b.props` is `a b` to `100 1 57 100MSBuildThisFileName)`,
+and `x;y.props` splits `Include="100 1 57 100MSBuildThisFile)"` in two. The last was
+wrong for `MSBuildThisFile` and `MSBuildThisFileDirectory` before this change
+too.
+
 ### (b) Toolset-derivable — each needs its own probe, and its own reason
 
 | name | value | risk |

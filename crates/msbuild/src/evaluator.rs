@@ -3430,10 +3430,8 @@ impl<'r> State<'r> {
             .iter()
             .map(|(name, _)| (*name, self.lookup.get(name).cloned().unwrap_or_default()))
             .collect();
-        // Evaluator-computed reserved values, not project XML: a `%` in an
-        // imported file's path is literal, exactly as for `well_known`'s seeds.
         for (name, value) in seeds {
-            self.lookup.insert_computed(name, value);
+            self.lookup.insert_escaped(name, value);
         }
         ThisFileFrame { saved }
     }

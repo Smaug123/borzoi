@@ -93,7 +93,8 @@ impl PropertyMap {
     }
 
     /// Insert text the evaluator **computed from the world**: a filesystem
-    /// path, a toolset/SDK seed, the `MSBuildThisFile*` pair. Escaped on the
+    /// path, a toolset/SDK seed. (Not the `MSBuildThisFile*` family, which
+    /// MSBuild splices raw: see [`this_file_seeds`].) Escaped on the
     /// way in, exactly as MSBuild escapes such values when it seeds them
     /// (`Evaluator.cs:1186–1189`, `Toolset.cs:802`) — which is what makes a
     /// `%`, `;` or `(` in a project's own path inert rather than an escape, a
@@ -195,7 +196,7 @@ pub fn well_known(project_path: &Path) -> PropertyMap {
     map.insert_computed("MSBuildProjectFile", file);
     map.insert_computed("MSBuildProjectExtension", extension);
     for (name, value) in this_file_seeds(project_path) {
-        map.insert_computed(name, value);
+        map.insert_escaped(name, value);
     }
     map
 }
@@ -207,7 +208,14 @@ pub fn well_known(project_path: &Path) -> PropertyMap {
 /// the directory names carry a trailing separator, the `NoRoot` one drops the
 /// filesystem root, and the name and extension split as .NET splits them
 /// ([`split_file_name`]).
-pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
+///
+/// The values are **raw** text spliced into the escaped domain, not escaped
+/// seeds: MSBuild computes them in the expander from the file's path
+/// (`ExpandMSBuildThisFileProperty`), unlike the `MSBuildProject*` names it
+/// escapes when it seeds them. So a file named `a%20b.props` is `a b` to
+/// `100 1 57 100MSBuildThisFileName)`, and one named `x;y.props` splits an
+/// `Include="100 1 57 100MSBuildThisFile)"` in two (probed against `dotnet msbuild`).
+pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, Escaped); 6] {
     // MSBuild names an imported file by its full path, `.` and `..` resolved
     // (`Import Project="sub/../x/Imp.props"` is `…/x/Imp.props`), lexically:
     // a symlinked directory is not resolved.
@@ -241,6 +249,7 @@ pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
         ("MSBuildThisFileName", name),
         ("MSBuildThisFileExtension", extension),
     ]
+    .map(|(key, value)| (key, Escaped::from_xml(value)))
 }
 
 /// `path` with `.` segments dropped and `..` segments resolved against what
@@ -1758,7 +1767,12 @@ mod tests {
         assert_eq!(with_trailing_separator("/a".into()), "/a/");
         assert_eq!(with_trailing_separator_always("".into()), "/");
         let seeds = this_file_seeds(std::path::Path::new("/Imp.props"));
-        let get = |k| seeds.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str());
+        let get = |k| {
+            seeds
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.as_escaped())
+        };
         assert_eq!(get("MSBuildThisFileDirectory"), Some("/"));
         assert_eq!(get("MSBuildThisFileDirectoryNoRoot"), Some("/"));
         assert_eq!(
