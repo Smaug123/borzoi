@@ -3,6 +3,7 @@
 //! fixtures, as one resident JSONL child. Built once per source fingerprint
 //! (the content-bearing-marker scheme the other oracle harnesses use).
 
+use crate::common::host_fs::HostPath as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -43,8 +44,8 @@ fn ensure_built() -> &'static Path {
                 .join("inheritdoc-oracle");
             let marker = bin.join(".inheritdoc-oracle-built");
             let want = format!("{:016x}", fingerprint(&project));
-            let fresh = apphost.exists()
-                && std::fs::read_to_string(&marker).is_ok_and(|r| r.trim() == want);
+            let fresh = apphost.host_exists()
+                && crate::common::host_fs::read_to_string(&marker).is_ok_and(|r| r.trim() == want);
             if !fresh {
                 let mut cmd = Command::new("dotnet");
                 cmd.args(["build", "-c", "Release", "--nologo"])
@@ -52,7 +53,7 @@ fn ensure_built() -> &'static Path {
                 BoundedCommand::new(cmd)
                     .timeout(BUILD_TIMEOUT)
                     .run_ok("dotnet build inheritdoc-oracle");
-                assert!(apphost.exists(), "no apphost at {apphost:?}");
+                assert!(apphost.host_exists(), "no apphost at {apphost:?}");
                 let tmp = bin.join(format!(
                     ".inheritdoc-oracle-built.tmp-{}",
                     std::process::id()
@@ -71,7 +72,7 @@ fn ensure_built() -> &'static Path {
 fn fingerprint(project: &Path) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    let mut sources: Vec<PathBuf> = std::fs::read_dir(project)
+    let mut sources: Vec<PathBuf> = crate::common::host_fs::read_dir(project)
         .into_iter()
         .flatten()
         .flatten()
@@ -91,7 +92,9 @@ fn fingerprint(project: &Path) -> u64 {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .hash(&mut h);
-        std::fs::read(p).unwrap_or_default().hash(&mut h);
+        crate::common::host_fs::read(p)
+            .unwrap_or_default()
+            .hash(&mut h);
     }
     h.finish()
 }

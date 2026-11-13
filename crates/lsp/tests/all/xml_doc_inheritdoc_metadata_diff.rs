@@ -602,7 +602,7 @@ fn system_runtime() -> &'static (PathBuf, Ident) {
     RUNTIME.get_or_init(|| {
         use borzoi_assembly::EcmaView;
         let path = ensure_system_runtime_dll();
-        let bytes = std::fs::read(&path).unwrap();
+        let bytes = crate::common::host_fs::read(&path).unwrap();
         let view = borzoi_assembly::Ecma335Assembly::parse(&bytes).unwrap();
         let id = view.identity();
         let v = &id.version;

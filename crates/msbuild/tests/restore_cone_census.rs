@@ -41,6 +41,13 @@
 //! a user target hooked into the restore targets), pinned in
 //! `tests/manifests/restore_cone_fixtures.txt`.
 //!
+//! Each cone also grades the item seam (stage A₁.2, [`seam`]): the
+//! `_RestoreGraphEntry` items the build hands `WriteRestoreGraphTask`, put
+//! through `borzoi_nuget`'s `write_restore_graph`, must give the cone's own
+//! spec byte for byte, or decline. The verdict is pinned as the cone's `seam`
+//! line. Only a cone of the SDK's targets alone is graded: a user target can
+//! run anything around the writer.
+//!
 //! File spellings are host-independent: `sdk:` relative to the SDK directory,
 //! `dotnet:` relative to the dotnet root, and `project:`/`fixture:` relative to
 //! the tree the project lives in. A file anywhere else fails the census, which
@@ -320,6 +327,8 @@ struct Cone {
     spec: Value,
     /// The executed targets and tasks, for comparison with the CLI's.
     executed: Executed,
+    /// The `restoreCone` answer, which [`seam`] grades the item seam on.
+    answer: Value,
 }
 
 fn string(value: &Value, field: &str) -> String {
@@ -421,6 +430,83 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         loaded,
         spec,
         executed,
+        answer,
+    }
+}
+
+/// The item seam on this cone (stage A₁.2 of the plan): the
+/// `_RestoreGraphEntry` items the build hands `WriteRestoreGraphTask`, put
+/// through `borzoi_nuget`'s `write_restore_graph`, must give exactly the spec
+/// the cone wrote, or decline. A commit with any other text panics, since
+/// under certain-implies-exact it is a bug. The verdict is `agree`, or the
+/// decline's shape (without the item index or value, which are not
+/// host-independent).
+///
+/// Graded only on a cone of the SDK's targets alone (the census checks), so
+/// the one writer invocation is `GenerateRestoreGraphFile`'s. The entries are
+/// its own input, as the census build logged it, after `RemoveDuplicates`. The
+/// NuGet identity is that of the `NuGet.Commands` the census build loaded,
+/// and the environment is the oracle's scrubbed one.
+fn seam(project: &Path, answer: &Value, loaded: &BTreeMap<PathBuf, String>) -> String {
+    use borzoi_nuget::dgspec::{
+        NuGetIdentity, RestoreGraphItem, RestoreItemsDecline, write_restore_graph,
+    };
+
+    let writer = &answer["writer"];
+    if writer.is_null() {
+        panic!(
+            "{}: no single writer invocation wrote the spec in a cone of SDK targets",
+            project.display()
+        );
+    }
+    let items: Vec<RestoreGraphItem> = writer["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|item| RestoreGraphItem {
+            identity: string(item, "identity"),
+            metadata: item["metadata"]
+                .as_object()
+                .expect("metadata")
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_str().expect("string metadata").to_owned()))
+                .collect(),
+        })
+        .collect();
+    // The invocation's own bool parameter: unset is the task's default, false.
+    let recursive = match writer["restoreRecursive"].as_str() {
+        None => false,
+        Some(v) if v.eq_ignore_ascii_case("true") => true,
+        Some(v) if v.eq_ignore_ascii_case("false") => false,
+        Some(other) => panic!("RestoreRecursive is {other:?}, which the census does not convert"),
+    };
+    let nuget = loaded
+        .values()
+        .find_map(|rendered| rendered.strip_prefix("NuGet.Commands "))
+        .unwrap_or_else(|| panic!("{}: the build loaded no NuGet.Commands", project.display()));
+    let environment = common::oracle_environment()
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+    match write_restore_graph(&items, recursive, &NuGetIdentity::new(nuget), &environment) {
+        Ok(file) => {
+            let theirs = string(answer, "dgspec");
+            assert!(
+                file.text == theirs,
+                "{}: the item seam wrote another spec than the build did\n--- ours\n{}\n--- the build's\n{theirs}",
+                project.display(),
+                file.text
+            );
+            "agree".to_owned()
+        }
+        Err(RestoreItemsDecline::Value { name, detail, .. }) => {
+            format!("decline {name}: {detail}")
+        }
+        Err(RestoreItemsDecline::Vocabulary { detail, .. }) => format!("decline {detail}"),
+        Err(RestoreItemsDecline::UnverifiedNuGet { identity }) => {
+            format!("decline unverified NuGet {identity}")
+        }
+        Err(other) => format!("decline {other}"),
     }
 }
 
@@ -620,6 +706,19 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
                 subject.key
             );
             let prefix = format!("{sdk} {how} {}", subject.key);
+            // The seam is graded only on a cone of the SDK's targets alone: a user
+            // target can run anything around the writer (edit its entries, run it
+            // again, change its flags afterwards), and A₁ declines such a cone.
+            let user_target = cone
+                .targets
+                .iter()
+                .any(|t| !shipped(&subject.spell(&cone, &t.file)));
+            let verdict = if user_target {
+                "decline: a user target ran in the cone".to_owned()
+            } else {
+                seam(&subject.project, &cone.answer, &cone.loaded)
+            };
+            items.push((format!("{prefix} seam"), verdict));
             for target in &cone.targets {
                 let file = subject.spell(&cone, &target.file);
                 per_sdk
@@ -721,6 +820,9 @@ const NET10: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="App.fs" />
+    <!-- An escaped `;` in metadata the writer writes: the item seam must see it
+         as the task does, unescaped. -->
+    <PackageReference Include="Fake.Package" Version="1.0.0" Aliases="x%3By" />
   </ItemGroup>
 </Project>
 "#;

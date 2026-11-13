@@ -63,6 +63,7 @@
 //! [`locate_dotnet_sdk`]: borzoi_msbuild::locate_dotnet_sdk
 //! [`SdkResolver`]: borzoi_msbuild::SdkResolver
 
+use crate::observed::Unobserved;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
@@ -421,12 +422,12 @@ impl SdkDiscovery {
         let (roots, spec, msbuild_sdks, global_json_path, global_json_pins_workload_set) =
             match find_global_json(&walk_start) {
                 Some(path) => {
-                    let text = std::fs::read_to_string(&path).map_err(|source| {
-                        DiscoveryError::GlobalJsonRead {
+                    let text = Unobserved::Evaluation
+                        .read_to_string(&path)
+                        .map_err(|source| DiscoveryError::GlobalJsonRead {
                             path: path.clone(),
                             source,
-                        }
-                    })?;
+                        })?;
                     let parsed = parse_global_json(&text).map_err(|source| {
                         DiscoveryError::GlobalJsonParse {
                             path: path.clone(),
@@ -721,12 +722,14 @@ fn resolve_dotnet_root(env: &SdkDiscoveryEnv) -> Option<PathBuf> {
     let path = env.search_path.as_ref()?;
     std::env::split_paths(path).find_map(|dir| {
         let candidate = dir.join(DOTNET_BIN);
-        if !candidate.is_file() {
+        if !Unobserved::Evaluation.is_file(&candidate) {
             return None;
         }
-        let resolved = std::fs::canonicalize(&candidate).ok()?;
+        let resolved = Unobserved::Evaluation.canonicalize(&candidate).ok()?;
         let parent = resolved.parent()?;
-        parent.join("sdk").is_dir().then(|| parent.to_path_buf())
+        Unobserved::Evaluation
+            .is_dir(parent.join("sdk"))
+            .then(|| parent.to_path_buf())
     })
 }
 

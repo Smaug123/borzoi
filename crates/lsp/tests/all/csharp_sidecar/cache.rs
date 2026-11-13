@@ -3,6 +3,7 @@
 //! Split out of the former single-file `csharp_sidecar.rs`.
 
 use super::support::*;
+use crate::common::host_fs::HostPath as _;
 
 /// D6 idempotency: a second `buildMetadata` for the same inputs hits the
 /// content-addressed cache. Same content hash, same DLL path, `from_cache`
@@ -145,7 +146,7 @@ fn build_metadata_source_mutation_changes_content_hash() {
         "mutated source cannot be served from a cache populated by the prior bytes"
     );
     assert!(
-        second.metadata_dll_path.exists(),
+        second.metadata_dll_path.host_exists(),
         "second emit should publish a new DLL at {}",
         second.metadata_dll_path.display()
     );
@@ -260,12 +261,12 @@ fn build_metadata_with_project_reference_leaf_mutation_invalidates_top() {
         "post-mutation emit cannot be from_cache: nothing at the new key was on disk",
     );
     assert!(
-        first.metadata_dll_path.exists(),
+        first.metadata_dll_path.host_exists(),
         "first emit's DLL must remain on disk (it is still correct for its inputs): {}",
         first.metadata_dll_path.display(),
     );
     assert!(
-        second.metadata_dll_path.exists(),
+        second.metadata_dll_path.host_exists(),
         "second emit should publish a fresh DLL at {}",
         second.metadata_dll_path.display(),
     );
@@ -314,11 +315,11 @@ fn build_metadata_sanitises_hostile_assembly_name() {
 
     let expected_root = workspace_root().join("obj/borzoi/csharp-sidecar");
     let canonical_root = expected_root
-        .canonicalize()
+        .host_canonicalize()
         .expect("cache root should exist after the emit");
     let canonical_dll = result
         .metadata_dll_path
-        .canonicalize()
+        .host_canonicalize()
         .expect("emitted DLL should exist");
     assert!(
         canonical_dll.starts_with(&canonical_root),

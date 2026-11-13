@@ -64,6 +64,7 @@
 //! `BORZOI_LSP_STATE_MACHINE_CASES` and `BORZOI_LSP_STATE_MACHINE_SEED`. A
 //! failure prints the minimal script ([`minimise`]), ready to pin.
 
+use crate::common::host_fs::HostPath as _;
 use borzoi::uri::UriExt as _;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -419,7 +420,9 @@ impl Content {
     /// The bytes written to disk for this content at `file`.
     fn bytes(&self, file: FileId) -> Vec<u8> {
         match self {
-            Content::Dll => fs::read(system_runtime_dll()).expect("read System.Runtime.dll"),
+            Content::Dll => {
+                crate::common::host_fs::read(system_runtime_dll()).expect("read System.Runtime.dll")
+            }
             _ => self.render(file).into_bytes(),
         }
     }
@@ -1127,14 +1130,17 @@ impl World {
     /// The file's disk text; the binary DLL reads as its placeholder.
     fn disk(&self, file: FileId) -> Option<String> {
         match file {
-            FileId::Dll => self.path(file).exists().then(|| Content::Dll.render(file)),
-            _ => fs::read_to_string(self.path(file)).ok(),
+            FileId::Dll => self
+                .path(file)
+                .host_exists()
+                .then(|| Content::Dll.render(file)),
+            _ => crate::common::host_fs::read_to_string(self.path(file)).ok(),
         }
     }
 
     fn write(&mut self, file: FileId, bytes: &[u8]) {
         let path = self.path(file);
-        let existed = path.exists();
+        let existed = path.host_exists();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         // FileChangeType: 1 = Created, 2 = Changed, 3 = Deleted.
@@ -1558,7 +1564,7 @@ fn new_world(disk: &[(FileId, Content)]) -> (tempfile::TempDir, World) {
     let tmp = world_dir();
     // Canonical, so every URI the model builds is the spelling the server's own
     // path walks produce (macOS temp dirs sit behind a `/var` symlink).
-    let root = fs::canonicalize(tmp.path()).unwrap();
+    let root = crate::common::host_fs::canonicalize(tmp.path()).unwrap();
     write_initial_disk(&root, disk);
     let world = World {
         root,

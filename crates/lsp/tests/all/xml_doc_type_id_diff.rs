@@ -137,7 +137,7 @@ fn ours(dll: &Path) -> (BTreeMap<String, String>, usize) {
             "two projected rows at {path}"
         );
     }
-    let bytes = std::fs::read(dll).expect("read the emitted assembly");
+    let bytes = crate::common::host_fs::read(dll).expect("read the emitted assembly");
     let view = Ecma335Assembly::parse(&bytes).expect("parse the emitted assembly");
     let (roots, skips) = view
         .enumerate_type_defs_with_skips()

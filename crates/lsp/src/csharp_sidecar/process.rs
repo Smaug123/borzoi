@@ -1,5 +1,6 @@
 //! Spawn and supervise the C# sidecar process; speak its JSON-RPC dialect.
 
+use crate::observed::Unobserved;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -218,7 +219,7 @@ pub(crate) fn start_sidecar_with_timeouts(
     // spawn successfully, then print its own banner to stdout and exit —
     // which the handshake would surface as a framing error that discards
     // the path that's actually wrong.
-    if !sidecar_dll.exists() {
+    if !Unobserved::EnvResolution.exists(sidecar_dll) {
         return Err(SidecarError::SidecarDllMissing {
             path: PathBuf::from(sidecar_dll),
         });
@@ -356,7 +357,7 @@ fn bundled_sidecar_dll() -> Option<PathBuf> {
         override_var.as_deref(),
         exe.as_deref(),
         env!("CSHARP_SIDECAR_DLL"),
-        |p| p.is_file(),
+        |p| Unobserved::EnvResolution.is_file(p),
     )
 }
 
@@ -473,6 +474,7 @@ fn read_responses(stdout: ChildStdout) -> Receiver<Result<Vec<u8>, SidecarError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observed::host_fs::HostPath as _;
 
     const TEST_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -592,7 +594,10 @@ printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
             "build.rs should have published a sidecar DLL — run inside `nix develop`"
         );
         let dll = Path::new(baked);
-        assert!(dll.is_file(), "bundled sidecar DLL is missing at {dll:?}");
+        assert!(
+            dll.host_is_file(),
+            "bundled sidecar DLL is missing at {dll:?}"
+        );
         assert_eq!(
             dll.file_name().and_then(|s| s.to_str()),
             Some("csharp-sidecar.dll"),

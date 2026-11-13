@@ -27,7 +27,7 @@
 //! FCS checks cleanly an unpaired doc or a site whose FCS records disagree is a
 //! failure too.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
@@ -57,7 +57,7 @@ struct Loaded {
 }
 
 fn load(project: &Path, workspace: &mut Workspace, sema: &mut SemanticState) -> Loaded {
-    let docs: HashMap<lsp_types::Uri, String> = HashMap::new();
+    let docs = borzoi::observed::Sources::new();
     let parses = sema
         .parses_for_project(project, workspace, &docs)
         .unwrap_or_else(|| panic!("the LSP declined to load {project:?}"))

@@ -3,7 +3,6 @@
 //! (line, UTF-16 column) world.
 
 use crate::uri::UriExt as _;
-use std::collections::HashMap;
 use std::path::Path;
 
 use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxNode};
@@ -14,6 +13,7 @@ use borzoi_sema::{
 };
 use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Uri};
 
+use crate::observed::Sources;
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
 
@@ -297,7 +297,7 @@ pub fn smallest_member_resolution_with_range(
 /// buffer matches. Returns `None` only when the path can't be turned into
 /// any URI at all (a non-absolute path on platforms `Uri::from_file_path`
 /// rejects, or a path with no representation).
-pub fn preferred_uri(target_path: &Path, docs: &HashMap<Uri, String>) -> Option<Uri> {
+pub fn preferred_uri(target_path: &Path, docs: &Sources) -> Option<Uri> {
     let target = lexically_normalize(target_path);
     for url in docs.keys() {
         if let Ok(doc_path) = url.to_file_path()

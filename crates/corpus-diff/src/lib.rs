@@ -57,7 +57,6 @@ pub mod utf16;
 // project; re-exported so this crate's own callers keep naming them here.
 use borzoi_cst::syntax::TextRange;
 pub use borzoi_sema::test_support::{DeclaringEntity, StructuralName};
-use lsp_types::Uri;
 use serde::{Deserialize, Serialize};
 
 /// A project loaded through the same semantic path the LSP uses for handlers.
@@ -300,7 +299,7 @@ pub fn load_lsp_project_with_options(
 ) -> Result<LoadedProject, LoadSkip> {
     let mut workspace = workspace_with(options.build_properties.clone());
     let mut semantic = corpus_semantic_state();
-    let docs: HashMap<Uri, String> = HashMap::new();
+    let docs = borzoi::observed::Sources::new();
 
     let parsed = workspace
         .project(project)

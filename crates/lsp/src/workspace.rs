@@ -33,6 +33,7 @@
 //! [`crate::fsproj_diagnostics`]), but evaluation still completes and the
 //! body's own `<DefineConstants>` are still collected.
 
+use crate::observed::Unobserved;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -922,7 +923,8 @@ impl Workspace {
             // The map's keys are canonicalised; graph paths are only
             // lexically normalised. A path that fails to canonicalise (not
             // on disk) can't be in the map — fall through to no seed.
-            let seed_tfm = std::fs::canonicalize(path)
+            let seed_tfm = Unobserved::EnvResolution
+                .canonicalize(path)
                 .ok()
                 .and_then(|canon| producer_tfms.get(&canon))
                 .map(String::as_str);
@@ -992,7 +994,7 @@ pub fn find_owning_project(file: &Path) -> Option<PathBuf> {
 /// Errors from `read_dir` (no permission, not a directory, etc.) yield an
 /// empty list — the caller treats "no `.fsproj` here" the same way.
 fn all_fsproj_in(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = Unobserved::Ownership.read_dir(dir) else {
         return Vec::new();
     };
     let mut hits: Vec<PathBuf> = entries
@@ -1067,7 +1069,7 @@ fn resolve_node_uncached(
     purpose: GraphWalkPurpose,
     is_entry: bool,
 ) -> NodeResult {
-    if !path.exists() {
+    if !Unobserved::EnvResolution.exists(path) {
         return NodeResult::NotFound;
     }
     if classify(path) != ProjectKind::FSharp {
@@ -1504,7 +1506,10 @@ fn evaluate_project(
 ) -> Option<EvaluatedProject> {
     let _span =
         tracing::info_span!("evaluate_project", project = %project_path.display()).entered();
-    let source = crate::disk_text::read(project_path).ok()?;
+    let source = Unobserved::Evaluation
+        .read_to_string(project_path)
+        .map(crate::disk_text::without_bom)
+        .ok()?;
     let disc = SdkDiscovery::for_project(project_path, env)
         .inspect_err(|err| {
             crate::log_warn!(
@@ -2562,8 +2567,10 @@ mod tests {
         // macOS differs from lexical normalisation: `/tmp` is a symlink to
         // `/private/tmp`, so a lexically-normalised key silently never matches
         // and the node is walked unseeded.
-        let producers =
-            BTreeMap::from([(std::fs::canonicalize(&proj).unwrap(), "net10.0".to_string())]);
+        let producers = BTreeMap::from([(
+            crate::observed::host_fs::canonicalize(&proj).unwrap(),
+            "net10.0".to_string(),
+        )]);
 
         let graph = ws.project_graph_with_producer_tfms(&proj, &producers);
         let node = graph
@@ -3401,7 +3408,10 @@ mod tests {
             ],
         );
 
-        let tfms = BTreeMap::from([(std::fs::canonicalize(&b).unwrap(), "net8.0".to_string())]);
+        let tfms = BTreeMap::from([(
+            crate::observed::host_fs::canonicalize(&b).unwrap(),
+            "net8.0".to_string(),
+        )]);
         let seeded = ws.project_graph_with_producer_tfms(&a, &tfms);
         assert_eq!(
             node_paths(&seeded),
@@ -3847,7 +3857,10 @@ mod tests {
         );
 
         // Seeded: the producer-TFM re-evaluation must also replace the key.
-        let tfms = BTreeMap::from([(std::fs::canonicalize(&b).unwrap(), "net8.0".to_string())]);
+        let tfms = BTreeMap::from([(
+            crate::observed::host_fs::canonicalize(&b).unwrap(),
+            "net8.0".to_string(),
+        )]);
         let seeded = ws.project_graph_with_producer_tfms(&a, &tfms);
         assert_eq!(
             node_paths(&seeded),
@@ -3933,7 +3946,10 @@ mod tests {
         write_file(&d, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let stale = BTreeMap::from([(std::fs::canonicalize(&b).unwrap(), "net9.0".to_string())]);
+        let stale = BTreeMap::from([(
+            crate::observed::host_fs::canonicalize(&b).unwrap(),
+            "net9.0".to_string(),
+        )]);
         let graph = ws.project_graph_with_producer_tfms(&a, &stale);
         assert_eq!(
             node_paths(&graph),

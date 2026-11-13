@@ -35,7 +35,6 @@
 //!
 //! Requires the .NET SDK on PATH — the Nix devShell provides it.
 
-use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borzoi::project_deferral::{deferral_message, deferrals};
@@ -58,7 +57,7 @@ fn scratch_dir(tag: &str) -> std::path::PathBuf {
 fn folds(fsproj: &std::path::Path) -> bool {
     let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
     let mut sema = SemanticState::new();
-    let docs = HashMap::new();
+    let docs = borzoi::observed::Sources::new();
     sema.parses_for_project(fsproj, &mut workspace, &docs)
         .is_some()
 }
@@ -331,7 +330,7 @@ fn a_language_version_refusal_names_the_condition_it_rests_on() {
 
     let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
     let mut sema = SemanticState::new();
-    let docs = HashMap::new();
+    let docs = borzoi::observed::Sources::new();
     assert!(
         sema.parses_for_project(&fsproj, &mut workspace, &docs)
             .is_none(),

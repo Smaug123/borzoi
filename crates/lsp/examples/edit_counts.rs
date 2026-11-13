@@ -31,15 +31,18 @@
 //!   counts as an allocation of the new size, as in `borzoi-sema`'s
 //!   `parse_counts`).
 //!
-//! File-system calls are not counted here. The plan counts them inside the
-//! lint-enforced modules that perform them (`docs/incremental-lsp-plan.md`,
-//! D3), where a test can assert them on any platform.
+//! - **opens**: the files the server opened to read source text, as
+//!   `borzoi::observed` counts them per generation and reports in its
+//!   [`GENERATION_EVENT`]. The plan counts file-system calls inside the
+//!   lint-enforced modules that perform them (`docs/incremental-lsp-plan.md`,
+//!   D3), where a test can assert them on any platform; the server's other
+//!   reads (`borzoi::observed::Unobserved`) are not counted yet.
 //!
 //! The counts describe the project fold only if the requests take it, and a
 //! handler that falls back to single-file analysis still answers. So the run
 //! fails unless every token and hover request opens the server's
 //! [`PROJECT_LOOKUP_SPAN`] for the measured project (observed by a `tracing`
-//! subscriber interested in nothing else), and fails on any project-deferral
+//! subscriber interested in little else), and fails on any project-deferral
 //! toast.
 //!
 //! Instruction counts need macOS; elsewhere that column reads `n/a`. Wall time
@@ -78,6 +81,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
 
+use borzoi::observed::GENERATION_EVENT;
 use borzoi::semantic::ProjectId;
 use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
 use borzoi::uri::UriExt as _;
@@ -212,8 +216,12 @@ const ENV_BUILD_SPAN: &str = "build_env_from_dll_paths";
 static ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 static EMPTY_ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 
-/// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`] and
-/// [`ENV_BUILD_SPAN`] alone. Every
+/// Files opened by every generation that has ended, from each
+/// [`GENERATION_EVENT`]'s `opens`.
+static OPENS: AtomicU64 = AtomicU64::new(0);
+
+/// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
+/// [`ENV_BUILD_SPAN`] and [`GENERATION_EVENT`] alone. Every
 /// other callsite is registered as never interesting, so it costs what it
 /// costs with no subscriber, and observing allocates nothing.
 struct FoldObserver;
@@ -252,6 +260,18 @@ impl tracing::field::Visit for ProjectField {
     }
 }
 
+/// A generation event's `opens` field.
+struct Opens(Option<u64>);
+
+impl tracing::field::Visit for Opens {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "opens" {
+            self.0 = Some(value);
+        }
+    }
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+}
+
 /// An env build's `count` field.
 struct DllCount(Option<u64>);
 
@@ -281,7 +301,8 @@ impl tracing::Subscriber for FoldObserver {
         }
     }
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.is_span() && matches!(metadata.name(), PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN)
+        (metadata.is_span() && matches!(metadata.name(), PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN))
+            || (metadata.is_event() && metadata.name() == GENERATION_EVENT)
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         if counted() && span.metadata().name() == ENV_BUILD_SPAN {
@@ -305,7 +326,16 @@ impl tracing::Subscriber for FoldObserver {
     }
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, _: &tracing::Event<'_>) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if counted() {
+            let mut opens = Opens(None);
+            event.record(&mut opens);
+            OPENS.fetch_add(
+                opens.0.expect("a generation event carries `opens`"),
+                Relaxed,
+            );
+        }
+    }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
 }
@@ -322,6 +352,7 @@ struct Cost {
     instructions: Option<u64>,
     allocations: u64,
     allocated_bytes: u64,
+    opens: u64,
 }
 
 impl Cost {
@@ -337,6 +368,7 @@ impl Cost {
                 .map(|(a, b)| a + b),
             allocations: self.allocations + other.allocations,
             allocated_bytes: self.allocated_bytes + other.allocated_bytes,
+            opens: self.opens + other.opens,
         }
     }
 }
@@ -347,6 +379,7 @@ struct Reading {
     instructions: Option<(u64, u64)>,
     allocations: u64,
     allocated_bytes: u64,
+    opens: u64,
 }
 
 impl Reading {
@@ -359,6 +392,7 @@ impl Reading {
             instructions: instructions(),
             allocations: ALLOCATIONS.load(Relaxed),
             allocated_bytes: ALLOCATED_BYTES.load(Relaxed),
+            opens: OPENS.load(Relaxed),
         }
     }
 
@@ -376,6 +410,7 @@ impl Reading {
                 .map(|((process0, own0), (process1, own1))| (process1 - process0) - (own1 - own0)),
             allocations: later.allocations - self.allocations,
             allocated_bytes: later.allocated_bytes - self.allocated_bytes,
+            opens: later.opens - self.opens,
         }
     }
 }
@@ -687,6 +722,28 @@ fn hover_position(text: &str) -> Option<(u32, u32)> {
     None
 }
 
+/// The client's own file-system reads, which the server never sees. The
+/// crate's `clippy.toml` bans the `std` calls outside `borzoi::observed`, the
+/// module that counts the server's.
+#[allow(clippy::disallowed_methods)]
+mod client_fs {
+    use std::path::Path;
+
+    pub fn is_file(path: &Path) -> bool {
+        path.is_file()
+    }
+
+    /// The file's length, or 0 if it cannot be read.
+    pub fn len(path: &Path) -> u64 {
+        std::fs::metadata(path).map_or(0, |m| m.len())
+    }
+
+    /// The file's text as a client holds it: without a byte-order mark.
+    pub fn read_text(path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path).map(borzoi::disk_text::without_bom)
+    }
+}
+
 fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name)
         .ok()
@@ -714,15 +771,15 @@ fn columns(cost: &Cost) -> String {
         .instructions
         .map_or_else(|| "n/a".to_string(), |i| i.to_string());
     format!(
-        "{instructions:>14} {:>10} {:>13}",
-        cost.allocations, cost.allocated_bytes,
+        "{instructions:>14} {:>10} {:>13} {:>6}",
+        cost.allocations, cost.allocated_bytes, cost.opens,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13}",
-        "message", "instructions", "allocs", "alloc-bytes"
+        "{:<34} {:>14} {:>10} {:>13} {:>6}",
+        "message", "instructions", "allocs", "alloc-bytes", "opens"
     )
 }
 
@@ -736,6 +793,7 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             instructions: a.instructions.zip(b.instructions).map(|(x, y)| f(x, y)),
             allocations: f(a.allocations, b.allocations),
             allocated_bytes: f(a.allocated_bytes, b.allocated_bytes),
+            opens: f(a.opens, b.opens),
         })
     };
     (pick(u64::min), pick(u64::max))
@@ -748,7 +806,7 @@ fn main() {
         .unwrap_or_else(default_project);
     let project = std::path::absolute(&project).expect("an absolute project path");
     assert!(
-        project.is_file(),
+        client_fs::is_file(&project),
         "{} does not exist (materialise the corpus with `bash tools/ci/project-corpus-gate.sh`)",
         project.display()
     );
@@ -791,15 +849,12 @@ fn main() {
         early < late,
         "E (index {early}) must precede L (index {late})"
     );
-    let bytes: u64 = compile
-        .iter()
-        .map(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
-        .sum();
+    let bytes: u64 = compile.iter().map(|p| client_fs::len(p)).sum();
     let doc = |index: usize| {
         let path = &compile[index];
         Doc {
             uri: Uri::from_file_path(path).expect("a file URI"),
-            text: borzoi::disk_text::read(path).expect("read a Compile item"),
+            text: client_fs::read_text(path).expect("read a Compile item"),
         }
     };
     let mut e = doc(early);

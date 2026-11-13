@@ -31,6 +31,7 @@
 //! nix develop -c cargo test -p borzoi --test all xml_doc_shipped_sweep:: -- --ignored --nocapture
 //! ```
 
+use crate::common::host_fs::HostPath as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -60,11 +61,11 @@ struct Census {
 /// The SDK's `FSharp.Core.xml`, newest SDK first.
 fn sdk_fsharp_core_xml() -> PathBuf {
     let dotnet_root = PathBuf::from(std::env::var_os("DOTNET_ROOT").expect("DOTNET_ROOT unset"));
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dotnet_root.join("sdk"))
+    let mut found: Vec<PathBuf> = crate::common::host_fs::read_dir(dotnet_root.join("sdk"))
         .expect("read sdk dir")
         .filter_map(Result::ok)
         .map(|e| e.path().join("FSharp/FSharp.Core.xml"))
-        .filter(|p| p.is_file())
+        .filter(|p| p.host_is_file())
         .collect();
     found.sort();
     found.pop().expect("an SDK ships FSharp/FSharp.Core.xml")
@@ -76,7 +77,7 @@ fn ref_pack_xmls() -> Vec<PathBuf> {
     let packs =
         PathBuf::from(std::env::var_os("DOTNET_ROOT").expect("DOTNET_ROOT unset")).join("packs");
     let children = |dir: &Path| -> Vec<PathBuf> {
-        std::fs::read_dir(dir)
+        crate::common::host_fs::read_dir(dir)
             .map(|rd| rd.filter_map(Result::ok).map(|e| e.path()).collect())
             .unwrap_or_default()
     };
@@ -89,7 +90,9 @@ fn ref_pack_xmls() -> Vec<PathBuf> {
         .flat_map(|pack| children(&pack))
         .flat_map(|version| children(&version.join("ref")))
         .flat_map(|tfm| children(&tfm))
-        .filter(|p| p.extension().is_some_and(|e| e == "xml") && p.with_extension("dll").is_file())
+        .filter(|p| {
+            p.extension().is_some_and(|e| e == "xml") && p.with_extension("dll").host_is_file()
+        })
         .collect();
     xmls.sort();
     let runtime_pack = ensure_system_runtime_dll();
@@ -106,7 +109,7 @@ fn paired_xmls(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = crate::common::host_fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.filter_map(Result::ok) {
@@ -115,7 +118,7 @@ fn paired_xmls(root: &Path) -> Vec<PathBuf> {
                 Ok(t) if t.is_dir() => stack.push(path),
                 Ok(_)
                     if path.extension().is_some_and(|e| e == "xml")
-                        && path.with_extension("dll").is_file() =>
+                        && path.with_extension("dll").host_is_file() =>
                 {
                     out.push(path);
                 }
@@ -155,7 +158,8 @@ fn foreign_structure(markdown: &str) -> Option<String> {
 
 /// Sweep one file. `strict`: a file that does not index fails the sweep.
 fn sweep_file(path: &Path, strict: bool, census: &mut Census) {
-    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let bytes = crate::common::host_fs::read(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let started = Instant::now();
     let parsed = DocFile::load(&bytes);
     let elapsed = started.elapsed();
@@ -323,7 +327,7 @@ fn doc_keys_are_injective_over_a_real_env() {
         .parent()
         .expect("ref pack dir")
         .to_path_buf();
-    let mut dlls: Vec<PathBuf> = std::fs::read_dir(&pack)
+    let mut dlls: Vec<PathBuf> = crate::common::host_fs::read_dir(&pack)
         .unwrap()
         .filter_map(Result::ok)
         .map(|e| e.path())

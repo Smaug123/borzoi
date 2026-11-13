@@ -508,7 +508,7 @@ fn run(w: &World) -> Option<Census> {
             )
             .unwrap_or_else(|e| panic!("dependency {i} does not compile: {e:#?}\n{source}"));
         harvest(
-            &std::fs::read_to_string(dll.with_extension("xml")).unwrap(),
+            &crate::common::host_fs::read_to_string(dll.with_extension("xml")).unwrap(),
             &mut ids,
         );
         built.push(dll);

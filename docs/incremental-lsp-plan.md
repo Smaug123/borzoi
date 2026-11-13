@@ -1,7 +1,8 @@
 # An incremental LSP: file state, derived values and the edit loop
 
-> **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness)
-> and Stage 1 (the inference cutoff) implemented. Tracks
+> **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness),
+> Stage 1 (the inference cutoff) and Stage 2a (counted source reads)
+> implemented. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -492,11 +493,15 @@ Linux CI, not a measurement on one developer's Mac.
 
 - `borzoi-msbuild` gets a crate-local `clippy.toml` that repeats the
   workspace's spawn bans and adds `std::fs`.
-- In `borzoi`, the ban lands in Stage 2a. Call sites on paths no stage routes
-  yet carry `#[allow(clippy::disallowed_methods)]` naming the stage that will
-  route them (4a for ownership, 6a for env resolution), and inline test
-  modules allow it wholesale. The remaining allows are then a visible
-  worklist.
+- In `borzoi`, the ban landed in Stage 2a. A call site on a path no stage
+  routes yet is a method of `observed::Unobserved`, whose variant names its
+  reader and the stage that will route it (3b for the LSP's evaluation reads,
+  4a for ownership, 6a for env resolution), or says that none does. The enum
+  is the worklist: routing a reader deletes its variant, and the compiler
+  lists what is left. Test code reaches the `std` calls through a `host_fs`
+  helper rather than a wholesale allow, because `disallowed_methods` is one
+  lint: allowing it for `std::fs` also allows the spawns it bans. Stage 3a's
+  crate-local `clippy.toml` in `borzoi-msbuild` meets the same choice.
 
 So a new call site that skips the read set and the counts is a lint error,
 not a review finding.
@@ -829,6 +834,87 @@ here, with the allow worklist of D3. Behaviour is unchanged.
   the worklist.
 
 **Expected gain**: none (the stage is infrastructure).
+
+**Implemented** (`crates/lsp/src/observed.rs`, `crates/lsp/clippy.toml`):
+
+- `observed::Sources` replaces `State::docs`' `HashMap<Uri, String>`. It
+  holds the open buffers and performs the source reads: `text_of` (formerly
+  `semantic::read_text`, the fold's), `document_text` (formerly
+  `handlers::diagnostic::document_text`) and `read_disk` (formerly
+  `disk_text::read`). `disk_text` keeps the pure byte-order-mark rule. Every
+  disk read counts one open, whether or not it succeeds.
+- The dispatch loop begins a generation before each message, and before each
+  step of a `workspace/diagnostic` sweep, and ends it afterwards.
+  `Sources::end_generation` sends the generation's number and counts to the
+  channel a caller attached with `Sources::log_generations`, which is how a
+  test reads them from a loop it does not own, and emits them as the
+  `observed.generation` `tracing` event, which is how `edit_counts` reads
+  them. A test does not read the event: `tracing` caches a callsite's
+  interest process-wide, and with one dispatcher registered it asks only the
+  default of the thread that first reaches the callsite. A loop running in
+  another test of the same binary would cache "never" for the test's
+  scoped subscriber too. The counts sit in a `Cell`, because the fold borrows
+  the buffers shared beside the rest of the state.
+- The crate's `clippy.toml` repeats the workspace's (Clippy reads only the
+  nearest one; `clippy_config_repeats_the_workspace_bans` holds it to the
+  workspace's lines) and bans the calls that observe the file system: the
+  `std::fs` reads, listings, `metadata`, `canonicalize` and opens, and the
+  `Path` probes (`exists`, `is_file`, `is_dir`, `metadata`, …). Writes are
+  not observations and are not banned.
+- The worklist is `observed::Unobserved`, not `#[allow]` attributes: 60 call
+  sites in the library, by variant `EnvResolution` (Stage 6a; 28),
+  `Evaluation` (3b; 8), `Ownership` (4a; 1), and four readers that **no stage
+  routes**: `Restore` (12), `GoToDefinition` (8), `XmlDoc` (2) and
+  `WorkspaceSweep` (1). The last four are outside D3's list of readers; each
+  variant's doc says why it is left (immutable roots, its own stamp witness,
+  a child process's scratch output, the sweep's walk of the roots).
+- Test code reaches the banned calls through `host_fs` (the library's
+  `observed::host_fs` under `cfg(test)`, and `tests/all/common/host_fs.rs`).
+  The plan said inline test modules would allow the lint wholesale; that
+  would also have lifted the spawn ban in every test, which the workspace
+  relies on, so about 200 test call sites were rewritten mechanically instead.
+  No test's assertions changed.
+- `edit_counts` prints an `opens` column from the generation events.
+
+The oracle is as planned:
+
+- `observed_counts` (`tests/all/observed_counts.rs`) runs the real loop over
+  a generated `N`-item SDK-less project (`N` from 3 to 9, two open items
+  chosen at random, push and pull clients). It pins three counts: the cold
+  `semanticTokens` request on one open item opens `N − 2` files, a comment
+  keystroke followed by that request opens `N − 2`, and the other open item's
+  request, answered from the cached fold, opens 0. It also checks that the
+  generations are numbered consecutively and that there is at least one per
+  message, which is the non-vacuity check that the loop's generations run.
+- Written first against a `read_disk` that counted nothing, it failed
+  (`0 ≠ N − 2`). Three planted bugs fail it, and were removed: `text_of`
+  ignoring the buffers (`N` opens); the loop never beginning a generation
+  (the numbering check); and `begin_generation` not resetting the counts
+  (cumulative sums).
+- A direct `std::fs::read_to_string` planted in `build_parses` fails
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+
+**Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
+minimum over three runs of each binary. "Before" is #633's head
+(dd80d7e1).
+
+| message, per keystroke | instructions before | after | allocs before | after | opens after |
+|---|---:|---:|---:|---:|---:|
+| `didChange E` | 0.14 M | 0.17 M | 98 | 98 | 0 |
+| `diagnostic E` | 4.88 M | 4.87 M | 1,526 | 1,526 | 0 |
+| `diagnostic L` (`unchanged`) | 3.34 M | 3.34 M | 1,522 | 1,522 | 0 |
+| `semanticTokens E` | 24.2 M | 24.0 M | 7,804 | 7,804 | **80** |
+| `semanticTokens L` | 14.2 M | 14.3 M | 17,113 | 17,113 | 0 |
+| `hover L` | 6.42 M | 6.42 M | 7,015 | 7,015 | 0 |
+| **keystroke total** | **53.3 M** | **53.1 M** | 35,078 | 35,078 | **80** |
+
+The 80 opens reproduce the one-off count, and the cold `semanticTokens E`
+opens 80 too. Allocations are identical. `semanticTokens E` sometimes takes
+one more allocation, of 328 bytes, in both binaries' runs. `didChange E`'s
+"after" leaves out one run's 8 k reading, which is below the bare barrier
+it includes and so is a counter artefact; its other two runs read 0.17 M
+and 0.18 M, against the baseline's 0.14–0.18 M. The cold rows move by under
+1.5%, in both directions.
 
 ### Stage 2b: the `Vfs` owns file text
 

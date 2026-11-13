@@ -46,6 +46,7 @@ use crate::handlers::definition::{
     DefinitionOutcome, PendingFetch, default_source_fetcher, location_for_pending, url_location,
 };
 use crate::handlers::workspace_diagnostic::{Step, Sweep};
+use crate::observed::{Sources, Unobserved};
 use crate::project_deferral;
 use crate::publish::PublishState;
 use crate::semantic::{ProjectId, SemanticState};
@@ -144,7 +145,7 @@ pub fn client_capabilities_from_initialize(
 
 /// Mutable server state threaded through every request and notification.
 pub struct State {
-    pub docs: HashMap<Uri, String>,
+    pub docs: Sources,
     /// Per-file preprocessor symbol resolution. Looks up the owning
     /// `.fsproj` on first request for each new project and caches the
     /// evaluated `$(DefineConstants)` (including SDK-supplied defines
@@ -221,7 +222,7 @@ pub struct State {
 impl State {
     pub fn new() -> Self {
         Self {
-            docs: HashMap::new(),
+            docs: Sources::new(),
             workspace: Workspace::new(),
             publish: PublishState::new(),
             semantic: SemanticState::new(),
@@ -648,11 +649,20 @@ pub fn run_with_fetcher(
                 // The peer hung up: nobody is left to read the report.
                 Err(err) if err.is_disconnected() => break,
                 Err(_) => {
-                    sweep = advance_sweep(&mut state, &connection, in_flight)?;
+                    // A sweep step is a unit of work of its own, so it is a
+                    // generation of its own.
+                    state.docs.begin_generation();
+                    let stepped = advance_sweep(&mut state, &connection, in_flight);
+                    state.docs.end_generation();
+                    sweep = stepped?;
                     continue;
                 }
             },
         };
+        // Each message is handled in a generation of its own: what its
+        // handling reads from disk is counted against it
+        // ([`crate::observed`]).
+        state.docs.begin_generation();
         match msg {
             Message::Request(req) => {
                 if req.method == Shutdown::METHOD {
@@ -752,6 +762,7 @@ pub fn run_with_fetcher(
                 );
             }
         }
+        state.docs.end_generation();
     }
 
     Ok(())
@@ -1626,7 +1637,11 @@ pub(crate) fn grouped_for_uri_linked(
             // contents do, and its spans are in the content's coordinates: a
             // buffer that keeps a mark has every line-0 column one further on.
             let content = crate::disk_text::content(text);
-            if crate::disk_text::read(&path).is_ok_and(|disk| disk == content) {
+            if Unobserved::Evaluation
+                .read_to_string(&path)
+                .map(crate::disk_text::without_bom)
+                .is_ok_and(|disk| disk == content)
+            {
                 let graph = workspace.project_graph(&path);
                 let mut graph_diagnostics =
                     fsproj_diagnostics::graph_diagnostics(content, &path, &graph);
@@ -3353,7 +3368,10 @@ mod tests {
             Some(&serde_json::Value::Null)
         );
         // The fetch was written to the cache path the worker was handed.
-        assert_eq!(std::fs::read(&dest).unwrap(), b"let x = 1\n");
+        assert_eq!(
+            crate::observed::host_fs::read(&dest).unwrap(),
+            b"let x = 1\n"
+        );
     }
 
     #[test]

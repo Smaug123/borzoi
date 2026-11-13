@@ -138,7 +138,7 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/project_assets")
             .join(name);
-        let text = std::fs::read_to_string(&path)
+        let text = crate::observed::host_fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
     }

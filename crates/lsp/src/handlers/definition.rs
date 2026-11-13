@@ -30,8 +30,8 @@
 //! resolution, no owning project, no resolvable URL — all map to `None`,
 //! never an LSP error envelope.
 
+use crate::observed::{Sources, Unobserved};
 use crate::uri::UriExt as _;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -299,7 +299,7 @@ fn assembly_member_location(
     };
     let dll = env.assembly_path(parent)?;
     let pdb_image = semantic.pdb_image(dll, || {
-        let bytes = std::fs::read(dll).ok()?;
+        let bytes = Unobserved::GoToDefinition.read(dll).ok()?;
         Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
     })?;
     let source =
@@ -328,7 +328,7 @@ pub fn pdb_image_for(dll_path: &Path, dll_bytes: &[u8]) -> Option<Vec<u8>> {
     // the DLL (only its file name is trusted — the recorded path is the absent
     // build machine's), and accept it only if its id matches.
     let sidecar = dll_path.parent()?.join(sidecar_pdb_name(dll_bytes)?);
-    let bytes = std::fs::read(sidecar).ok()?;
+    let bytes = Unobserved::GoToDefinition.read(sidecar).ok()?;
     sidecar_pdb_matches(dll_bytes, &bytes).then_some(bytes)
 }
 
@@ -355,7 +355,7 @@ pub fn member_definition_document(
     let mut from_pdb = || {
         let dll = env.assembly_path(parent)?;
         let pdb_image = semantic.pdb_image(dll, || {
-            let bytes = std::fs::read(dll).ok()?;
+            let bytes = Unobserved::GoToDefinition.read(dll).ok()?;
             Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
         })?;
         definition_document_in_pdb(&pdb_image, token).ok()?
@@ -385,7 +385,7 @@ pub fn entity_definition_document(
         }
         let dll = env.assembly_path(handle)?;
         let pdb_image = semantic.pdb_image(dll, || {
-            let bytes = std::fs::read(dll).ok()?;
+            let bytes = Unobserved::GoToDefinition.read(dll).ok()?;
             Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
         })?;
         entity_definition_document_in_pdb(&pdb_image, &tokens).ok()?
@@ -433,7 +433,7 @@ fn assembly_entity_location(
     }
     let dll = env.assembly_path(handle)?;
     let pdb_image = semantic.pdb_image(dll, || {
-        let bytes = std::fs::read(dll).ok()?;
+        let bytes = Unobserved::GoToDefinition.read(dll).ok()?;
         Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
     })?;
     let source = entity_definition_source_with_range_fallback(&pdb_image, &tokens, range.as_ref())
@@ -635,7 +635,7 @@ fn location_for_resolution(
     resolved: &borzoi_sema::ResolvedProject,
     res: Resolution,
     request_uri: &Uri,
-    docs: &HashMap<Uri, String>,
+    docs: &Sources,
 ) -> Option<Location> {
     match res {
         Resolution::Local(id) => {
@@ -765,7 +765,10 @@ mod tests {
                     path.starts_with(&fallback),
                     "written under the fallback dir: {path:?}"
                 );
-                assert_eq!(std::fs::read_to_string(&path).unwrap(), "let x = 1\n");
+                assert_eq!(
+                    crate::observed::host_fs::read_to_string(&path).unwrap(),
+                    "let x = 1\n"
+                );
             }
             other => panic!("expected Ready(File) via fallback, got {other:?}"),
         }

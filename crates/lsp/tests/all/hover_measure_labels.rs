@@ -548,7 +548,7 @@ fn fsharp_core_everyday_modules_keep_typed_hovers() {
         .join("netstandard.dll");
     let bytes: Vec<Vec<u8>> = [runtime.clone(), netstandard, ensure_fsharp_core_dll()]
         .iter()
-        .map(|p| fs::read(p).unwrap())
+        .map(|p| crate::common::host_fs::read(p).unwrap())
         .collect();
     let views: Vec<_> = bytes
         .iter()

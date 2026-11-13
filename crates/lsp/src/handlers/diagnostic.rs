@@ -78,7 +78,10 @@ pub(crate) fn diagnose_file(
     previous_result_id: Option<&str>,
     linking_project: Option<&Path>,
 ) -> FileOutcome {
-    let Some(text) = document_text(state, uri) else {
+    // The open buffer, else the disk (D5): an agent can write a file and pull
+    // its diagnostics with no `didOpen`, and `workspace/diagnostic` relies on
+    // it for the (mostly unopened) files it enumerates.
+    let Some(text) = state.docs.document_text(uri) else {
         return FileOutcome::Full {
             groups: Vec::new(),
             result_id: None,
@@ -158,20 +161,6 @@ fn full(report: RelatedFullDocumentDiagnosticReport) -> DocumentDiagnosticReport
 /// eligible for `result_id` caching.
 fn is_cacheable(uri: &Uri) -> bool {
     matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx"))
-}
-
-/// A document's current text: the open-buffer overlay if the client has it
-/// open, else the on-disk contents (D5). The disk fallback lets an agent write
-/// a file and immediately pull its diagnostics without an intervening
-/// `didOpen`, and is what `workspace/diagnostic` will rely on for the (mostly
-/// unopened) files it enumerates. Returns `None` for a non-`file:` URI that
-/// isn't open, or an unreadable path.
-pub(crate) fn document_text(state: &State, uri: &Uri) -> Option<String> {
-    if let Some(text) = state.docs.get(uri) {
-        return Some(text.clone());
-    }
-    let path = uri.to_file_path().ok()?;
-    crate::disk_text::read(&path).ok()
 }
 
 #[cfg(test)]

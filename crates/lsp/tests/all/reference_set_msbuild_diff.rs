@@ -157,7 +157,7 @@ fn build_and_msbuild_reference_names(fsproj: &Path) -> BTreeSet<String> {
              (run under `nix develop`)",
             fsproj.display()
         ));
-    let json = std::fs::read_to_string(&result_file).unwrap_or_else(|e| {
+    let json = crate::common::host_fs::read_to_string(&result_file).unwrap_or_else(|e| {
         panic!(
             "read reference-path result file {}: {e}",
             result_file.display()
@@ -217,7 +217,7 @@ fn our_reference_names(fsproj: &Path) -> BTreeSet<String> {
     );
     dlls.iter()
         .map(|dll| {
-            let bytes = std::fs::read(dll)
+            let bytes = crate::common::host_fs::read(dll)
                 .unwrap_or_else(|e| panic!("read referenced DLL {}: {e}", dll.display()));
             match Ecma335Assembly::parse(&bytes) {
                 Ok(asm) => asm.identity().name.clone(),

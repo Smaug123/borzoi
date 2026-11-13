@@ -1123,7 +1123,7 @@ fn fixture_env() -> borzoi_sema::AssemblyEnv {
         fixture_dll().to_path_buf(),
     ]
     .iter()
-    .map(|p| fs::read(p).unwrap())
+    .map(|p| crate::common::host_fs::read(p).unwrap())
     .collect();
     let views: Vec<_> = bytes
         .iter()

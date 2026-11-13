@@ -31,8 +31,10 @@ use crate::common::{ensure_fsharp_core_dll, ensure_system_runtime_dll};
 /// `"hi".Length` has no declaration to look the member up on, and the cursor
 /// falls all the way through to `UntrackedName` under *both* envs.
 fn complete_and_incomplete() -> (AssemblyEnv, AssemblyEnv) {
-    let core = std::fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll");
-    let sysrt = std::fs::read(ensure_system_runtime_dll()).expect("read System.Runtime.dll");
+    let core =
+        crate::common::host_fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll");
+    let sysrt =
+        crate::common::host_fs::read(ensure_system_runtime_dll()).expect("read System.Runtime.dll");
     let views = vec![
         borzoi_assembly::Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
         borzoi_assembly::Ecma335Assembly::parse(&sysrt).expect("parse System.Runtime.dll"),

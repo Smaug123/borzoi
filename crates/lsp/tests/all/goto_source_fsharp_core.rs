@@ -51,7 +51,7 @@ fn printfn_resolves_to_a_remote_sourcelink_url() {
     // `printfn` is SourceLink-only (not embedded), so the core emits a `Remote`
     // describing the GitHub fetch — the effect the handler will perform/surface.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let token = method_token(&bytes, "ExtraTopLevelOperators", "printfn");
 
     match definition_source(&bytes, token)
@@ -92,7 +92,7 @@ fn an_embedded_document_method_resolves_to_embedded_source() {
     // FSharp.Core embeds source for its generated files; a method defined in one
     // resolves to `Embedded` text — the offline path, no URL.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
 
     // Find, via the PDB directly, the first method whose document embeds source.
     let image = embedded_portable_pdb(&bytes)
@@ -123,7 +123,7 @@ fn an_embedded_document_method_resolves_to_embedded_source() {
 fn a_non_methoddef_token_has_no_source() {
     // A token that isn't a MethodDef (here a TypeDef token) maps to nothing.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let typedef_token = 0x0200_0001; // table 0x02 (TypeDef), row 1
     assert_eq!(definition_source(&bytes, typedef_token).unwrap(), None);
 }
@@ -184,7 +184,7 @@ fn a_module_entity_resolves_to_its_source() {
     // it) lands at its first source-mapped method — the top of the module in
     // source. `printfn` lives here, so we know the module has SourceLink source.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let view = Ecma335Assembly::parse(&bytes).expect("parse FSharp.Core");
     let entities = view.enumerate_type_defs().expect("enumerate FSharp.Core");
     let module = entities
@@ -218,7 +218,7 @@ fn method_def_tokens_recover_navigation_that_members_alone_miss() {
     // point. Prove at least one such entity exists in FSharp.Core (the same shape
     // as FsCheck's `NonNull` union), so the recovery is exercised portably.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let view = Ecma335Assembly::parse(&bytes).expect("parse FSharp.Core");
     let entities = view.enumerate_type_defs().expect("enumerate FSharp.Core");
 
@@ -243,7 +243,7 @@ fn method_def_tokens_recover_navigation_that_members_alone_miss() {
 fn entity_with_no_method_tokens_has_no_source() {
     // No candidate methods → nothing to navigate to (D5: say nothing).
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     assert_eq!(entity_definition_source(&bytes, &[]).unwrap(), None);
     // A non-MethodDef token among the candidates is ignored, not mistaken for a
     // method — still nothing.
@@ -261,7 +261,7 @@ fn definition_document_reports_the_methods_origin() {
     // `printfn` carries sequence points (its document + line), even though its
     // source is SourceLink-only — the "say where it is" path hover uses.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let token = method_token(&bytes, "ExtraTopLevelOperators", "printfn");
 
@@ -285,7 +285,7 @@ fn definition_document_reports_the_methods_origin() {
 #[test]
 fn entity_definition_document_reports_the_module_origin() {
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let view = Ecma335Assembly::parse(&bytes).expect("parse FSharp.Core");
     let entities = view.enumerate_type_defs().expect("enumerate FSharp.Core");
@@ -349,7 +349,7 @@ fn fsharp_core_method(bytes: &[u8], entity: &str, source: &str) -> MethodLike {
 fn a_module_value_resolves_via_its_pickled_definition_range() {
     // `nan` (IL `Operators.NaN`) is a plain module value.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let m = fsharp_core_method(&bytes, "Operators", "nan");
     assert!(m.module_value.is_some(), "nan is a value binding");
@@ -407,7 +407,7 @@ fn a_module_value_resolves_via_its_pickled_definition_range() {
 #[test]
 fn the_range_fallback_composes_with_the_token_path() {
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
 
     // A method *with* sequence points (printfn): the token wins; a decoy range
@@ -446,7 +446,7 @@ fn a_range_in_an_embedded_document_resolves_to_embedded_source() {
     // A range whose file *is* one of the PDB's embedded-source documents
     // resolves offline, exactly like the token path would.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let pdb = PortablePdb::read(&image).expect("parse the PDB image");
     let embedded_doc = (1..=pdb.document_count())
@@ -481,7 +481,7 @@ fn a_range_in_an_embedded_document_resolves_to_embedded_source() {
 fn a_range_in_an_unknown_document_is_none() {
     // Neither a PDB document nor SourceLink-mapped → say nothing (D5).
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let range = FsharpSourceRange {
         file: "Q:\\not\\a\\real\\path.fs".into(),
@@ -532,7 +532,7 @@ fn a_pathological_pickled_column_saturates_rather_than_overflowing() {
 #[test]
 fn definition_document_for_a_non_method_token_is_none() {
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let typedef_token = 0x0200_0001; // table 0x02 (TypeDef), not a MethodDef
     assert_eq!(
@@ -571,7 +571,7 @@ fn a_sequence_pointed_entity_ignores_the_fallback_range() {
     // `ListModule` has source-mapped methods, so the token sweep wins; a decoy
     // range must not preempt it (the entity analogue of the member-side check).
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let module = fsharp_core_entity(
         &bytes,
@@ -606,7 +606,7 @@ fn a_measure_entity_resolves_via_its_pickled_range() {
     // measure: an ECMA TypeDef row with zero methods, so the token sweep finds
     // nothing and only the pickled `entity_range` can navigate it.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let metre = fsharp_core_entity(
         &bytes,
@@ -680,7 +680,7 @@ fn an_entity_range_naming_an_fsi_still_sourcelink_maps() {
     // never appears in the PDB Document table (no sequence points), yet the
     // SourceLink prefix map still covers it. Probe finding 2, end-to-end.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let module = fsharp_core_entity(
         &bytes,
@@ -721,7 +721,7 @@ fn a_method_less_entity_reports_its_document_without_a_pdb() {
     // the document and position directly — no PDB needed. This is the
     // composition `entity_definition_document` performs.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let metre = fsharp_core_entity(
         &bytes,

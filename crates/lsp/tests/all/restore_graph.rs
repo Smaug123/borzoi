@@ -36,6 +36,7 @@
 //! Requires the .NET SDK + the vendored NuGet cache — the Nix devShell provides
 //! both.
 
+use crate::common::host_fs::HostPath as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -305,7 +306,7 @@ fn decomposes_losslessly(
         generated.path(),
     ));
     let assets_path = restored.path().join("project.assets.json");
-    let theirs = match std::fs::read_to_string(&assets_path) {
+    let theirs = match crate::common::host_fs::read_to_string(&assets_path) {
         Ok(text) => comparable_assets(normalised(&text, restored.path())),
         Err(error) => {
             return Err(format!(
@@ -431,7 +432,7 @@ fn spawn_free(
     restored: &ScratchDir,
     env: &SdkDiscoveryEnv,
 ) -> Result<SpawnFree, String> {
-    let log = std::fs::read_to_string(restored.path().join("restore.log"))
+    let log = crate::common::host_fs::read_to_string(restored.path().join("restore.log"))
         .map_err(|e| format!("{}: no restore log: {e}", project.display()))?;
     let identity = restoring_nuget(&log)
         .map_err(|decline| format!("{}: no NuGet identity: {decline}", project.display()))?;
@@ -499,7 +500,7 @@ fn write_tree(tag: &str, files: &[(&str, &str)]) -> PathBuf {
     }
     // By its real path: a project named through a symlink declines, and the
     // temporary directory is one on macOS.
-    std::fs::canonicalize(&root).unwrap()
+    crate::common::host_fs::canonicalize(&root).unwrap()
 }
 
 const APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
@@ -555,7 +556,7 @@ fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
     let decomposition = decomposes_losslessly(project, &text, &generated, &restored)
         .unwrap_or_else(|failure| panic!("{failure}"));
     assert!(
-        !project.parent().unwrap().join("obj").exists(),
+        !project.parent().unwrap().join("obj").host_exists(),
         "neither route may write the project's obj/"
     );
     let spec =
@@ -582,12 +583,13 @@ fn oracle_identity(sdk: &Path) -> String {
 
 /// Every installed SDK's version directory, by version.
 fn installed_sdks() -> Vec<(String, PathBuf)> {
-    let mut sdks: Vec<(String, PathBuf)> = std::fs::read_dir(dotnet_root().join("sdk"))
-        .expect("DOTNET_ROOT has an sdk/ directory")
-        .map(|entry| entry.expect("list sdk/").path())
-        .filter(|path| path.join("NuGet.Commands.dll").is_file())
-        .map(|path| (path.file_name().unwrap().to_str().unwrap().to_owned(), path))
-        .collect();
+    let mut sdks: Vec<(String, PathBuf)> =
+        crate::common::host_fs::read_dir(dotnet_root().join("sdk"))
+            .expect("DOTNET_ROOT has an sdk/ directory")
+            .map(|entry| entry.expect("list sdk/").path())
+            .filter(|path| path.join("NuGet.Commands.dll").host_is_file())
+            .map(|path| (path.file_name().unwrap().to_str().unwrap().to_owned(), path))
+            .collect();
     sdks.sort();
     sdks
 }
@@ -756,7 +758,10 @@ fn a_project_reference_brings_its_project_into_the_spec() {
     let references = &entry.restore.frameworks[0].project_references;
     assert_eq!(references.len(), 1);
     assert!(references[0].project_unique_name.ends_with("Lib.fsproj"));
-    assert!(!root.join("lib/obj").exists(), "nor its reference's obj/");
+    assert!(
+        !root.join("lib/obj").host_exists(),
+        "nor its reference's obj/"
+    );
 }
 
 /// Every on-demand restore runs B₁ in shadow (`restore_to_scratch`), and on a
@@ -813,10 +818,10 @@ fn the_on_demand_restore_runs_b1_in_shadow() {
 fn a_redirected_restore_names_the_nuget_that_ran() {
     let host = sdk_dir_for(&dotnet_root().join("dotnet"), &std::env::temp_dir());
     let sdks = installed_sdks();
-    let Some((_, other)) = sdks
-        .iter()
-        .find(|(_, path)| std::fs::canonicalize(path).ok() != std::fs::canonicalize(&host).ok())
-    else {
+    let Some((_, other)) = sdks.iter().find(|(_, path)| {
+        crate::common::host_fs::canonicalize(path).ok()
+            != crate::common::host_fs::canonicalize(&host).ok()
+    }) else {
         panic!("redirecting the restore needs a second installed SDK: {sdks:?}");
     };
     let expected = oracle_identity(other);
