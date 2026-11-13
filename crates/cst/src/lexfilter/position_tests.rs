@@ -10,21 +10,29 @@
 //! These drive the private `Filter::pull_raw` directly and assert the computed
 //! [`Pos`] against an independent reference oracle.
 
+use std::collections::HashSet;
+
 use super::*;
 use crate::language_version::LanguageVersion;
 use crate::lexer::lex;
+use crate::tokens::lex_full_trivia;
 
 /// Independent oracle: the FCS-faithful position of a byte `offset`. Line is
 /// 1-based and counts `\n` bytes (so `\r\n` is one break, a lone `\r` none);
 /// column is the byte offset from the start of the current line (one past the
-/// last `\n`). Works on raw bytes, so it never panics on a char boundary.
+/// last `\n`, or past a file-start BOM on line 1, saturating inside the BOM).
+/// Works on raw bytes, so it never panics on a char boundary.
 fn ref_pos(source: &str, offset: usize) -> Pos {
     let bytes = &source.as_bytes()[..offset];
     let nls = bytes.iter().filter(|&&b| b == b'\n').count() as u32;
-    let line_start = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let line_start = match bytes.iter().rposition(|&b| b == b'\n') {
+        Some(i) => i + 1,
+        None if source.starts_with('\u{FEFF}') => '\u{FEFF}'.len_utf8(),
+        None => 0,
+    };
     Pos {
         line: 1 + nls,
-        col: (offset - line_start) as u32,
+        col: offset.saturating_sub(line_start) as u32,
     }
 }
 
@@ -32,7 +40,8 @@ fn ref_pos(source: &str, offset: usize) -> Pos {
 /// synthetic EOF.
 fn pulled_positions(source: &str) -> Vec<TokenTup> {
     let raw = RawTokens::from_active(source, lex(source));
-    let mut f = Filter::new(&raw, LanguageVersion::DEFAULT);
+    let lines = LineStarts::new(source);
+    let mut f = Filter::new(&raw, &lines, LanguageVersion::DEFAULT);
     let mut out = Vec::new();
     while let Some(tt) = f.pull_raw() {
         let is_eof = matches!(tt.token, TokenContent::Eof);
@@ -47,7 +56,8 @@ fn pulled_positions(source: &str) -> Vec<TokenTup> {
 /// Find the first `TokenKind::Let` and return its `(start, end)`.
 fn let_pos(source: &str) -> (Pos, Pos) {
     let raw = RawTokens::from_active(source, lex(source));
-    let mut f = Filter::new(&raw, LanguageVersion::DEFAULT);
+    let lines = LineStarts::new(source);
+    let mut f = Filter::new(&raw, &lines, LanguageVersion::DEFAULT);
     while let Some(tt) = f.pull_raw() {
         match tt.token {
             TokenContent::Real(TokenKind::Let) => return (tt.start, tt.end),
@@ -72,7 +82,7 @@ fn leading_bom_does_not_shift_line_1_column() {
 #[test]
 fn leading_bom_with_no_real_tokens_eof_does_not_underflow() {
     // A BOM-prefixed source whose only content is trivia — a directive with no
-    // trailing newline, a BOM-only file, a comment — leaves `last_byte` at 0
+    // trailing newline, a BOM-only file, a comment — leaves the cursor at 0
     // while the line-1 baseline is past the BOM. The EOF column must saturate,
     // not underflow-panic. Reaching the EOF token at all proves that.
     for src in ["\u{FEFF}#nowarn \"40\"", "\u{FEFF}", "\u{FEFF}// c"] {
@@ -105,7 +115,8 @@ fn triple_quoted_string_spanning_lines() {
     // `let` on the line after a 3-line triple-quoted string.
     let src = "let s = \"\"\"a\nb\nc\"\"\"\nlet y = 1\n";
     let raw = RawTokens::from_active(src, lex(src));
-    let mut f = Filter::new(&raw, LanguageVersion::DEFAULT);
+    let lines = LineStarts::new(src);
+    let mut f = Filter::new(&raw, &lines, LanguageVersion::DEFAULT);
     let mut lets = Vec::new();
     while let Some(tt) = f.pull_raw() {
         match tt.token {
@@ -180,34 +191,64 @@ fn lone_cr_is_not_a_line_break() {
     assert_eq!(lets[1].start.line, 1);
 }
 
+/// Hold every token [`Filter::pull_raw`] pulls from `raw` (EOF included) to
+/// the oracle: its start and end positions, and, for its start, the byte
+/// offset and UTF-16 column the filter recovers from the position.
+fn check_positions(raw: &RawTokens<'_>) {
+    let source = raw.source();
+    let lines = LineStarts::new(source);
+    let mut f = Filter::new(raw, &lines, LanguageVersion::DEFAULT);
+    let bom_end = if source.starts_with('\u{FEFF}') {
+        '\u{FEFF}'.len_utf8()
+    } else {
+        0
+    };
+    while let Some(tt) = f.pull_raw() {
+        let span = tt.span.range();
+        assert_eq!(
+            (tt.start, tt.end),
+            (ref_pos(source, span.start), ref_pos(source, span.end)),
+            "{:?} at {span:?} in {source:?}",
+            tt.token
+        );
+        // Below a file-start BOM's end, line 1's columns saturate, so the
+        // position does not determine the offset.
+        if span.start >= bom_end {
+            assert_eq!(f.byte_offset(tt.start), span.start, "{source:?}");
+            let line_start = source[..span.start].rfind('\n').map_or(bom_end, |i| i + 1);
+            assert_eq!(
+                f.utf16_col(tt.start) as usize,
+                source[line_start..span.start].encode_utf16().count(),
+                "{:?} at {span:?} in {source:?}",
+                tt.token
+            );
+        }
+        if matches!(tt.token, TokenContent::Eof) {
+            break;
+        }
+    }
+}
+
 proptest::proptest! {
     /// For every token (including EOF), the cursor's computed `start`/`end`
-    /// equal the independent reference oracle. This catches any stranding on
-    /// multi-line tokens, regardless of token kind or lex success.
+    /// equal the independent reference oracle, over the bare lexer's stream
+    /// and over the full-trivia table with the `#if` arms both active and
+    /// inactive. This catches any stranding on multi-line tokens and inactive
+    /// regions, regardless of token kind or lex success.
     #[test]
     fn positions_match_reference_oracle(source in arb_source()) {
-        let positions = pulled_positions(&source);
-        for tt in &positions {
-            proptest::prop_assert_eq!(
-                tt.start,
-                ref_pos(&source, tt.span.range().start),
-                "start mismatch for {:?} at {:?} in {:?}",
-                tt.token, tt.span, source
-            );
-            proptest::prop_assert_eq!(
-                tt.end,
-                ref_pos(&source, tt.span.range().end),
-                "end mismatch for {:?} at {:?} in {:?}",
-                tt.token, tt.span, source
-            );
+        check_positions(&RawTokens::from_active(&source, lex(&source)));
+        for symbols in [HashSet::new(), HashSet::from(["X".to_string()])] {
+            check_positions(&lex_full_trivia(&source, &symbols).tokens);
         }
     }
 }
 
 /// Source strings built from lexable fragments, several of which embed
-/// newlines (block comments, triple/verbatim/continuation strings, CRLF). The
-/// goal is broad coverage of multi-line tokens, not valid F# — the oracle holds
-/// regardless of whether the parse would succeed.
+/// newlines (block comments, triple/verbatim/continuation strings, CRLF, a
+/// `#if` region) or put a lone `\r`, a multi-byte character or a BOM beside
+/// one. The goal is broad coverage of multi-line tokens, not valid F# — the
+/// oracle holds regardless of whether the parse would succeed.
 fn arb_source() -> impl proptest::strategy::Strategy<Value = String> {
     use proptest::prelude::*;
     let fragment = prop_oneof![
@@ -220,10 +261,17 @@ fn arb_source() -> impl proptest::strategy::Strategy<Value = String> {
         Just("\"cont\\\ninued\"".to_string()),
         Just("\n".to_string()),
         Just("\r\n".to_string()),
+        Just("\r".to_string()),
         Just("  ".to_string()),
         Just("\t".to_string()),
+        Just("é😃".to_string()),
+        Just("\u{FEFF}".to_string()),
+        Just("\n#if X\nlet y =\n  é\n#else\n(* \r\n *)\n#endif\n".to_string()),
     ];
     // Join fragments with a separating space so adjacent string/comment openers
     // don't fuse into a single unintended token.
-    proptest::collection::vec(fragment, 0..12).prop_map(|frags| frags.join(" "))
+    (any::<bool>(), proptest::collection::vec(fragment, 0..12)).prop_map(|(bom, frags)| {
+        let body = frags.join(" ");
+        if bom { format!("\u{FEFF}{body}") } else { body }
+    })
 }

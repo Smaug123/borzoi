@@ -26,6 +26,7 @@ mod lexfilter_corpus;
 mod lexfilter_depth;
 mod lexfilter_diff;
 mod line_index;
+mod line_table_reference;
 mod nullness_gate;
 mod oracle_pool;
 mod parser_corpus;
