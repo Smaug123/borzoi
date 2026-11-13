@@ -1437,9 +1437,13 @@ fn infer_file_in(
     let tys = TyTable::session();
     #[cfg(feature = "test-support")]
     {
+        let (types, vars) = env.session_seed();
         let mut seeded = HashMap::default();
-        for &ty in env.session_seed() {
+        for &ty in types {
             tys.import(env.types(), ty, &mut seeded);
+        }
+        for &v in vars {
+            tys.var(TyVid(v));
         }
     }
     let mut cx = Gen::new(resolved, env, &tys, ext_scope, preceding);

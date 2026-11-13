@@ -15,15 +15,23 @@ pub fn with_fresh_names(env: &AssemblyEnv, first: &[Vec<String>]) -> AssemblyEnv
 /// [`with_fresh_names`], with a type table of its own too, which interns
 /// `first_types` (types of `types_from`) in order before anything else; and
 /// every inference session against the result interns `session_seed` (also
-/// `types_from`'s) first, so the ids a session hands out move as well.
+/// `types_from`'s) and then the inference variables `session_vars` first, so
+/// the ids a session hands out move as well, a variable's among them.
 pub fn with_fresh_names_and_types(
     env: &AssemblyEnv,
     first: &[Vec<String>],
     types_from: &AssemblyEnv,
     first_types: &[Ty],
     session_seed: &[Ty],
+    session_vars: &[u32],
 ) -> AssemblyEnv {
-    env.with_fresh_names_and_types(first, Some(types_from), first_types, session_seed)
+    env.with_fresh_names_and_types(
+        first,
+        Some(types_from),
+        first_types,
+        session_seed,
+        session_vars,
+    )
 }
 
 /// `project`, resolved against `from`, with every id it holds translated to

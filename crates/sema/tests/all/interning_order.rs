@@ -18,7 +18,8 @@
 //! was inferred against, and the whole fold. The second env's type table is
 //! filled first with every type the first run published, plus decoys, in a
 //! shuffled order, and each of its inference sessions interns them too, in
-//! another order, before it starts.
+//! another order, and its first inference variables, shuffled, before it
+//! starts.
 
 use std::path::{Path, PathBuf};
 
@@ -263,7 +264,18 @@ fn assert_inference_order_invariant(sources: &[String], base: &AssemblyEnv, seed
     shuffle(&mut types, seed ^ 0x5eed);
     let mut session_seed = types.clone();
     shuffle(&mut session_seed, seed.rotate_left(17));
-    let second_env = with_fresh_names_and_types(base, &paths, &first_env, &types, &session_seed);
+    // The variables too, in a shuffled order, so that two variables' ids
+    // order apart from their indices.
+    let mut session_vars: Vec<u32> = (0..512).collect();
+    shuffle(&mut session_vars, seed.rotate_left(29));
+    let second_env = with_fresh_names_and_types(
+        base,
+        &paths,
+        &first_env,
+        &types,
+        &session_seed,
+        &session_vars,
+    );
     let (second_fold, second) = inferred_types(&files, &second_env);
     assert!(
         first == second,
@@ -302,7 +314,7 @@ proptest! {
 
     /// A two-file project whose values have assembly types, FSharp.Core's
     /// generic applications and the first file's own record and union, read
-    /// across the files.
+    /// across the files, and generic functions.
     #[test]
     fn generated_programs_infer_the_same_in_any_interning_order(
         choices in prop::collection::vec(any::<u8>(), 1..8),
@@ -319,6 +331,10 @@ proptest! {
             b.push_str(&format!("let w{i} = v{i}\n"));
         }
         b.push_str("let r = { F = 2; G = \"t\" }\nlet u = D\n");
+        // Generic functions, whose schemes number their parameters by where
+        // each first appears: in neither the order their variables were made
+        // in nor any order of their ids.
+        b.push_str("let swap x y = (y, x)\nlet pick a b c = (c, (a, b))\n");
         let published = assert_inference_order_invariant(
             &[a, b],
             crate::common::full_bcl_env(),

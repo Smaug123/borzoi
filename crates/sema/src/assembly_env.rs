@@ -1102,10 +1102,14 @@ pub struct AssemblyEnv {
     /// leaves out.
     seeded_entries: usize,
     /// Types every inference session against this env interns before it
-    /// starts, in order, so that a test can move the ids a session hands out
+    /// starts, in order, then the inference variables `session_vars` names,
+    /// so that a test can move the ids a session hands out
     /// ([`crate::test_support::names::with_fresh_names_and_types`]).
     #[cfg(feature = "test-support")]
     session_seed: std::sync::Arc<[Ty]>,
+    /// See [`Self::session_seed`].
+    #[cfg(feature = "test-support")]
+    session_vars: std::sync::Arc<[u32]>,
 }
 
 /// The top-level type index key: namespace segments, simple name, and generic
@@ -1414,8 +1418,8 @@ impl AssemblyEnv {
     /// The types an inference session against this env interns first
     /// ([`Self::with_fresh_names_and_types`]).
     #[cfg(feature = "test-support")]
-    pub(crate) fn session_seed(&self) -> &[Ty] {
-        &self.session_seed
+    pub(crate) fn session_seed(&self) -> (&[Ty], &[u32]) {
+        (&self.session_seed, &self.session_vars)
     }
 
     /// A copy of this env with a name table of its own, for tests that
@@ -1424,12 +1428,13 @@ impl AssemblyEnv {
     /// takes ids after `first`'s.
     #[cfg(feature = "test-support")]
     pub(crate) fn with_fresh_names(&self, first: &[Vec<String>]) -> Self {
-        self.with_fresh_names_and_types(first, None, &[], &[])
+        self.with_fresh_names_and_types(first, None, &[], &[], &[])
     }
 
     /// [`Self::with_fresh_names`], whose type table also interns `first_types`
     /// (types of `types_from`) in order before anything else, and whose
-    /// inference sessions intern `session_seed` (also `types_from`'s) first.
+    /// inference sessions intern `session_seed` (also `types_from`'s) and
+    /// then the variables `session_vars` first.
     #[cfg(feature = "test-support")]
     pub(crate) fn with_fresh_names_and_types(
         &self,
@@ -1437,6 +1442,7 @@ impl AssemblyEnv {
         types_from: Option<&AssemblyEnv>,
         first_types: &[Ty],
         session_seed: &[Ty],
+        session_vars: &[u32],
     ) -> Self {
         let names = std::sync::Arc::new(NameTable::default());
         for path in first {
@@ -1467,6 +1473,7 @@ impl AssemblyEnv {
             names,
             types,
             session_seed,
+            session_vars: session_vars.into(),
             ..self.clone()
         }
     }
