@@ -11,10 +11,11 @@
 //! - [`Workspace::symbols_for`] given a file path, returns the active
 //!   symbol set as a [`HashSet<String>`]. Lazily evaluates the owning
 //!   `.fsproj` on first lookup and caches the result.
-//! - [`find_owning_project`] is the pure ancestor walk — `file`'s
-//!   directory first, then its parents, returning the first directory
-//!   that contains at least one `.fsproj`. Multiple `.fsproj`s in the
-//!   same directory are tie-broken alphabetically for determinism.
+//! - [`Workspace::owning_project`] finds the project that owns a file: the
+//!   nearest ancestor project that lists it, else the first ancestor
+//!   directory holding a `.fsproj` (`find_owning_project`). Multiple
+//!   `.fsproj`s in the same directory are tie-broken alphabetically for
+//!   determinism.
 //!
 //! The cache needs no file watching: each evaluation keeps every file-system
 //! query it and the reads preparing it made, with the answers, and within a
@@ -1161,7 +1162,7 @@ impl Workspace {
     /// it neither proves nor disproves ownership. We never climb past a
     /// directory holding such a project to hand ownership to a farther one,
     /// nor let its listed items claim the file — we stop and fall back to
-    /// [`find_owning_project`]'s nearest-ancestor, alphabetically-first rule,
+    /// `find_owning_project`'s nearest-ancestor, alphabetically-first rule,
     /// exactly as the pre-refinement heuristic would.
     ///
     /// When no ancestor project conclusively lists `file` (e.g. a brand-new

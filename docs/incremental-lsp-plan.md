@@ -1880,7 +1880,7 @@ Planted, each caught, then removed:
 | no `projects_generation` move when an owner moves | three pinned scripts, the generated creation test |
 | consulted evaluations not confirmed | both `ownership_memo` tests, the sibling-rewrite pinned script, the generated creation test |
 | owners remembered and served outside a generation | `outside_a_generation_every_ask_walks` (added for it: the plant first passed every test) |
-| a shared listing never confirmed again | LISTING_TRUSTED |
+| a shared listing never confirmed again | both `ownership_memo` tests, `an_owner_is_walked_once_and_confirmed_by_stamps`, both `observed_counts` properties, three pinned scripts, the generated creation test |
 
 One plant is not a defect: `ReadChecks::list` asking before it stamps.
 A change landing between the listing and the stamp carries a time after
