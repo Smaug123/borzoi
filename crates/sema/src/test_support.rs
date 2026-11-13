@@ -16,6 +16,7 @@ use crate::{AssemblyEnv, EntityHandle, Resolution};
 
 pub mod binder_completeness;
 pub mod entity_placement;
+pub mod names;
 
 /// The entity FCS says a used symbol is declared in, named **structurally**.
 ///

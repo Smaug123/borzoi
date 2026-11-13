@@ -188,7 +188,7 @@ fn compile_order_metadata_matches_fsharp_source_code_compile_order() {
     assert_eq!(ours, theirs);
 }
 
-/// The sixth finding of `docs/msbuild-escaped-value-plan.md`, guarded where it
+/// The sixth finding of `docs/completed/msbuild-escaped-value-plan.md`, guarded where it
 /// actually bites.
 ///
 /// MSBuild escapes **nine** characters when it seeds a reserved path property
@@ -875,5 +875,115 @@ impl MsbuildOutput {
                 unreachable!("items_for called with ProjectReference — oracle has no slot for it")
             }
         }
+    }
+}
+
+/// The path-derivable reserved properties (`docs/msbuild-reserved-seeding-plan.md`,
+/// part (a)), read from the project body and from imports, against the real
+/// CLI (the in-process oracle is not authoritative for reserved names). The
+/// `MSBuildThisFile*` family must follow the file being walked and come back
+/// after each import. The directories hold a space and a `;`, which a seed
+/// escapes; one import is spelled through `..`, which MSBuild resolves; and the
+/// imported files' names are ones .NET splits unlike Rust (`.props`, `Imp.`,
+/// `a..b`, `..x`, `x..`), or hold an escape sequence and a `;`.
+#[test]
+fn path_derivable_reserved_properties_match_msbuild() {
+    const NAMES: [&str; 7] = [
+        "MSBuildThisFileFullPath",
+        "MSBuildThisFileName",
+        "MSBuildThisFileExtension",
+        "MSBuildThisFileDirectoryNoRoot",
+        "MSBuildProjectDirectoryNoRoot",
+        "MSBuildThisFile",
+        "MSBuildThisFileDirectory",
+    ];
+    // (import spelling, file on disk, property prefix)
+    const IMPORTS: [(&str, &str, &str); 9] = [
+        ("sub dir/Imp.x.props", "sub dir/Imp.x.props", "I"),
+        ("sub dir/../other/Odd.props", "other/Odd.props", "D"),
+        ("sub dir/.props", "sub dir/.props", "J"),
+        ("sub dir/Imp.", "sub dir/Imp.", "K"),
+        ("sub dir/a..b", "sub dir/a..b", "L"),
+        ("sub dir/..x", "sub dir/..x", "M"),
+        ("sub dir/x..", "sub dir/x..", "N"),
+        // A directory and files whose names hold an escape sequence and a `;`,
+        // spelled escaped in the `Import`: MSBuild splices the `ThisFile*`
+        // values raw, so `%41` reads back as `A` and `%20` as a space.
+        ("d%2541/a%2520b.props", "d%41/a%20b.props", "E"),
+        ("d%2541/x%3by.props", "d%41/x;y.props", "F"),
+    ];
+    let tmp = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let dir = root.join("p r;oj");
+    std::fs::create_dir_all(dir.join("sub dir")).unwrap();
+    std::fs::create_dir_all(dir.join("other")).unwrap();
+    std::fs::create_dir_all(dir.join("d%41")).unwrap();
+    // Each property brackets its value so an empty one still reads back.
+    let reads = |prefix: &str| -> String {
+        NAMES
+            .iter()
+            .map(|n| format!("<{prefix}_{n}>[$({n})]</{prefix}_{n}>"))
+            .collect()
+    };
+    for (_, file, prefix) in IMPORTS {
+        std::fs::write(
+            dir.join(file),
+            format!(
+                "<Project><PropertyGroup>{}</PropertyGroup></Project>",
+                reads(prefix)
+            ),
+        )
+        .unwrap();
+    }
+    let imports: String = IMPORTS
+        .iter()
+        .map(|(spelling, _, _)| format!("<Import Project=\"{spelling}\" />"))
+        .collect();
+    let source = format!(
+        "<Project><PropertyGroup>{}</PropertyGroup>{imports}\
+         <PropertyGroup>{}</PropertyGroup></Project>",
+        reads("B"),
+        reads("A"),
+    );
+    std::fs::write(dir.join("Demo.fsproj"), &source).unwrap();
+    // Both sides are handed the project through `..`, which MSBuild resolves
+    // before deriving the project's names from it.
+    std::fs::create_dir_all(root.join("x")).unwrap();
+    let fsproj = root.join("x/../p r;oj/Demo.fsproj");
+
+    let props: Vec<String> = ["B", "A"]
+        .into_iter()
+        .chain(IMPORTS.iter().map(|(_, _, prefix)| *prefix))
+        .flat_map(|prefix| NAMES.iter().map(move |n| format!("{prefix}_{n}")))
+        .collect();
+    let mut cmd = Command::new("dotnet");
+    cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
+    scrub_msbuild_env(&mut cmd);
+    cmd.args(["msbuild", "-nologo"]);
+    cmd.arg(format!("-getProperty:{}", props.join(",")));
+    cmd.arg(&fsproj);
+    let out = BoundedCommand::new(cmd)
+        .timeout(MSBUILD_TIMEOUT)
+        .run_ok(format_args!("dotnet msbuild for {}", fsproj.display()));
+    let theirs: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+
+    let project = parse_fsproj_with_imports(
+        &source,
+        &fsproj,
+        &HashMap::new(),
+        &common::oracle_environment(),
+        None,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("parse {}: {e}", fsproj.display()));
+    for name in &props {
+        let theirs = theirs["Properties"][name.as_str()]
+            .as_str()
+            .expect("each property is reported");
+        assert_eq!(
+            project.properties.get(name.as_str()).map(String::as_str),
+            Some(theirs),
+            "{name}"
+        );
     }
 }

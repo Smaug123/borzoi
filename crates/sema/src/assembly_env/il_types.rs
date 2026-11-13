@@ -216,11 +216,11 @@ impl AssemblyEnv {
         namespace: &[String],
         (bare, arity): Segment<'_>,
     ) -> Result<Option<EntityHandle>, IlTypeDefinition> {
-        let Some(types) = self.types_by_namespace.get(namespace) else {
+        let types = self.types_in_namespace(namespace);
+        if types.is_empty() {
             return Ok(None);
-        };
+        }
         let named = types
-            .all
             .iter()
             .copied()
             .filter(|&h| self.assembly_key(h) == key && self.entity(h).name == bare);

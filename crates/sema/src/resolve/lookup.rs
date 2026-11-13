@@ -8,6 +8,7 @@ use borzoi_assembly::{EntityKind, UnionCases};
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
 use crate::hash::{HashMap, HashSet};
+use crate::names::{NameKey, PathId, PathKey, Segments};
 
 use super::contributors::Contribution;
 use super::id_text;
@@ -15,6 +16,7 @@ use super::model::{
     CaseKind, DeclOrder, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId,
     MemberDeclarations, OpenOpacity, OpenTrace, QualifiedMember, Resolution, SlotClass, TypeSlot,
 };
+use super::open_scope::{OpacityLevels, PrefixRef};
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
     RecordedFold, Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix,
@@ -267,9 +269,7 @@ struct SubmoduleFold {
 
 /// The walk state before one `open` — see [`Resolver::open_trace_snapshot`].
 pub(super) struct OpenTraceSnapshot {
-    opaque_value: bool,
-    opaque_dotted: bool,
-    unmodelled: bool,
+    opacity: OpacityLevels,
     generation: usize,
     entries: usize,
     imports: usize,
@@ -357,7 +357,7 @@ impl<'a> Resolver<'a> {
     /// FS0039 to the real compiler; both used to resolve here.
     ///
     /// The entries are [`ScopeEntry::opened`], so [`lookup`](Self::lookup) drops
-    /// them while an [`opaque_value_open`](Self::opaque_value_open) is in scope and
+    /// them while an [`opaque_value_open`](crate::resolve::open_scope::OpenOpacityState::value) is in scope and
     /// [`resolve_file`](super::resolve_file) does not leak them across same-named top-level blocks.
     /// `certain` withholds the definite target while keeping the name in scope (it still
     /// shadows by position). Callers pass `false` when something they cannot see could
@@ -369,7 +369,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn open_type_statics(&mut self, handle: EntityHandle, open_pos: u32, certain: bool) {
         // Collect first — `open_static_entries` borrows `self.assemblies`, and the
         // push below borrows `self.scopes` mutably; the two must not overlap.
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         let entries: Vec<ScopeEntry> = self
             .assemblies
             .open_static_entries(handle)
@@ -488,11 +488,11 @@ impl<'a> Resolver<'a> {
             UnionCases::Unknowable => None,
         };
         let Some(cases) = cases else {
-            self.opaque_value_open = true;
-            self.open_generation += 1;
+            self.scope.opacity.raise_value();
+            self.scope.open_generation += 1;
             return;
         };
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         let entries: Vec<ScopeEntry> = cases
             .into_iter()
             .map(|(name, res)| {
@@ -521,7 +521,7 @@ impl<'a> Resolver<'a> {
     ///   shadow that name rather than let whichever was pushed last win — an
     ///   opaque entry defers both positions, which is sound in every order.
     pub(super) fn fold_implicit_union_cases(&mut self, definite: bool) {
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         let entries: Vec<ScopeEntry> = self
             .assemblies
             .implicit_union_cases()
@@ -572,12 +572,13 @@ impl<'a> Resolver<'a> {
     /// declines it. That is availability only; the other direction would be a
     /// wrong target.
     pub(super) fn assembly_case_slot_contested(&self, name: &str) -> bool {
+        let name_key = NameKey::of(self.assemblies.names(), name);
         self.open_reading_prefixes()
             .map(|(_, prefix)| prefix)
-            .chain(std::iter::once(self.enclosing_namespace()))
+            .chain(std::iter::once(self.enclosing_namespace_prefix()))
             .any(|prefix| {
                 self.assemblies
-                    .namespace_could_supply_slot_type(prefix, name)
+                    .namespace_could_supply_slot_type(prefix.key(), name_key)
             })
             || self
                 .assemblies
@@ -627,7 +628,12 @@ impl<'a> Resolver<'a> {
         // and its name-unknown residue feeds the group verdict, instead of the
         // whole module half deferring wholesale.
         if assembly_ns_applies {
-            surfaces.extend(self.assemblies.open_namespace_fold_surfaces(gp));
+            surfaces.extend(
+                self.assemblies
+                    .open_namespace_fold_surfaces(gp)
+                    .iter()
+                    .cloned(),
+            );
         }
         // The **project namespace half**'s own constructible type names join the
         // fold as a contestant-only surface (codex review of §7's machinery
@@ -847,7 +853,7 @@ impl<'a> Resolver<'a> {
         demote: bool,
         demote_cases: bool,
     ) {
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         // A name supplied by two *different* surfaces is a reference-order contest:
         // demote it. Within ONE surface, fold order decides (latest push wins), so
         // a repeated name there is not a collision. A surface's contestant type
@@ -1081,7 +1087,7 @@ impl<'a> Resolver<'a> {
             // folds as prefixes, ahead of the container itself
             // ([`Self::auto_open_shortening_prefixes`]); a module cannot hold a
             // namespace, so no namespace is reachable at one of those.
-            for prefix in self.open_shortening_prefixes.iter().rev() {
+            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
                 for auto in self.auto_open_shortening_prefixes(prefix) {
                     let mut full = auto;
                     full.extend_from_slice(written);
@@ -1317,6 +1323,20 @@ impl<'a> Resolver<'a> {
         &self.container_path[..self.namespace_depth.min(self.container_path.len())]
     }
 
+    /// The empty prefix, as a query key.
+    pub(super) fn root_prefix(&self) -> PathKey<'static> {
+        PathKey::new(Some(self.assemblies.names().root()), &[])
+    }
+
+    /// [`Self::enclosing_namespace`] with its id.
+    pub(super) fn enclosing_namespace_prefix(&self) -> PrefixRef<'_> {
+        let depth = self.namespace_depth.min(self.container_path.len());
+        PrefixRef {
+            id: self.container_path.prefix_id(depth),
+            path: &self.container_path[..depth],
+        }
+    }
+
     /// Bring this block's own enclosing namespace into scope, with no `open`
     /// written.
     ///
@@ -1398,10 +1418,10 @@ impl<'a> Resolver<'a> {
         let handles = self.opened_assembly_modules(&namespace);
         let group = self.assembly_fold_group(&namespace, &handles, true);
         if group.barrier() {
-            self.open_generation += 1;
+            self.scope.open_generation += 1;
         }
         if group.hides_names() {
-            self.dotted_opacity.set_opaque();
+            self.scope.opacity.raise_dotted();
         }
         let project_ns = group.project_ns;
         // The **project module** half. `ResolveLongIdentAsModuleOrNamespace`
@@ -1436,7 +1456,7 @@ impl<'a> Resolver<'a> {
                 .any(|path| path.starts_with(namespace.as_slice()))
             && !self.preceding.opaque_hidden_value_module(&namespace);
         if bump_covered_by_screen {
-            self.open_generation += 1;
+            self.scope.open_generation += 1;
         }
         // The reading's **shortening prefix**. Opening a container enters every
         // nested module of it under its short name and then recurses into the
@@ -1465,7 +1485,7 @@ impl<'a> Resolver<'a> {
         // companion-module grid a committed cell.
         //
         if !handles.is_empty() || self.assemblies.has_namespace(&namespace) {
-            self.open_shortening_prefixes.push(ShorteningPrefix {
+            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
                 path: namespace.clone(),
                 namespace_reading: true,
                 module_reading: !handles.is_empty(),
@@ -1493,7 +1513,7 @@ impl<'a> Resolver<'a> {
                     .assemblies
                     .any_split_of_a_module_path_has_a_dropped_type(&namespace)
             {
-                self.incomplete_open_prefixes.push(namespace.clone());
+                self.scope.incomplete_open_prefixes.push(namespace.clone());
             }
             // A dotted head through an assembly module is not modelled yet, so
             // it stays conservative while such a module is in scope — but only
@@ -1507,7 +1527,7 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .any(|&c| self.assemblies.is_public(c))
             }) {
-                self.dotted_opacity.set_opaque();
+                self.scope.opacity.raise_dotted();
             }
         }
         self.apply_assembly_fold_group(&namespace, group, 0);
@@ -1528,7 +1548,7 @@ impl<'a> Resolver<'a> {
         // signature screen bounds must stale this fold's own assembly entries
         // too, so they go after it.
         if project_module_bump && !bump_covered_by_screen {
-            self.open_generation += 1;
+            self.scope.open_generation += 1;
         }
         // A project module may hold submodules and types we do not model, so a
         // dotted head through it stays conservative. No shortening prefix: the
@@ -1536,7 +1556,7 @@ impl<'a> Resolver<'a> {
         // enclosing namespace, which `open_tier_candidates` already offers at
         // tier 2 — an extra tier-1 copy of the same path would decide nothing.
         if self.is_project_module_path(&namespace) {
-            self.dotted_opacity.set_opaque();
+            self.scope.opacity.raise_dotted();
         }
         project_half
     }
@@ -1546,7 +1566,7 @@ impl<'a> Resolver<'a> {
     /// appends to the module frame and bumps the generation, so the appended
     /// entries and the generation's growth are all of it that a replay needs.
     fn record_fold(&mut self, fold: impl FnOnce(&mut Self)) -> RecordedFold {
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         let len = self.module_frame().len();
         fold(self);
         let entries = self.module_frame().entries()[len..]
@@ -1561,7 +1581,7 @@ impl<'a> Resolver<'a> {
             .collect();
         RecordedFold {
             entries,
-            barriers: self.open_generation - generation,
+            barriers: self.scope.open_generation - generation,
         }
     }
 
@@ -1591,7 +1611,7 @@ impl<'a> Resolver<'a> {
         let namespace = self.enclosing_namespace().to_vec();
         self.push_signatured_slot_marks(&namespace, open_pos);
         let RecordedFold { entries, barriers } = self.own_namespace_fold.clone();
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         let replayed: Vec<ScopeEntry> = entries
             .into_iter()
             .map(|(barriers_before, mut entry)| {
@@ -1601,7 +1621,7 @@ impl<'a> Resolver<'a> {
             })
             .collect();
         self.module_frame().extend(replayed);
-        self.open_generation = generation + barriers;
+        self.scope.open_generation = generation + barriers;
     }
 
     /// The walk state an `open` can perturb, captured before it so
@@ -1609,21 +1629,19 @@ impl<'a> Resolver<'a> {
     /// resolution-explain trace's per-open record ([`OpenTrace`]).
     pub(super) fn open_trace_snapshot(&self) -> OpenTraceSnapshot {
         OpenTraceSnapshot {
-            opaque_value: self.opaque_value_open,
-            opaque_dotted: self.dotted_opacity.any(),
-            unmodelled: self.unmodelled_open_active,
-            generation: self.open_generation,
+            opacity: self.scope.opacity.levels(),
+            generation: self.scope.open_generation,
             entries: self.scopes.last().map_or(0, |f| f.len()),
-            imports: self.imports.len(),
-            shortening: self.open_shortening_prefixes.len(),
+            imports: self.scope.imports.len(),
+            shortening: self.scope.open_shortening_prefixes.len(),
         }
     }
 
     /// What the open since `before` did to the walk state, mechanism by
     /// mechanism (see [`OpenOpacity`]).
     ///
-    /// The three flags are write-only and monotone within a block, so `now &&
-    /// !before` is exactly this open's contribution. The generation is only
+    /// The opacity parts only rise within a scope, so what they raised is
+    /// [`OpacityLevels::raised_since`]. The generation is only
     /// ever bumped, so a strict increase is this open's own barrier. Opened
     /// entries all land in `module_frame()` (`scopes.last()`) and an open
     /// never enters a nested module, so a new `Deferred` entry after the
@@ -1634,11 +1652,12 @@ impl<'a> Resolver<'a> {
     /// reading contribution — a qualified-path precedence entry that can
     /// re-own a later dotted head against a lower open's reading.
     pub(super) fn open_opacity_since(&self, before: &OpenTraceSnapshot) -> OpenOpacity {
+        let raised = self.scope.opacity.levels().raised_since(before.opacity);
         OpenOpacity {
-            opaque_value: self.opaque_value_open && !before.opaque_value,
-            opaque_dotted: self.dotted_opacity.any() && !before.opaque_dotted,
-            unmodelled: self.unmodelled_open_active && !before.unmodelled,
-            staled_earlier: self.open_generation > before.generation,
+            opaque_value: raised.opaque_value,
+            opaque_dotted: raised.opaque_dotted,
+            unmodelled: raised.unmodelled,
+            staled_earlier: self.scope.open_generation > before.generation,
             imported_deferred: self.scopes.last().is_some_and(|f| {
                 f.entries()
                     .get(before.entries..)
@@ -1646,8 +1665,8 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .any(|e| matches!(e.resolution, Resolution::Deferred(_)))
             }),
-            added_reading: self.imports.len() > before.imports
-                || self.open_shortening_prefixes.len() > before.shortening,
+            added_reading: self.scope.imports.len() > before.imports
+                || self.scope.open_shortening_prefixes.len() > before.shortening,
         }
     }
 
@@ -1835,7 +1854,9 @@ impl<'a> Resolver<'a> {
     /// at all, only "some project source contests".
     fn direct_project_type_contestants(&self, container: &[String]) -> Vec<(String, usize)> {
         let site = &self.container_path;
-        let mut out = self.preceding.direct_type_contestants(container, site);
+        let mut out =
+            self.preceding
+                .direct_type_contestants(self.assemblies.names(), container, site);
         let current = self.preceding.num_files();
         out.extend(
             self.type_path_exports
@@ -2038,7 +2059,7 @@ impl<'a> Resolver<'a> {
     /// Precedence mirrors F#'s "latest open wins". The shortening tiers are tried
     /// most-recent-first so a later open shadows an earlier one when both could
     /// shorten the name (`open A; open B; open Shared` chooses `B.Shared`):
-    /// 1. **explicit opens** — every prefix in [`Self::open_shortening_prefixes`]
+    /// 1. **explicit opens** — every prefix in [`OpenScope::open_shortening_prefixes`](crate::resolve::open_scope::OpenScope::open_shortening_prefixes)
     ///    (namespace opens *and* chained module opens, one source-ordered list),
     ///    latest first; this is what makes a later namespace open out-rank an
     ///    earlier module open, and `open Shared; open Sub` chain `Sub` to
@@ -2081,7 +2102,7 @@ impl<'a> Resolver<'a> {
             // Tier 1 — explicit opens (namespace + chained module), one
             // source-ordered list, latest open first so the most recent shadowing
             // prefix wins across open kinds.
-            for prefix in self.open_shortening_prefixes.iter().rev() {
+            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if self.is_project_module_path(&full) {
@@ -2240,7 +2261,7 @@ impl<'a> Resolver<'a> {
         // binds `Demo.Thing.Inner.Red`, not the project `Lib.Inner.Red`). An unrooted
         // candidate could be redirected by that open, so defer — exactly as the
         // qualified-value branch does (`rooted || !unmodelled_open_active`).
-        if !rooted && self.unmodelled_open_active {
+        if !rooted && self.scope.opacity.qualified_paths_unmodelled() {
             return None;
         }
         let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
@@ -2270,7 +2291,7 @@ impl<'a> Resolver<'a> {
                 return hit(full, CaseTier::Alias);
             }
             // Tier 1 — explicit opens, latest first.
-            for prefix in self.open_shortening_prefixes.iter().rev() {
+            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if let Some(found) = hit(full, CaseTier::Namespace) {
@@ -2310,7 +2331,7 @@ impl<'a> Resolver<'a> {
     /// latest-wins shadowing against locals and [`resolve_file`](super::resolve_file) does not leak them
     /// across same-named top-level blocks. The module may also hold submodules /
     /// types we do not model, so the caller sets
-    /// [`dotted_opacity`](Self::dotted_opacity) to keep dotted heads
+    /// [`dotted_opacity`](crate::resolve::open_scope::OpenOpacityState::dotted) to keep dotted heads
     /// through it conservative. Returns the number of values enumerated — zero
     /// means an empty / submodule-only module or a module *alias* (whose target we
     /// cannot see), which the caller treats fully conservatively.
@@ -2330,7 +2351,7 @@ impl<'a> Resolver<'a> {
     ) -> usize {
         // Collect first — the scans borrow `self.items` / `self.preceding`
         // immutably, while the push below borrows `self.scopes` mutably.
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         // The reference site (this `open`'s enclosing container) decides whether a
         // `private` value of `module_path` is accessible — F# hides it from an
         // `open` outside the container's subtree (oracle-pinned; on `main` such a
@@ -2348,7 +2369,7 @@ impl<'a> Resolver<'a> {
         // name could shadow them (FCS: `open M; match x with Red` picks `M`'s active
         // pattern `(|Red|_|)` over its union case `Red`). They still resolve as
         // *values* in expression position; only their pattern use is suppressed
-        // ([`Self::pattern_suppressed_case_ids`], consulted by
+        // ([`OpenScope::pattern_suppressed_case_ids`](crate::resolve::open_scope::OpenScope::pattern_suppressed_case_ids), consulted by
         // [`case_reference`](Self::case_reference)).
         let hidden = self.module_has_hidden_values(module_path);
         let mut suppressed: Vec<ItemId> = Vec::new();
@@ -2369,7 +2390,7 @@ impl<'a> Resolver<'a> {
         // in bare pattern position REGARDLESS of source order — every case push
         // below checks this set plus the cross-file history
         // ([`ProjectItems::module_value_may_be_constant_pattern`]) and defers
-        // the case via [`Self::pattern_suppressed_case_ids`]. An inaccessible
+        // the case via [`OpenScope::pattern_suppressed_case_ids`](crate::resolve::open_scope::OpenScope::pattern_suppressed_case_ids). An inaccessible
         // value is filtered exactly as FCS filters the opened environment, so
         // the case then stays committed. (For a single-fragment fold the
         // cross-file history spans every file, over-approximating the
@@ -2549,7 +2570,7 @@ impl<'a> Resolver<'a> {
         }
         let count = entries.len();
         self.module_frame().extend(entries);
-        self.pattern_suppressed_case_ids.extend(suppressed);
+        self.scope.pattern_suppressed_case_ids.extend(suppressed);
         count
     }
 
@@ -2587,7 +2608,7 @@ impl<'a> Resolver<'a> {
             .collect();
         contested.sort();
         contested.dedup();
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         let marks: Vec<ScopeEntry> = contested
             .into_iter()
             .map(|name| {
@@ -2841,7 +2862,7 @@ impl<'a> Resolver<'a> {
         let fragments_trusted =
             fragments.is_empty() || self.attribute_spellings_trusted(["AutoOpen"].into_iter());
         if !fragments_trusted {
-            self.open_generation += 1;
+            self.scope.open_generation += 1;
         }
         // The namespace's own constructible types fold file by file too: FCS
         // folds each file's direct tier before that file's fragments, so a type
@@ -2875,7 +2896,7 @@ impl<'a> Resolver<'a> {
                 let entry = ScopeEntry::opened_declined(
                     name,
                     DeclineCause::OpenedTypeName,
-                    self.open_generation,
+                    self.scope.open_generation,
                     open_pos,
                 );
                 self.module_frame().push(entry);
@@ -2886,7 +2907,7 @@ impl<'a> Resolver<'a> {
             // no project type constructor, so it only declines — never a target).
             let evicting_types = self.direct_project_type_contestants(&frag_path);
             if !evicting_types.is_empty() {
-                let generation = self.open_generation;
+                let generation = self.scope.open_generation;
                 let entries: Vec<ScopeEntry> = evicting_types
                     .into_iter()
                     .map(|(name, _)| {
@@ -2904,7 +2925,7 @@ impl<'a> Resolver<'a> {
             // pattern, an alias, an `extern`) bumps the generation before it folds,
             // so its unenumerable name shadows (stales) everything folded earlier.
             if self.module_has_hidden_values(&frag_path) {
-                self.open_generation += 1;
+                self.scope.open_generation += 1;
             }
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
         }
@@ -2913,7 +2934,7 @@ impl<'a> Resolver<'a> {
             let entry = ScopeEntry::opened_declined(
                 name,
                 DeclineCause::OpenedTypeName,
-                self.open_generation,
+                self.scope.open_generation,
                 open_pos,
             );
             self.module_frame().push(entry);
@@ -2930,7 +2951,7 @@ impl<'a> Resolver<'a> {
         // pushes. `value_winners` / `ctor_winners` are non-empty only when
         // `fold_hidden` was false, so no barrier was raised in the loop and this
         // carries the same generation as the direct push — never stale.
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         for (name, id) in value_winners {
             // Ordinary entry: a case serves the value AND constructor namespaces.
             // A maybe-literal winner keeps its constant-pattern flag; a case
@@ -3226,7 +3247,7 @@ impl<'a> Resolver<'a> {
             ScopeEntry::binding(
                 name.to_string(),
                 Resolution::Deferred(DeferredReason::UnboundName),
-                self.open_generation,
+                self.scope.open_generation,
             )
         })
     }
@@ -3320,25 +3341,25 @@ impl<'a> Resolver<'a> {
                 // defer rather than return a possibly-shadowed case (a wrong
                 // go-to-def). This mirrors [`lookup`](Self::lookup)'s expression-side
                 // conservatism: skip an opened entry while an
-                // [`opaque_value_open`](Self::opaque_value_open) (a plain `open
+                // [`opaque_value_open`](crate::resolve::open_scope::OpenOpacityState::value) (a plain `open
                 // <assembly module>` / opaque `open type`, whose unenumerable names
                 // may include a shadowing constructor) is in scope, or when it is
                 // stale (a later hidden open bumped the generation).
-                if entry.from_open && self.opaque_value_open {
+                if entry.from_open && self.scope.opacity.skips_opened_values() {
                     return Err(Some(DeclineCause::OpaqueOpen));
                 }
-                if entry.generation != self.open_generation {
+                if entry.generation != self.scope.open_generation {
                     // Stale — a later residue-bearing open may shadow it, a
                     // project case included (codex round 22): defer.
                     return Err(Some(DeclineCause::OpenBarrierStaled));
                 }
                 // An opened cross-file case from a *hidden* module is not trustworthy
                 // in pattern position — a hidden constructor of the same name could
-                // shadow it ([`Self::pattern_suppressed_case_ids`]) — so defer. This
+                // shadow it ([`OpenScope::pattern_suppressed_case_ids`](crate::resolve::open_scope::OpenScope::pattern_suppressed_case_ids)) — so defer. This
                 // also covers the value-shadowed case's `pattern_only` entry from a
                 // hidden module (it is added there too).
                 if let Resolution::Item(id) = entry.resolution
-                    && self.pattern_suppressed_case_ids.contains(&id)
+                    && self.scope.pattern_suppressed_case_ids.contains(&id)
                 {
                     return Err(None);
                 }
@@ -3560,9 +3581,7 @@ impl<'a> Resolver<'a> {
         // the open lacks such a `Color`, so defer (sound; an availability gap
         // matching the cross-file branch below).
         if let [case_seg] = rest
-            && !self.opaque_value_open
-            && !self.dotted_opacity.any()
-            && !self.unmodelled_open_active
+            && !self.scope.opacity.any()
             && !head_staled
             && !self.head_contested_by_project_module(first, case_seg)
             && let Some((type_id, case_res, reach)) = self.type_case_path(first, case_seg)
@@ -3634,9 +3653,7 @@ impl<'a> Resolver<'a> {
         // evicted it from the unqualified slot, when the member emits; a
         // contest the slot cannot order defers the whole path.
         if let [member_seg] = rest
-            && !self.opaque_value_open
-            && !self.dotted_opacity.any()
-            && !self.unmodelled_open_active
+            && !self.scope.opacity.any()
             && !head_staled
             && !self.head_contested_by_project_module(first, member_seg)
             && let Some((type_id, member_def, reach)) =
@@ -3762,7 +3779,7 @@ impl<'a> Resolver<'a> {
         if !head_is_definite_value
             && !head_staled
             && first.text() != "global"
-            && self.dotted_opacity.any()
+            && self.scope.opacity.dotted().any()
             && let Some(id) = self.type_qualified_case_past_project_opens(
                 &segments
                     .iter()
@@ -3774,8 +3791,7 @@ impl<'a> Resolver<'a> {
             return;
         }
         if (!head_is_definite_value || matches!(head_slot, HeadSlot::Evicted))
-            && !self.opaque_value_open
-            && !self.dotted_opacity.any()
+            && !self.scope.opacity.bare_or_dotted_heads_unknowable()
             && !head_staled
         {
             // A **same-file module-qualified** type-qualified case (`Pal.Color.Red`
@@ -3786,7 +3802,7 @@ impl<'a> Resolver<'a> {
             // `Pal.Color.Red` to this file's case even when an earlier file exports a
             // value at the written path). Gated on `!unmodelled_open_active` like the
             // 2-segment same-file branch (an `open type` could supply the head).
-            if !self.unmodelled_open_active
+            if !self.scope.opacity.qualified_paths_unmodelled()
                 && self.record_same_file_module_qualified_case(segments, false)
             {
                 return;
@@ -3835,7 +3851,7 @@ impl<'a> Resolver<'a> {
                     // `unmodelled_open_active`. So an *unrooted* prefix defers while
                     // one is in scope; a `global.`-rooted prefix is absolute (no open
                     // can redirect it), so it is unaffected.
-                    && (rooted || !self.unmodelled_open_active)
+                    && (rooted || !self.scope.opacity.qualified_paths_unmodelled())
                     && let Some(module_path) = self.resolved_project_module(&prefix, rooted)
                     // A module's own simple name is not in scope within itself or a
                     // nested module (FCS FS0039 for `M.x` inside `M`, `Outer.v`
@@ -4004,13 +4020,18 @@ impl<'a> Resolver<'a> {
             // the head — the segment a reading contests. Diagnostic only; it
             // never feeds back into `resolved`.
             let mut declined_at: Option<DeclineSite> = None;
+            // The segments' names, looked up once for every reading below.
+            let source = Segments::new(
+                self.assemblies.names(),
+                segments.iter().map(|t| id_text(t).to_string()).collect(),
+            );
             let resolved = if value_evicted {
                 // The assembly tiers are type-side too — the evicting type
                 // shadows them the same way (see the M20t/M20u note above).
                 declined_at = Some(DeclineSite::pre_walk(DeclineCause::ValueEvicted));
                 None
-            } else if self.unmodelled_open_active {
-                match self.assembly_path_records(&[], segments) {
+            } else if self.scope.opacity.qualified_paths_unmodelled() {
+                match self.assembly_path_records(self.root_prefix(), segments, &source) {
                     AssemblyPath::Resolved {
                         payload: root_recs, ..
                     } => {
@@ -4021,8 +4042,11 @@ impl<'a> Resolver<'a> {
                         let higher_reading_differs =
                             self.assembly_prefixes_by_priority()
                                 .find_map(|(tier, prefix)| {
-                                    let differs = match self.assembly_path_records(prefix, segments)
-                                    {
+                                    let differs = match self.assembly_path_records(
+                                        prefix.key(),
+                                        segments,
+                                        &source,
+                                    ) {
                                         AssemblyPath::Resolved { payload, .. } => {
                                             payload != root_recs
                                         }
@@ -4074,7 +4098,7 @@ impl<'a> Resolver<'a> {
                 // clean no-match) fall through identically here — the tail of
                 // this function records the deferral.
                 match self.resolve_assembly_path_tiered(
-                    |prefix| self.assembly_path_records(prefix, segments),
+                    |prefix| self.assembly_path_records(prefix, segments, &source),
                     true,
                     |_| ShadowVeto::None,
                 ) {
@@ -4125,7 +4149,7 @@ impl<'a> Resolver<'a> {
             // kept the assembly walk from running at all; the other three are
             // reached with the walk already declined, and `record_decline`
             // keeps whichever cause spoke first.
-            let cause = if self.opaque_value_open || self.dotted_opacity.any() || head_staled {
+            let cause = if self.scope.opacity.bare_or_dotted_heads_unknowable() || head_staled {
                 DeclineCause::OpaqueValueHead
             } else if head_is_case {
                 DeclineCause::CaseQualifierHead
@@ -4146,7 +4170,7 @@ impl<'a> Resolver<'a> {
             // might have made is lost, so the census names the guard rather
             // than reading it as a clean miss.
             if !rest.is_empty()
-                && (self.opaque_value_open || self.dotted_opacity.any() || head_staled)
+                && (self.scope.opacity.bare_or_dotted_heads_unknowable() || head_staled)
                 && matches!(
                     self.resolutions.get(&first.text_range()),
                     Some(Resolution::Deferred(_)) | None
@@ -4346,7 +4370,7 @@ impl<'a> Resolver<'a> {
         // in scope, so a self-qualified `List.rev` binds the project's own
         // `N.List.rev` (fcs-dump), not FSharp.Core. The whole "self is FS0039"
         // premise is void here, so never relax — keep the conservative deferral.
-        if self.recursive_module_active {
+        if self.scope.recursive_module_active {
             return false;
         }
         let reconstructed = self.self_qualified_member_path(names);
@@ -4357,8 +4381,10 @@ impl<'a> Resolver<'a> {
         // reconstructed self path or the raw already-qualified spelling.
         if reconstructed
             .as_deref()
-            .is_some_and(|p| self.preceding.binds_along_path(p))
-            || self.preceding.binds_along_path(names)
+            .is_some_and(|p| self.preceding.binds_along_path(self.assemblies.names(), p))
+            || self
+                .preceding
+                .binds_along_path(self.assemblies.names(), names)
         {
             return false;
         }
@@ -4368,7 +4394,9 @@ impl<'a> Resolver<'a> {
             let child_path: Vec<String> =
                 self.container_path.iter().chain(names).cloned().collect();
             if self.same_name_entity_shadows_head(head)
-                || self.preceding.binds_along_path(&child_path)
+                || self
+                    .preceding
+                    .binds_along_path(self.assemblies.names(), &child_path)
             {
                 return false;
             }
@@ -4420,6 +4448,7 @@ impl<'a> Resolver<'a> {
         screened(written)
             || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                 let full: Vec<String> = prefix
+                    .path
                     .iter()
                     .cloned()
                     .chain(written.iter().cloned())
@@ -4608,7 +4637,7 @@ impl<'a> Resolver<'a> {
             head_seg.text_range().start(),
         );
         match outcome {
-            SameFileQualified::Emit { .. } if self.recursive_module_active => {
+            SameFileQualified::Emit { .. } if self.scope.recursive_module_active => {
                 SameFileQualified::Decline(DeclineCause::RecursiveModuleActive)
             }
             SameFileQualified::Emit { .. } | SameFileQualified::Decline(_)
@@ -4751,12 +4780,13 @@ impl<'a> Resolver<'a> {
             // same-file declaration, so only the recorded explicit namespace
             // opens can contest.)
             let contest = self
+                .scope
                 .explicit_open_prefixes
                 .iter()
                 .rev() // latest open first — the winner under latest-wins
-                .filter(|(open_pos, _)| kinds.module_pos.is_none_or(|p| *open_pos > p))
-                .find_map(|(_, prefix)| {
-                    self.open_contests_candidate(prefix, head, res, in_pattern, use_pos, true)
+                .filter(|open| kinds.module_pos.is_none_or(|p| open.pos > p))
+                .find_map(|open| {
+                    self.open_contests_candidate(&open.path, head, res, in_pattern, use_pos, true)
                 });
             if let Some(outcome) = contest {
                 return outcome;
@@ -4793,11 +4823,12 @@ impl<'a> Resolver<'a> {
             .as_ref()
             .is_some_and(|outcome| !matches!(outcome, SameFileQualified::Miss));
         if let Some(outcome) = self
+            .scope
             .explicit_open_prefixes
             .iter()
             .rev()
-            .find_map(|(_, prefix)| {
-                self.open_contests_candidate(prefix, head, res, in_pattern, use_pos, below)
+            .find_map(|open| {
+                self.open_contests_candidate(&open.path, head, res, in_pattern, use_pos, below)
             })
         {
             return outcome;
@@ -5021,7 +5052,10 @@ impl<'a> Resolver<'a> {
             // its unchased target (FCS commits through it, probes CF8/CF8pat),
             // so both defer.
             // A type at a module segment of a longer residual is contention.
-            match self.preceding.exported_type_at(&ty_path) {
+            match self
+                .preceding
+                .exported_type_at(self.assemblies.names(), &ty_path)
+            {
                 Some(cases_enumerable) if in_pattern && cases_enumerable && mids.is_empty() => {}
                 Some(_) => return Some(SameFileQualified::DeferStop),
                 // Anything ELSE the conflated name-shadow set holds at the
@@ -5540,7 +5574,7 @@ impl<'a> Resolver<'a> {
     /// module/type/value that out-ranks the type for the qualifier, so defer while
     /// one is in scope.
     pub(super) fn record_qualified_case_pattern(&mut self, segs: &[SyntaxToken]) {
-        if self.opaque_value_open || self.dotted_opacity.any() || self.unmodelled_open_active {
+        if self.scope.opacity.any() {
             // Enumerable project-module opens are checked against the head
             // instead (a pattern head is never a value, so no value test).
             if segs.first().is_some_and(|t| t.text() != "global") {
@@ -5745,14 +5779,15 @@ impl<'a> Resolver<'a> {
     /// no evidence about *this* name at all. All of these stay documented
     /// completeness gaps, the same status the type path gives them.
     fn assembly_case_head_contends_at_an_open(&self, type_name: &str) -> bool {
+        let type_key = NameKey::of(self.assemblies.names(), type_name);
         self.explicit_open_reading_prefixes().any(|(_, prefix)| {
             !self
                 .assemblies
-                .public_entities_named(prefix, type_name)
+                .public_entities_named_at(prefix.key(), type_key)
                 .is_empty()
                 || self
                     .assemblies
-                    .auto_open_modules_in_namespace_shadow_type_named(prefix, type_name)
+                    .auto_open_modules_in_namespace_shadow_type_named(prefix.path, type_name)
         })
     }
 
@@ -5804,25 +5839,31 @@ impl<'a> Resolver<'a> {
     /// type of the name could each take a dotted head before (or instead of)
     /// `owner` in one of FCS's searches, so any of them answers no.
     fn opened_project_modules_leave_head(&self, head: &str, owner: &[String]) -> bool {
-        self.dotted_opacity.project_modules().iter().all(|module| {
-            let mut frontier = vec![module.clone()];
-            while let Some(m) = frontier.pop() {
-                let mut path = m.clone();
-                path.push(head.to_string());
-                let names_head = if path == owner {
-                    self.preceding.is_real_nested_module(&path)
-                        || self.preceding.declares_member_at(&path)
-                } else {
-                    self.preceding.binds_along_path(&path)
-                        || self.preceding.declares_member_at(&path)
-                };
-                if names_head {
-                    return false;
+        self.scope
+            .opacity
+            .dotted()
+            .project_modules()
+            .iter()
+            .all(|module| {
+                let mut frontier = vec![module.clone()];
+                while let Some(m) = frontier.pop() {
+                    let mut path = m.clone();
+                    path.push(head.to_string());
+                    let names_head = if path == owner {
+                        self.preceding.is_real_nested_module(&path)
+                            || self.preceding.declares_member_at(&path)
+                    } else {
+                        self.preceding
+                            .binds_along_path(self.assemblies.names(), &path)
+                            || self.preceding.declares_member_at(&path)
+                    };
+                    if names_head {
+                        return false;
+                    }
+                    frontier.extend(self.preceding.auto_open_modules_directly_in(&m));
                 }
-                frontier.extend(self.preceding.auto_open_modules_directly_in(&m));
-            }
-            true
-        })
+                true
+            })
     }
 
     /// Whether `head` names nothing a dotted head could reach but one earlier
@@ -5872,26 +5913,32 @@ impl<'a> Resolver<'a> {
                 .retained_auto_open_could_supply_entity_named(head)
             || self.explicit_open_reading_prefixes().any(|(_, prefix)| {
                 self.assemblies
-                    .unknowable_abbreviations_in_namespace(prefix)
+                    .unknowable_abbreviations_in_namespace(prefix.path)
             })
             || self
                 .open_reading_prefixes()
                 .map(|(_, prefix)| prefix)
-                .chain((0..=self.container_path.len()).map(|k| &self.container_path[..k]))
+                .chain((0..=self.container_path.len()).map(|k| PrefixRef {
+                    id: self.container_path.prefix_id(k),
+                    path: &self.container_path[..k],
+                }))
                 .any(|prefix| {
-                    let mut below = prefix.to_vec();
+                    let mut below = prefix.path.to_vec();
                     below.push(head.to_string());
                     self.assemblies.has_namespace(&below)
                         || !self
                             .assemblies
-                            .public_entities_named(prefix, head)
+                            .public_entities_named_at(
+                                prefix.key(),
+                                NameKey::of(self.assemblies.names(), head),
+                            )
                             .is_empty()
                         || self
                             .assemblies
-                            .auto_open_modules_in_namespace_shadow_type_named(prefix, head)
+                            .auto_open_modules_in_namespace_shadow_type_named(prefix.path, head)
                         || self
                             .assemblies
-                            .namespace_value_surface(prefix)
+                            .namespace_value_surface(prefix.path)
                             .could_supply(head)
                 });
         !this_file_names_it && !earlier_files_name_it_otherwise && !assemblies_may_name_it
@@ -5916,9 +5963,7 @@ impl<'a> Resolver<'a> {
         let [head, _case] = written else {
             return None;
         };
-        if self.dotted_opacity.beyond_project_modules()
-            || self.opaque_value_open
-            || self.unmodelled_open_active
+        if self.scope.opacity.any_beyond_enumerable_project_modules()
             || self.sig_screens_case_reading_of(written)
             || self.cross_file_case_shadowed_same_file(written)
         {
@@ -6004,10 +6049,11 @@ impl<'a> Resolver<'a> {
                 Some(DeclineSite::pre_walk(DeclineCause::DroppedTypeCouldRoot)),
             );
         }
-        let leaf = |prefix: &[String]| {
-            self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
+        let type_key = NameKey::of(self.assemblies.names(), type_name);
+        let leaf = |prefix: PathKey<'_>| {
+            self.assembly_case_pattern_records(prefix, type_key, case_name, type_seg, case_seg)
         };
-        let shadow_at = |prefix: &[String]| self.type_position_shadow_at(prefix, &head_path);
+        let shadow_at = |prefix: PrefixRef<'_>| self.type_position_shadow_at(prefix, &head_path);
 
         // A **retained manifest auto-open** surface is invisible to the prefix
         // walk and out-ranks the ROOT tier, so when it could supply the head,
@@ -6280,7 +6326,7 @@ impl<'a> Resolver<'a> {
     /// - a [`TypeReach::NamespaceOpen`] type comes in with its block's
     ///   fragment, and that fragment's `[<AutoOpen>]` modules' types follow
     ///   it, as do a later block's
-    ///   ([`Self::auto_open_type_shadow_names`] holds every same-file one
+    ///   ([`OpenScope::auto_open_type_shadow_names`](crate::resolve::open_scope::OpenScope::auto_open_type_shadow_names) holds every same-file one
     ///   re-entering at the block's start). An earlier file's fragment
     ///   precedes it, so an earlier file's types lose to it.
     pub(super) fn reached_type_contested(
@@ -6291,7 +6337,9 @@ impl<'a> Resolver<'a> {
     ) -> Option<DeclineCause> {
         match reach {
             TypeReach::Boundary | TypeReach::Hidden => Some(DeclineCause::EarlierBlockRootType),
-            TypeReach::NamespaceOpen if self.auto_open_type_shadow_names.contains_key(name) => {
+            TypeReach::NamespaceOpen
+                if self.scope.auto_open_type_shadow_names.contains_key(name) =>
+            {
                 Some(DeclineCause::SameFileAutoOpenType)
             }
             TypeReach::Lexical | TypeReach::NamespaceOpen => (!self
@@ -6383,7 +6431,7 @@ impl<'a> Resolver<'a> {
         name: &str,
         member: &str,
     ) -> bool {
-        if self.recursive_module_active {
+        if self.scope.recursive_module_active {
             return false;
         }
         let Some(&kinds) = declared.and_then(|d| d.get(name)) else {
@@ -6524,11 +6572,15 @@ impl<'a> Resolver<'a> {
         // walk knows. A value may have entered there too, so they are
         // ordered once the value's position is known (below).
         let mut at_block_start: Vec<(SlotClass, Option<FoldOrder>)> = Vec::new();
+        // Every map below is keyed by interned paths and names, so a head the
+        // env's table never interned is in none of them, and a prefix whose
+        // child of that name was never interned holds nothing under it.
+        let names = self.assemblies.names();
+        let head_name = names.lookup(head);
         for k in 0..=self.container_path.len() {
             for &(pos, class) in self
                 .type_slot_history
-                .get(&self.container_path.prefix_id(k))
-                .and_then(|m| m.get(head))
+                .get(self.container_path.prefix_id(k), head_name, head)
                 .into_iter()
                 .flatten()
             {
@@ -6558,33 +6610,31 @@ impl<'a> Resolver<'a> {
         // block's start.
         let namespace = self.enclosing_namespace();
         if !namespace.is_empty() {
-            let mut path = namespace.to_vec();
-            path.push(head.to_string());
-            if let Some(class) = self
-                .preceding
-                .exported_type_slot(&path)
-                .map(|slot| slot.class_at(&path, namespace))
-                .filter(|class| *class != SlotClass::Keeps)
-            {
-                let order = self
-                    .preceding
-                    .exported_type_order(&path)
-                    .map(FoldOrder::earlier_file);
-                at_block_start.push((class, order));
+            let namespace_id = self.container_path.prefix_id(namespace.len());
+            if let Some(exported) = self.preceding.exported_type_by_id(
+                names,
+                head_name.and_then(|n| names.child(namespace_id, n)),
+                || child_text(namespace, head),
+            ) {
+                let class = exported.slot.class_in(namespace, namespace);
+                if class != SlotClass::Keeps {
+                    at_block_start.push((class, exported.order().map(FoldOrder::earlier_file)));
+                }
             }
         }
         let open_prefixes = self
+            .scope
             .explicit_open_prefixes
             .iter()
-            .chain(&self.module_open_prefixes);
+            .chain(&self.scope.module_open_prefixes);
         // Where an opened *project* type of the name that may take the slot
         // entered it, with the opened prefix and where the open's fold adds
         // the type ([`FoldOrder`]), when the walk knows — what a value the
         // same `open` supplied is ordered against (below).
         let mut project_type_opens: Vec<(u32, Option<OrderedTypeOpen<'_>>)> = Vec::new();
-        for (pos, prefix) in open_prefixes {
-            let mut path = prefix.clone();
-            path.push(head.to_string());
+        for open in open_prefixes {
+            let (pos, prefix) = (&open.pos, &open.path);
+            let path_id = head_name.and_then(|n| names.child(open.id, n));
             // The LAST same-path export wins — a redefinition (illegal, but
             // live mid-edit: FS0037 within a file, FS0248 across files)
             // shadows every earlier definition, and every other consumer of a
@@ -6596,41 +6646,39 @@ impl<'a> Resolver<'a> {
             // The `open` brings the type only if it is accessible where the
             // `open` is written, which these prefixes do not record.
             let seen = |slot: TypeSlot| {
-                slot.class_through_scoped_open(&path, namespace, &self.container_path)
+                slot.class_through_scoped_open_in(prefix, namespace, &self.container_path)
             };
-            let class = if let Some((_, _, slot)) =
-                self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
-            {
-                // This file's type: the open adds this file's earlier blocks
-                // one fragment at a time.
-                let order = self
-                    .container_path
-                    .get_at(&self.type_defs, prefix)
-                    .and_then(|m| m.get(head))
-                    .map(|&id| {
-                        self.same_file_fold_order(
-                            self.defs[id.index()].range.start().into(),
-                            FoldTier::Types,
-                        )
-                    });
-                Some((seen(*slot), order.map(|o| (prefix.as_slice(), o))))
-            } else {
-                self.preceding.exported_type_slot(&path).map(|slot| {
+            let class =
+                if let Some((_, _, slot)) = self.latest_type_path_export(path_id, prefix, head) {
+                    // This file's type: the open adds this file's earlier blocks
+                    // one fragment at a time.
                     let order = self
-                        .preceding
-                        .exported_type_order(&path)
-                        .map(FoldOrder::earlier_file);
-                    (seen(slot), order.map(|o| (prefix.as_slice(), o)))
-                })
-            };
+                        .type_defs
+                        .get(&open.id)
+                        .and_then(|m| m.get(head))
+                        .map(|&id| {
+                            self.same_file_fold_order(
+                                self.defs[id.index()].range.start().into(),
+                                FoldTier::Types,
+                            )
+                        });
+                    Some((seen(*slot), order.map(|o| (prefix.as_slice(), o))))
+                } else {
+                    self.preceding
+                        .exported_type_by_id(names, path_id, || child_text(prefix, head))
+                        .map(|exported| {
+                            let order = exported.order().map(FoldOrder::earlier_file);
+                            (seen(exported.slot), order.map(|o| (prefix.as_slice(), o)))
+                        })
+                };
             if let Some((class, order)) = class {
                 note(*pos, class);
                 if class != SlotClass::Keeps {
                     project_type_opens.push((*pos, order));
                 }
             } else if self
-                .container_path
-                .get_at(&self.type_defs, prefix)
+                .type_defs
+                .get(&open.id)
                 .is_some_and(|m| m.contains_key(head))
             {
                 // A same-file type filed under the opened module's container
@@ -6645,7 +6693,7 @@ impl<'a> Resolver<'a> {
         }
         // …and a referenced-assembly type at an opened path. Assembly namespace
         // types occupy FCS's slot through every *reading*
-        // ([`Self::assembly_open_prefixes`]): `open System`'s class `Math`
+        // ([`OpenScope::assembly_open_prefixes`](crate::resolve::open_scope::OpenScope::assembly_open_prefixes)): `open System`'s class `Math`
         // (A1–A6), a project-namespace open, and a *direct* `open Demo` merging
         // a project module with the assembly namespace `Demo` (codex round 2) —
         // but NOT a module alias, which produces no reading (codex round 1).
@@ -6655,9 +6703,11 @@ impl<'a> Resolver<'a> {
         // head then defers — the assembly branch of the qualified block is
         // barred for it (the M20t/M20u rule), converting a wrong-target into a
         // sound defer.
-        for (pos, prefix) in &self.assembly_open_prefixes {
-            for (kind, is_struct) in self.assemblies.public_types_named(prefix, head) {
-                note(*pos, assembly_slot_class(kind, is_struct));
+        let head_key = NameKey::new(head_name, head);
+        for open in &self.scope.assembly_open_prefixes {
+            let prefix = PathKey::new(Some(open.id), &open.path);
+            for (kind, is_struct) in self.assemblies.public_types_named_at(prefix, head_key) {
+                note(open.pos, assembly_slot_class(kind, is_struct));
             }
         }
         // The value's slot position. An OPENED value sits at its `open`'s
@@ -6837,11 +6887,12 @@ impl<'a> Resolver<'a> {
                     return Some(ValueFold::BeforeFile(self.preceding.num_files()));
                 }
                 let readings = self
+                    .scope
                     .explicit_open_prefixes
                     .iter()
-                    .chain(&self.module_open_prefixes)
-                    .filter(|(p, _)| *p == value_pos)
-                    .map(|(_, reading)| reading)
+                    .chain(&self.scope.module_open_prefixes)
+                    .filter(|open| open.pos == value_pos)
+                    .map(|open| open.id)
                     .collect::<HashSet<_>>()
                     .len();
                 (readings == 1 && !self.item_is_case(id)).then(|| {
@@ -6855,6 +6906,33 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// This file's latest type export at `prefix` extended by `head`, whose
+    /// interned id is `path_id` (`None` when the env's table never interned
+    /// the path, so that no export is there).
+    fn latest_type_path_export(
+        &self,
+        path_id: Option<PathId>,
+        prefix: &[String],
+        head: &str,
+    ) -> Option<&(Vec<String>, bool, TypeSlot)> {
+        let found = path_id
+            .and_then(|id| self.type_path_export_ids.get(&id))
+            .map(|&i| &self.type_path_exports[i]);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            let path = child_text(prefix, head);
+            let reference = self.type_path_exports.iter().rfind(|(p, _, _)| *p == path);
+            assert_eq!(
+                found.map(std::ptr::from_ref),
+                reference.map(std::ptr::from_ref),
+                "the interned type-export index disagrees with a scan at {path:?}"
+            );
+        }
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = (prefix, head);
+        found
+    }
+
     /// Whether the in-file type that entered the slot at `type_pos` is the
     /// latest type named `head` in scope, of any slot class and from any
     /// source: an enclosing container's, an earlier block's (position 0,
@@ -6862,10 +6940,11 @@ impl<'a> Resolver<'a> {
     /// namespace's, or the enclosing namespace's (position 0). A later one
     /// takes a type-qualified path from it.
     fn lexical_type_is_latest(&self, head: &str, type_pos: u32) -> bool {
+        let names = self.assemblies.names();
+        let head_name = names.lookup(head);
         let lexical = (0..=self.container_path.len()).flat_map(|k| {
             self.type_slot_history
-                .get(&self.container_path.prefix_id(k))
-                .and_then(|m| m.get(head))
+                .get(self.container_path.prefix_id(k), head_name, head)
                 .into_iter()
                 .flatten()
                 .filter_map(move |&(pos, _)| {
@@ -6876,30 +6955,51 @@ impl<'a> Resolver<'a> {
                 })
         });
         let opened = self
+            .scope
             .explicit_open_prefixes
             .iter()
-            .chain(&self.module_open_prefixes)
-            .filter(|(_, prefix)| {
-                let mut path = prefix.clone();
-                path.push(head.to_string());
-                self.type_path_exports.iter().any(|(p, _, _)| *p == path)
-                    || self.preceding.exported_type_slot(&path).is_some()
+            .chain(&self.scope.module_open_prefixes)
+            .filter(|open| {
+                let path_id = head_name.and_then(|n| names.child(open.id, n));
+                self.latest_type_path_export(path_id, &open.path, head)
+                    .is_some()
                     || self
-                        .container_path
-                        .get_at(&self.type_defs, prefix)
+                        .preceding
+                        .exported_type_by_id(names, path_id, || child_text(&open.path, head))
+                        .is_some()
+                    || self
+                        .type_defs
+                        .get(&open.id)
                         .is_some_and(|m| m.contains_key(head))
             })
-            .map(|(pos, _)| *pos);
+            .map(|open| open.pos);
         let assembly = self
+            .scope
             .assembly_open_prefixes
             .iter()
-            .filter(|(_, prefix)| !self.assemblies.public_types_named(prefix, head).is_empty())
-            .map(|(pos, _)| *pos);
+            .filter(|open| {
+                !self
+                    .assemblies
+                    .public_types_named_at(
+                        PathKey::new(Some(open.id), &open.path),
+                        NameKey::new(head_name, head),
+                    )
+                    .is_empty()
+            })
+            .map(|open| open.pos);
         let enclosing = {
             let ns = self.enclosing_namespace();
-            let mut path = ns.to_vec();
-            path.push(head.to_string());
-            (!ns.is_empty() && self.preceding.exported_type_slot(&path).is_some()).then_some(0)
+            let ns_id = self.container_path.prefix_id(ns.len());
+            (!ns.is_empty()
+                && self
+                    .preceding
+                    .exported_type_by_id(
+                        names,
+                        head_name.and_then(|n| names.child(ns_id, n)),
+                        || child_text(ns, head),
+                    )
+                    .is_some())
+            .then_some(0)
         };
         lexical
             .chain(opened)
@@ -6987,7 +7087,8 @@ impl<'a> Resolver<'a> {
             .filter(|&k| written(k))
             .any(|k| !self.enclosing_module_like_transparent_for(k, head, residual));
         let contested = contests_written
-            || self.explicit_open_prefixes.iter().any(|(_, prefix)| {
+            || self.scope.explicit_open_prefixes.iter().any(|open| {
+                let prefix = &open.path;
                 if self.module_like_transparent_for(prefix, head, residual) {
                     return false;
                 }
@@ -7094,14 +7195,14 @@ impl<'a> Resolver<'a> {
     /// shared lookup (and hence never a qualified head).
     ///
     /// **Opened** entries ([`ScopeEntry::from_open`]) are skipped while an
-    /// [`opaque_value_open`](Self::opaque_value_open) is in scope: that open could
+    /// [`opaque_value_open`](crate::resolve::open_scope::OpenOpacityState::value) is in scope: that open could
     /// shadow the opened name with a value we cannot enumerate, so the modelled
     /// opened resolution might be wrong — declining (and falling through to an
     /// earlier non-opened binding, or `Deferred`) is sound. An opened entry is
     /// also skipped once its [`generation`](ScopeEntry::generation) is *stale* —
     /// a later `open M` with unmodelled value-namespace members (union cases /
     /// exception constructors / active patterns we cannot enumerate) bumped
-    /// [`open_generation`](Self::open_generation), conservatively shadowing every
+    /// [`open_generation`](crate::resolve::open_scope::OpenScope::open_generation), conservatively shadowing every
     /// earlier opened name (F#: the latest open wins). With no opaque open in
     /// scope and a current generation, opened statics / module values compete by
     /// source order like any other entry, so the latest in scope wins.
@@ -7127,7 +7228,7 @@ impl<'a> Resolver<'a> {
     /// newest-first, so everything past a stale match is at least as stale.
     pub(super) fn lookup_entry(&self, name: &str) -> Option<&ScopeEntry> {
         self.latest_entry(name)
-            .filter(|e| e.generation == self.open_generation)
+            .filter(|e| e.generation == self.scope.open_generation)
     }
 
     /// The latest in-scope value entry for `name` **regardless of generation
@@ -7140,7 +7241,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// [`Self::latest_entry`], and whether the walk stopped at an **opened**
-    /// entry of the name because an [`opaque_value_open`](Self::opaque_value_open)
+    /// entry of the name because an [`opaque_value_open`](crate::resolve::open_scope::OpenOpacityState::value)
     /// is in scope — the one stop that withdraws a name the walk would
     /// otherwise have found. One walk, so the census
     /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
@@ -7150,7 +7251,7 @@ impl<'a> Resolver<'a> {
                 if entry.pattern_only {
                     continue; // constructor namespace only — not a value here
                 }
-                if entry.from_open && self.opaque_value_open {
+                if entry.from_open && self.scope.opacity.skips_opened_values() {
                     // An opaque open could shadow this opened name, which
                     // itself shadows everything before it: nothing older may
                     // answer in its place.
@@ -7184,7 +7285,7 @@ impl<'a> Resolver<'a> {
         let Some(entry) = entry else {
             return self.unfolded_implicit_surface(name);
         };
-        if entry.generation != self.open_generation {
+        if entry.generation != self.scope.open_generation {
             return Some(DeclineCause::OpenBarrierStaled);
         }
         entry.decline
@@ -7202,11 +7303,11 @@ impl<'a> Resolver<'a> {
     /// unaffected: the barrier staled nothing the qualified channels could
     /// mistake, so an enumerated group's own names (its namespace half's types
     /// included) keep resolving. Hidden-name groups (residue) still need the
-    /// blanket [`dotted_opacity`](Self::dotted_opacity) — a name we
+    /// blanket [`dotted_opacity`](crate::resolve::open_scope::OpenOpacityState::dotted) — a name we
     /// cannot list could be a head with no entry to go stale.
     pub(super) fn head_entry_staled(&self, head: &str) -> bool {
         self.latest_entry(head)
-            .is_some_and(|e| e.generation != self.open_generation)
+            .is_some_and(|e| e.generation != self.scope.open_generation)
     }
 
     /// Whether any entry for `name` is in scope, staled or not.
@@ -7241,3 +7342,12 @@ pub(super) fn is_synthesized_name(name: &str) -> bool {
 /// ([`FoldOrder`]): what [`Resolver::value_slot`] orders a value the same
 /// `open` entered against.
 type OrderedTypeOpen<'a> = (&'a [String], FoldOrder);
+
+/// `prefix` extended by `head`: the spelling the interning reference keys a
+/// child path by.
+fn child_text(prefix: &[String], head: &str) -> Vec<String> {
+    let mut path = Vec::with_capacity(prefix.len() + 1);
+    path.extend_from_slice(prefix);
+    path.push(head.to_string());
+    path
+}

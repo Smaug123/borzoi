@@ -1,6 +1,10 @@
 # Reserved-name seeding: what it is actually worth
 
-> **Status:** planned, and deliberately *not* started. The measurement below
+> **Status:** part (a) has landed: the path-derivable names are seeded
+> (`properties::well_known`, `this_file_seeds`), held to `dotnet msbuild` by
+> `fsproj_msbuild_diff.rs`'s `path_derivable_reserved_properties_match_msbuild`.
+> Parts (b) and (c) stand as recommended: not done, and permanently declined.
+> The measurement below
 > prices the work at **+4 call expressions and +30 conditions** on the SDK-chain
 > census, against populations of 398 and 2 758, with a sound ceiling of 54 and
 > 146 on everything reserved-name seeding could ever reach. What follows is the
@@ -126,6 +130,26 @@ has; extending it is mechanical.
 **Sized:** small. One function, four names, and a differential case per name
 against `-getProperty:` from *inside an imported file* as well as the body,
 since that is where the reframing can be wrong.
+
+**Landed.** The four, plus `MSBuildThisFileDirectoryNoRoot`, which the probe
+found path-derivable too: the `NoRoot` directory of the file being walked,
+with a trailing separator. The `MSBuildThisFile*` family comes from one
+function (`this_file_seeds`) for the project and for each import, so the
+rebinding cannot drift between them. The differential reads every name from
+the body and from an import in a subdirectory whose names hold a space and a
+`;`, and checks the family is restored after the import.
+`sdk_chain_decline_attribution.rs` did not move: it measures under its own
+seed tables, not the walker's.
+
+Three things the seeds must do as MSBuild does, each found in review and now
+in the differential: name and extension split as .NET splits them (`.props`
+is `` and `.props`); every path normalised (`sub/../x/Imp.props`, a project
+handed in through `..`); and the `MSBuildThisFile*` values spliced **raw**,
+not escaped like the `MSBuildProject*` seeds, because MSBuild computes them in
+the expander. A file named `a%20b.props` is `a b` to `100 1 57 100MSBuildThisFileName)`,
+and `x;y.props` splits `Include="100 1 57 100MSBuildThisFile)"` in two. The last was
+wrong for `MSBuildThisFile` and `MSBuildThisFileDirectory` before this change
+too.
 
 ### (b) Toolset-derivable — each needs its own probe, and its own reason
 

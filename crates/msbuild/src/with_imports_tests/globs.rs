@@ -27,6 +27,9 @@ use tempfile::TempDir;
 struct CapturedGlob {
     base_dir: PathBuf,
     include: String,
+    /// Each include fragment's classification as the resolver sees it
+    /// ([`SpecFragment::is_wildcard`]), in order.
+    include_wildcards: Vec<bool>,
     excludes: Vec<String>,
 }
 
@@ -44,8 +47,18 @@ fn parse_capturing_glob(
     let resolver = |req: &GlobRequest<'_>| {
         captured.borrow_mut().push(CapturedGlob {
             base_dir: req.base_dir.to_path_buf(),
-            include: req.include.to_string(),
-            excludes: req.excludes.to_vec(),
+            include: req
+                .include
+                .iter()
+                .map(SpecFragment::as_escaped)
+                .collect::<Vec<_>>()
+                .join(";"),
+            include_wildcards: req.include.iter().map(SpecFragment::is_wildcard).collect(),
+            excludes: req
+                .excludes
+                .iter()
+                .map(|e| e.as_escaped().to_string())
+                .collect(),
         });
         Ok(out.clone())
     };
@@ -124,6 +137,7 @@ fn glob_request_carries_base_dir_include_and_excludes() {
         vec![CapturedGlob {
             base_dir: dir,
             include: "*.fs;extra.fs".to_string(),
+            include_wildcards: vec![true, false],
             excludes: vec!["skip.fs".to_string(), "*.g.fs".to_string()],
         }]
     );
@@ -228,6 +242,7 @@ fn literal_minus_exclude_routes_through_resolver() {
         vec![CapturedGlob {
             base_dir: dir,
             include: "a.fs".to_string(),
+            include_wildcards: vec![false],
             excludes: vec!["a.fs".to_string()],
         }]
     );
@@ -428,7 +443,17 @@ fn unpinned_exclude_value_marks_the_reference_list_uncertain() {
     );
     let out = vec![dir.join("C/C.fsproj")];
     let (result, requests) = parse_file_capturing_glob(&project_path, out);
-    assert_eq!(requests.len(), 1, "the Exclude routes through the resolver");
+    // The project never writes `TargetFramework`, so the walk that trusted the
+    // read is discarded for one under the carve-out (see `walk_with_imports`),
+    // and each walk asks the resolver once — the same question.
+    assert!(
+        !requests.is_empty(),
+        "the Exclude routes through the resolver"
+    );
+    assert!(
+        requests.iter().all(|r| *r == requests[0]),
+        "every walk asks the same question: {requests:?}"
+    );
     assert!(
         result.project_references_uncertain,
         "an Exclude expanded from an unpinned property may go the other \
@@ -468,10 +493,23 @@ enum IncludeFrag {
 }
 
 impl IncludeFrag {
+    /// The fragment's escaped spelling. The index picks a spelling as well as
+    /// a name, so the seam sees escaped delimiters and wildcards: an escaped
+    /// `%3b` that must not split, an escaped `%2a` that must not glob, and a
+    /// live star beside an escaped one, which MSBuild takes literally whole.
     fn text(&self) -> String {
         match self {
-            IncludeFrag::Literal(i) => format!("lit{i}.fs"),
-            IncludeFrag::Glob(i) => format!("g{i}*.fs"),
+            IncludeFrag::Literal(i) => match i % 4 {
+                0 => format!("lit{i}.fs"),
+                1 => format!("lit%3b{i}.fs"),
+                2 => format!("lit%2a{i}.fs"),
+                _ => format!("lit%2a{i}*.fs"),
+            },
+            IncludeFrag::Glob(i) => match i % 3 {
+                0 => format!("g{i}*.fs"),
+                1 => format!("g%3b{i}*.fs"),
+                _ => format!("g%20{i}?.fs"),
+            },
             IncludeFrag::ItemRef(i) => format!("@(Ref{i})"),
             IncludeFrag::MetaRef(i) => format!("%(Meta{i}.x)"),
         }
@@ -536,6 +574,8 @@ fn glob_case_strategy() -> impl Strategy<Value = GlobCase> {
         prop_oneof![
             (0u8..4).prop_map(|i| format!("ex{i}.fs")),
             (0u8..4).prop_map(|i| format!("e{i}*.fs")),
+            (0u8..4).prop_map(|i| format!("ex%3b{i}.fs")),
+            (0u8..4).prop_map(|i| format!("e%2a{i}.fs")),
         ],
         0..3,
     );
@@ -592,8 +632,11 @@ proptest! {
 
     /// For any item that routes (always >=1 glob), the evaluator:
     ///   - consults the resolver exactly once;
-    ///   - hands it the surviving (ref-stripped) include spec and the
-    ///     split exclude list, against the project directory;
+    ///   - hands it the surviving (ref-stripped) include fragments and the
+    ///     split exclude list, against the project directory — the same
+    ///     fragments, still escaped, each classified glob-or-literal as
+    ///     MSBuild classifies it (an escaped `%3b` splits nothing and an
+    ///     escaped `%2a` globs nothing, across the seam as before it);
     ///   - splices the resolver's output verbatim (order, paths) into
     ///     the correct bucket, each item carrying the element's kind,
     ///     link and span — adding, dropping, reordering nothing;
@@ -613,6 +656,13 @@ proptest! {
             .collect::<Vec<_>>()
             .join(";");
         prop_assert_eq!(&req.include, &expected_include);
+        let expected_wildcards: Vec<bool> = case
+            .include_frags
+            .iter()
+            .filter(|f| f.is_survivor())
+            .map(IncludeFrag::is_glob)
+            .collect();
+        prop_assert_eq!(&req.include_wildcards, &expected_wildcards);
         prop_assert_eq!(&req.excludes, &case.exclude_frags);
         prop_assert_eq!(&req.base_dir, &canon(tmp.path()));
 

@@ -736,6 +736,13 @@ fn message(kind: &DiagnosticKind, discovery_failure: Option<&DiscoveryError>) ->
         DiagnosticKind::UnsupportedItemOperation { operation } => {
             format!("item operation not supported: {operation}")
         }
+        DiagnosticKind::StrandedUpdatePrefix { update, fragment } => {
+            format!(
+                "Update=\"{update}\" stops MSBuild batching at `{fragment}`, which re-applies \
+                 the fragments before it to later Includes (an MSBuild bug) — compile order \
+                 not claimed"
+            )
+        }
         DiagnosticKind::SdkNotFound { name } => {
             format!(
                 "SDK '{name}' not found — check $DOTNET_ROOT and ~/.nuget/packages, \

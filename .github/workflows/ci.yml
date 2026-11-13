@@ -358,6 +358,17 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             recovery_sweep:: -- --ignored --nocapture
 
+      - name: Hold the syntax table to rowan over the corpus
+        if: steps.gate.outputs.run == 'true'
+        # `SyntaxNode` is a flat preorder table behind rowan's red-tree API
+        # (docs/flat-syntax-tree-plan.md). The ordinary suite holds every
+        # method to rowan's exhaustively over short generated sources; this
+        # holds every corpus file's elements to rowan's on the same green
+        # tree, so a navigation bug that needs real code's shapes cannot land.
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            flat_tree_reference::corpus -- --ignored --nocapture
+
       - name: Sweep the parser for panics on adversarial input
         if: steps.gate.outputs.run == 'true'
         # The corpus above is the F# compiler's own sources: well-formed by
@@ -379,8 +390,13 @@ jobs:
         # panics on that in a debug build). The soup above reaches that state
         # only by chance; this puts every production in the corpus in front of
         # it.
+        #
+        # It is a quarter of a million whole-file parses, all CPU in our own
+        # crate, which the dev profile leaves unoptimised: the `gate` profile
+        # parses about nine times faster and keeps the debug assertions the
+        # sweep exists to trip, which pays for compiling the test binary again.
         run: |
-          nix develop --command cargo test -p borzoi-cst --test all \
+          nix develop --command cargo test --profile gate -p borzoi-cst --test all \
             layout_perturbation_sweep:: -- --ignored --nocapture
 
       - name: Report the slowest tests

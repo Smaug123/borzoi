@@ -589,9 +589,9 @@ impl Resolver<'_> {
     /// names its own cause.
     pub(super) fn push_contribution(&mut self, contribution: &Contribution, pos: u32) {
         if contribution.unlisted {
-            self.open_generation += 1;
+            self.scope.open_generation += 1;
         }
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         let marks: Vec<ScopeEntry> = contribution
             .values
             .iter()
@@ -714,7 +714,7 @@ impl Resolver<'_> {
             Some(path) => {
                 self.open_project_namespace_values(&path, end);
                 self.module_open_contributions(&path, end);
-                let generation = self.open_generation;
+                let generation = self.scope.open_generation;
                 let marks: Vec<ScopeEntry> = active_pattern_cases(nm.decls())
                     .into_iter()
                     .map(|name| {

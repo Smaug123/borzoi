@@ -639,6 +639,9 @@ fn msbuild_diagnostic_message(kind: &DiagnosticKind) -> String {
         DiagnosticKind::UnsupportedItemOperation { operation } => {
             format!("item operation not supported: {operation}")
         }
+        DiagnosticKind::StrandedUpdatePrefix { update, fragment } => {
+            format!("Update=\"{update}\" strands the fragments before `{fragment}`")
+        }
         DiagnosticKind::SdkNotFound { name } => {
             format!("SDK '{name}' not found")
         }

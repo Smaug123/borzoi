@@ -199,7 +199,7 @@ fn parse_condition(source: &str) -> Result<Option<BoolExpr>, ()> {
         return Err(());
     }
     // NB: escape-bearing conditions are **modelled**, not degraded (stage E2 of
-    // `docs/msbuild-escaped-value-plan.md`). MSBuild unescapes `%XX` at the
+    // `docs/completed/msbuild-escaped-value-plan.md`). MSBuild unescapes `%XX` at the
     // operand leaf, so `'%74rue' == 'true'` is *true* — and `expand_for_condition`
     // decodes each operand there, exactly once, having scanned it escaped.
     //
@@ -1957,7 +1957,7 @@ mod tests {
     fn escapes_are_decoded_at_the_operand_not_degraded() {
         // MSBuild unescapes `%XX` at the operand leaf, so an escape-bearing
         // *quoted* operand compares as the text it decodes to. Stage E2 of
-        // `docs/msbuild-escaped-value-plan.md`: this used to degrade the whole
+        // `docs/completed/msbuild-escaped-value-plan.md`: this used to degrade the whole
         // condition, which was fail-safe but cost real gates. All pinned against
         // `dotnet msbuild` 10.0.301 (2026-07-12).
         assert_eq!(
