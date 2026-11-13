@@ -5801,7 +5801,15 @@ mod tests {
         fn world(root: &Path, on_path: bool) -> (PathBuf, SdkDiscoveryEnv) {
             let dotnet = root.join("dotnet");
             install_sdk(&dotnet, "10.0.100", "SDK_ONE");
-            write_file(&dotnet.join("dotnet"), "");
+            // The launcher `$PATH` discovery looks for.
+            write_file(
+                &dotnet.join(if cfg!(windows) {
+                    "dotnet.exe"
+                } else {
+                    "dotnet"
+                }),
+                "",
+            );
             write_file(
                 &root.join("repo/Directory.Build.props"),
                 "<Project><PropertyGroup><DefineConstants>$(DefineConstants);DBP</DefineConstants></PropertyGroup></Project>",
@@ -6018,8 +6026,15 @@ mod tests {
             let now = Nanos::of(std::time::SystemTime::now());
             assert_eq!(checks_at(now).len(), 2);
             // Committed long before: the reads inside are trusted, and the
-            // version's existence is what is confirmed.
-            assert_eq!(checks_at(Nanos(i128::MAX / 2)), vec![version.clone()]);
+            // version's existence is what is confirmed. A host whose stamps
+            // carry no change time can never show the marker settled
+            // (`crate::vfs::Stamp::is_racy`), so there the reads stay.
+            let expected = if cfg!(unix) {
+                vec![version.clone()]
+            } else {
+                inside(&evaluation.checks(|_| false))
+            };
+            assert_eq!(checks_at(Nanos(i128::MAX / 2)), expected);
         }
 
         /// The served pass of `evaluated`, or for a failed evaluation the

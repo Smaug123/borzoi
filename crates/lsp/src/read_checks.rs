@@ -526,11 +526,12 @@ mod host_tests {
             let holds = checker.holds(&check);
             checker.end_generation();
             std::fs::set_permissions(&gate, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert_ne!(
-                truth,
-                check.read().observation,
-                "{spelling}: the permission did not matter"
-            );
+            if truth == check.read().observation {
+                // The tests run with the permission to search any directory
+                // (as root, say), so the change moved nothing to notice.
+                eprintln!("{spelling}: search permission is not enforced here; skipped");
+                continue;
+            }
             assert!(!holds, "{spelling} (through a link: {through_link}) held");
         }
     }
