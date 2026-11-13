@@ -204,6 +204,11 @@ pub fn well_known(project_path: &Path) -> PropertyMap {
 /// filesystem root, and the name and extension split as .NET splits them
 /// ([`split_file_name`]).
 pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
+    // MSBuild names an imported file by its full path, `.` and `..` resolved
+    // (`Import Project="sub/../x/Imp.props"` is `…/x/Imp.props`), lexically:
+    // a symlinked directory is not resolved.
+    let normalised = lexically_normalised(path);
+    let path = normalised.as_path();
     let parent = path.parent();
     let (name, extension) = split_file_name(path);
     [
@@ -232,6 +237,28 @@ pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
         ("MSBuildThisFileName", name),
         ("MSBuildThisFileExtension", extension),
     ]
+}
+
+/// `path` with `.` segments dropped and `..` segments resolved against what
+/// precedes them (at the root a `..` stays at the root), without touching the
+/// filesystem, as `Path.GetFullPath` resolves them.
+fn lexically_normalised(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// A file's name and extension as .NET's `Path.GetFileNameWithoutExtension`
