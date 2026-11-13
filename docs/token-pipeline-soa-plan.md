@@ -2,7 +2,8 @@
 
 > **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
 > table), Stage 2 (the frozen filter reference), Stage 3 (the filtered
-> token table) and Stage 4 (the filter reads the raw table by index)
+> token table), Stage 4 (the filter reads the raw table by index),
+> Stage 5 (the newline table) and Stage 6 (the lexer writes the raw table)
 > implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
@@ -403,6 +404,50 @@ FS0058 messages say, so the stream and diagnostics comparison covers them),
 plus a direct property: the table equals the naive scan, on every generated
 input.
 
+**Result.** The table is `tokens::LineStarts`, one `u32` per line: line 1
+starts past a file-start BOM, every other line one byte past a `\n`. It is
+built by one scan that compares 32-byte chunks at a time and pushes a start
+per set bit. `filter_collect` and `context_pushes` build it and hand the
+filter a `tokens::LineCursor` over it, which moves only forward (it asserts
+so, and that the offset is in the source), so a token boundary costs one step
+per line crossed; `Filter::byte_offset` and `Filter::utf16_col` index the
+table by line, and the sparse `(line, start)` list and its binary search go.
+The filter's `Pos` is the table's `LinePos`.
+
+`tests/all/line_table_reference.rs` holds the cursor to a rescan of the bytes
+before each offset: at every offset in turn, from every offset straight to the
+end, and at every token boundary of the full-trivia table under symbol sets
+that make the `#if` arms active and inactive. Its sources are the lexical pairs
+plus `NEWLINE_SHAPES` (a `\n`, `\r\n` and lone `\r` inside a block comment,
+each string form and an inactive region, with multi-byte characters beside
+them), every placement of one and two breaks in sources up to 257 bytes (so
+the chunked scan sees a break at every offset of a chunk and in its tail),
+and random character strings and piece walks. `NEWLINE_SHAPES` also joins
+`filter_reference`'s pieces, and the filter's own position test
+(`lexfilter/position_tests.rs`) now runs over the full-trivia table with
+inactive regions, a lone `\r`, multi-byte characters and a BOM, and checks
+`byte_offset` and `utf16_col` at every token start.
+
+Five planted bugs in the table or its cursor each fail the rescan property,
+the filter's position test and `filter_reference`: counting a lone `\r` as a
+break, leaving the cursor on the line before a line start, ignoring the BOM,
+and dropping a `\n` in the scan's chunked part or in its tail. A sixth, reading
+`byte_offset`'s line start one line early, leaves the table alone, and fails
+the position test and `filter_reference` (through the FS0058 columns).
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine:
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 83.0 | 83.6 | 4.06 | 4.06 |
+| lex-filter | 196.8 | 189.8 | 6.26 | 5.76 |
+| parse | 535.7 | 529.3 | 52.95 | 52.45 |
+
+The filter costs 7.0 instructions per byte fewer (4%), and the parse 6.4.
+The lexer is unchanged; its 0.6 is noise. A plain byte loop for the scan
+saved only 1.1: the old rescan counted `\n`s with a vectorised filter, so
+most of the gain is the chunked scan.
+
 ### Stage 6: the lexer writes the raw table
 
 **Dependencies**: Stage 1 (parallel to 2–5). **Implements**: D1's "one pass".
@@ -413,6 +458,39 @@ entry per token. The iterator drivers stay for the LSP and as the reference.
 
 **Oracle**: the directly written table equals the one Stage 1 builds from the
 iterator, over the generated inputs and, in lockstep, every parse.
+
+**Result.** The preprocessor's state machine (`DriverCore`) no longer owns a
+queue: each `DriverCore::step` writes what it produces (no item, one, or
+several) into a `Sink`. The iterators (`Queued`, behind both `Driver` and
+`FullTriviaDriver`) drain a `VecDeque` sink, and `tokens::lex_full_trivia`
+hands the state machine a `TableWriter`, which turns each item into a kind
+and a start as it is produced. Monomorphised over the writer, a token's
+`TriviaToken` and `Result` wrappers are built and taken apart in place
+rather than queued. `apply_directive` returns the error it reports instead
+of pushing it onto a queue, so the test-only reference walkers need no sink.
+logos still produces a `Token`, whose kind the writer takes.
+
+Under `token-reference`, `lex_full_trivia` also runs the iterator and asserts
+that the table rebuilds its stream exactly, with the same preprocessor errors
+and `#elif` spans, so every parse checks the new pass against the iterator.
+`token_table_reference` makes the same comparison over the generated inputs.
+Two planted bugs in the direct path fail it: dropping the `#elif` spans, and
+dropping the unclosed-`#if` errors in the writer. Both also fail
+`filter_reference` through the parse's lockstep assertion. A bug in the
+shared state machine moves both sides alike, so this oracle cannot see it.
+The driver's own tests still can: dropping the `DoubleElse` error fails
+`double_else_is_reported`.
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine:
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 83.6 | 78.2 | 4.06 | 4.05 |
+| lex-filter | 189.8 | 189.8 | 5.76 | 5.76 |
+| parse | 529.3 | 523.7 | 52.45 | 52.44 |
+
+Lexing costs 6% fewer instructions. Most of what remains is logos and the
+interpolated-string driver around it, which this stage leaves alone.
 
 ### Stage 7: measure, then fold the diagnostic scans
 

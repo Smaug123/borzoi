@@ -8,7 +8,7 @@ use borzoi_assembly::{EntityKind, UnionCases};
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
 use crate::hash::{HashMap, HashSet};
-use crate::names::PathId;
+use crate::names::{NameKey, PathId, PathKey, Segments};
 
 use super::contributors::Contribution;
 use super::id_text;
@@ -16,7 +16,7 @@ use super::model::{
     CaseKind, DeclOrder, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId,
     MemberDeclarations, OpenOpacity, OpenTrace, QualifiedMember, Resolution, SlotClass, TypeSlot,
 };
-use super::open_scope::OpacityLevels;
+use super::open_scope::{OpacityLevels, PrefixRef};
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
     RecordedFold, Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix,
@@ -572,12 +572,13 @@ impl<'a> Resolver<'a> {
     /// declines it. That is availability only; the other direction would be a
     /// wrong target.
     pub(super) fn assembly_case_slot_contested(&self, name: &str) -> bool {
+        let name_key = NameKey::of(self.assemblies.names(), name);
         self.open_reading_prefixes()
             .map(|(_, prefix)| prefix)
-            .chain(std::iter::once(self.enclosing_namespace()))
+            .chain(std::iter::once(self.enclosing_namespace_prefix()))
             .any(|prefix| {
                 self.assemblies
-                    .namespace_could_supply_slot_type(prefix, name)
+                    .namespace_could_supply_slot_type(prefix.key(), name_key)
             })
             || self
                 .assemblies
@@ -1320,6 +1321,20 @@ impl<'a> Resolver<'a> {
     /// re-introducing).
     pub(super) fn enclosing_namespace(&self) -> &[String] {
         &self.container_path[..self.namespace_depth.min(self.container_path.len())]
+    }
+
+    /// The empty prefix, as a query key.
+    pub(super) fn root_prefix(&self) -> PathKey<'static> {
+        PathKey::new(Some(self.assemblies.names().root()), &[])
+    }
+
+    /// [`Self::enclosing_namespace`] with its id.
+    pub(super) fn enclosing_namespace_prefix(&self) -> PrefixRef<'_> {
+        let depth = self.namespace_depth.min(self.container_path.len());
+        PrefixRef {
+            id: self.container_path.prefix_id(depth),
+            path: &self.container_path[..depth],
+        }
     }
 
     /// Bring this block's own enclosing namespace into scope, with no `open`
@@ -4005,13 +4020,18 @@ impl<'a> Resolver<'a> {
             // the head — the segment a reading contests. Diagnostic only; it
             // never feeds back into `resolved`.
             let mut declined_at: Option<DeclineSite> = None;
+            // The segments' names, looked up once for every reading below.
+            let source = Segments::new(
+                self.assemblies.names(),
+                segments.iter().map(|t| id_text(t).to_string()).collect(),
+            );
             let resolved = if value_evicted {
                 // The assembly tiers are type-side too — the evicting type
                 // shadows them the same way (see the M20t/M20u note above).
                 declined_at = Some(DeclineSite::pre_walk(DeclineCause::ValueEvicted));
                 None
             } else if self.scope.opacity.qualified_paths_unmodelled() {
-                match self.assembly_path_records(&[], segments) {
+                match self.assembly_path_records(self.root_prefix(), segments, &source) {
                     AssemblyPath::Resolved {
                         payload: root_recs, ..
                     } => {
@@ -4022,8 +4042,11 @@ impl<'a> Resolver<'a> {
                         let higher_reading_differs =
                             self.assembly_prefixes_by_priority()
                                 .find_map(|(tier, prefix)| {
-                                    let differs = match self.assembly_path_records(prefix, segments)
-                                    {
+                                    let differs = match self.assembly_path_records(
+                                        prefix.key(),
+                                        segments,
+                                        &source,
+                                    ) {
                                         AssemblyPath::Resolved { payload, .. } => {
                                             payload != root_recs
                                         }
@@ -4075,7 +4098,7 @@ impl<'a> Resolver<'a> {
                 // clean no-match) fall through identically here — the tail of
                 // this function records the deferral.
                 match self.resolve_assembly_path_tiered(
-                    |prefix| self.assembly_path_records(prefix, segments),
+                    |prefix| self.assembly_path_records(prefix, segments, &source),
                     true,
                     |_| ShadowVeto::None,
                 ) {
@@ -4425,6 +4448,7 @@ impl<'a> Resolver<'a> {
         screened(written)
             || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                 let full: Vec<String> = prefix
+                    .path
                     .iter()
                     .cloned()
                     .chain(written.iter().cloned())
@@ -5755,14 +5779,15 @@ impl<'a> Resolver<'a> {
     /// no evidence about *this* name at all. All of these stay documented
     /// completeness gaps, the same status the type path gives them.
     fn assembly_case_head_contends_at_an_open(&self, type_name: &str) -> bool {
+        let type_key = NameKey::of(self.assemblies.names(), type_name);
         self.explicit_open_reading_prefixes().any(|(_, prefix)| {
             !self
                 .assemblies
-                .public_entities_named(prefix, type_name)
+                .public_entities_named_at(prefix.key(), type_key)
                 .is_empty()
                 || self
                     .assemblies
-                    .auto_open_modules_in_namespace_shadow_type_named(prefix, type_name)
+                    .auto_open_modules_in_namespace_shadow_type_named(prefix.path, type_name)
         })
     }
 
@@ -5888,26 +5913,32 @@ impl<'a> Resolver<'a> {
                 .retained_auto_open_could_supply_entity_named(head)
             || self.explicit_open_reading_prefixes().any(|(_, prefix)| {
                 self.assemblies
-                    .unknowable_abbreviations_in_namespace(prefix)
+                    .unknowable_abbreviations_in_namespace(prefix.path)
             })
             || self
                 .open_reading_prefixes()
                 .map(|(_, prefix)| prefix)
-                .chain((0..=self.container_path.len()).map(|k| &self.container_path[..k]))
+                .chain((0..=self.container_path.len()).map(|k| PrefixRef {
+                    id: self.container_path.prefix_id(k),
+                    path: &self.container_path[..k],
+                }))
                 .any(|prefix| {
-                    let mut below = prefix.to_vec();
+                    let mut below = prefix.path.to_vec();
                     below.push(head.to_string());
                     self.assemblies.has_namespace(&below)
                         || !self
                             .assemblies
-                            .public_entities_named(prefix, head)
+                            .public_entities_named_at(
+                                prefix.key(),
+                                NameKey::of(self.assemblies.names(), head),
+                            )
                             .is_empty()
                         || self
                             .assemblies
-                            .auto_open_modules_in_namespace_shadow_type_named(prefix, head)
+                            .auto_open_modules_in_namespace_shadow_type_named(prefix.path, head)
                         || self
                             .assemblies
-                            .namespace_value_surface(prefix)
+                            .namespace_value_surface(prefix.path)
                             .could_supply(head)
                 });
         !this_file_names_it && !earlier_files_name_it_otherwise && !assemblies_may_name_it
@@ -6018,10 +6049,11 @@ impl<'a> Resolver<'a> {
                 Some(DeclineSite::pre_walk(DeclineCause::DroppedTypeCouldRoot)),
             );
         }
-        let leaf = |prefix: &[String]| {
-            self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
+        let type_key = NameKey::of(self.assemblies.names(), type_name);
+        let leaf = |prefix: PathKey<'_>| {
+            self.assembly_case_pattern_records(prefix, type_key, case_name, type_seg, case_seg)
         };
-        let shadow_at = |prefix: &[String]| self.type_position_shadow_at(prefix, &head_path);
+        let shadow_at = |prefix: PrefixRef<'_>| self.type_position_shadow_at(prefix, &head_path);
 
         // A **retained manifest auto-open** surface is invisible to the prefix
         // walk and out-ranks the ROOT tier, so when it could supply the head,
@@ -6671,9 +6703,11 @@ impl<'a> Resolver<'a> {
         // head then defers — the assembly branch of the qualified block is
         // barred for it (the M20t/M20u rule), converting a wrong-target into a
         // sound defer.
-        for (pos, prefix) in &self.scope.assembly_open_prefixes {
-            for (kind, is_struct) in self.assemblies.public_types_named(prefix, head) {
-                note(*pos, assembly_slot_class(kind, is_struct));
+        let head_key = NameKey::new(head_name, head);
+        for open in &self.scope.assembly_open_prefixes {
+            let prefix = PathKey::new(Some(open.id), &open.path);
+            for (kind, is_struct) in self.assemblies.public_types_named_at(prefix, head_key) {
+                note(open.pos, assembly_slot_class(kind, is_struct));
             }
         }
         // The value's slot position. An OPENED value sits at its `open`'s
@@ -6943,8 +6977,16 @@ impl<'a> Resolver<'a> {
             .scope
             .assembly_open_prefixes
             .iter()
-            .filter(|(_, prefix)| !self.assemblies.public_types_named(prefix, head).is_empty())
-            .map(|(pos, _)| *pos);
+            .filter(|open| {
+                !self
+                    .assemblies
+                    .public_types_named_at(
+                        PathKey::new(Some(open.id), &open.path),
+                        NameKey::new(head_name, head),
+                    )
+                    .is_empty()
+            })
+            .map(|open| open.pos);
         let enclosing = {
             let ns = self.enclosing_namespace();
             let ns_id = self.container_path.prefix_id(ns.len());

@@ -6,9 +6,10 @@ use borzoi_cst::syntax::TextRange;
 
 use crate::assembly_env::{AheadOfType, EntityHandle, StaticLookup};
 
-use super::id_text;
 use super::model::{DeclineCause, DeclineSite, DeclineTier, DeferredReason, Resolution};
+use super::open_scope::PrefixRef;
 use super::state::{AssemblyPath, Resolver, ShadowVeto, TieredResolution, TypePathReading};
+use crate::names::{NameKey, PathKey, Segments};
 
 /// One candidate that **owns** a path at one rooting position — the unit
 /// [`Resolver::unopposed_owner`] decides between.
@@ -54,13 +55,18 @@ impl<'a> Resolver<'a> {
     /// ([`Self::rooting_candidates`], [`Self::rooting_reading`]).
     pub(super) fn assembly_path_records(
         &self,
-        prefix: &[String],
+        prefix: PathKey<'_>,
         segments: &[SyntaxToken],
+        source: &Segments,
     ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
-        let base = prefix.len();
-        let mut names: Vec<String> = prefix.to_vec();
-        names.extend(segments.iter().map(|t| id_text(t).to_string()));
+        debug_assert_eq!(segments.len(), source.texts.len());
+        let base = prefix.text.len();
+        let mut names: Vec<String> = prefix.text.to_vec();
+        names.extend(source.texts.iter().cloned());
         let n = names.len();
+        // The ids of `names[..k]` for each source position `k`, offset by
+        // `base`: a namespace the env's table never interned holds no type.
+        let ids = self.assemblies.names().extend_ids(prefix.id, &source.names);
 
         // Decline a path F# resolves within the project (see
         // [`Self::project_shadow_cause`]), searched before referenced
@@ -127,7 +133,10 @@ impl<'a> Resolver<'a> {
         let mut owners: Vec<PositionOwner> = Vec::new();
         let mut any_rooting = false;
         for k in (base..n).rev() {
-            let candidates = self.rooting_candidates(&names[..k], &names[k]);
+            let candidates = self.rooting_candidates(
+                PathKey::new(ids[k - base], &names[..k]),
+                NameKey::new(source.names[k - base], &names[k]),
+            );
             if candidates.is_empty() {
                 continue;
             }
@@ -322,8 +331,8 @@ impl<'a> Resolver<'a> {
     ///   rather than requiring them (`FS1125`), so a generic type is reachable
     ///   here at all — which is why the arity-keyed first-wins slot this
     ///   replaced could not see `MethodBody<'a>` under a bare `MethodBody`.
-    fn rooting_candidates(&self, namespace: &[String], name: &str) -> Vec<EntityHandle> {
-        let mut candidates = self.assemblies.public_entities_named(namespace, name);
+    fn rooting_candidates(&self, namespace: PathKey<'_>, name: NameKey<'_>) -> Vec<EntityHandle> {
+        let mut candidates = self.assemblies.public_entities_named_at(namespace, name);
         candidates.sort_by_key(|&h| {
             (
                 !self.assemblies.is_authoritative_module(h),
@@ -926,13 +935,13 @@ impl<'a> Resolver<'a> {
     /// and never a wrong target.
     pub(super) fn assembly_case_pattern_records(
         &self,
-        prefix: &[String],
-        type_name: &str,
+        prefix: PathKey<'_>,
+        type_name: NameKey<'_>,
         case_name: &str,
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
     ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
-        let here = self.assemblies.public_entities_named(prefix, type_name);
+        let here = self.assemblies.public_entities_named_at(prefix, type_name);
         if here.is_empty() {
             return AssemblyPath::NoMatch;
         }
@@ -994,7 +1003,9 @@ impl<'a> Resolver<'a> {
     /// pushed first, so every index below it is an implicit open — and it is the
     /// same boundary [`Self::explicit_open_reading_prefixes`] cuts at. Tagging
     /// here rather than at the consumers is what keeps the two from drifting.
-    pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = (DeclineTier, &[String])> {
+    pub(super) fn open_reading_prefixes(
+        &self,
+    ) -> impl Iterator<Item = (DeclineTier, PrefixRef<'_>)> {
         let implicit = self.implicit_import_count;
         self.scope
             .imports
@@ -1007,7 +1018,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     DeclineTier::ExplicitOpen
                 };
-                open.readings.iter().map(move |r| (tier, r.as_slice()))
+                open.readings.iter().map(move |r| (tier, r.as_ref()))
             })
     }
 
@@ -1021,14 +1032,14 @@ impl<'a> Resolver<'a> {
     /// the whole stratum.
     pub(super) fn explicit_open_reading_prefixes(
         &self,
-    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
+    ) -> impl Iterator<Item = (DeclineTier, PrefixRef<'_>)> {
         self.scope.imports[self.implicit_import_count..]
             .iter()
             .rev()
             .flat_map(|open| {
                 open.readings
                     .iter()
-                    .map(|r| (DeclineTier::ExplicitOpen, r.as_slice()))
+                    .map(|r| (DeclineTier::ExplicitOpen, r.as_ref()))
             })
     }
 
@@ -1052,10 +1063,10 @@ impl<'a> Resolver<'a> {
     /// enclosing-namespace one.
     pub(super) fn prefixes_outranking_the_manifest_surface(
         &self,
-    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
+    ) -> impl Iterator<Item = (DeclineTier, PrefixRef<'_>)> {
         self.explicit_open_reading_prefixes().chain(
-            Some(self.enclosing_namespace())
-                .filter(|e| !e.is_empty())
+            Some(self.enclosing_namespace_prefix())
+                .filter(|e| !e.path.is_empty())
                 .map(|e| (DeclineTier::EnclosingNamespace, e)),
         )
     }
@@ -1072,15 +1083,18 @@ impl<'a> Resolver<'a> {
     /// same sequence — a tier added here must be visible to that guard too.
     pub(super) fn assembly_prefixes_by_priority(
         &self,
-    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
-        const ROOT: &[String] = &[];
+    ) -> impl Iterator<Item = (DeclineTier, PrefixRef<'_>)> {
+        let root = PrefixRef {
+            id: self.assemblies.names().root(),
+            path: &[],
+        };
         self.open_reading_prefixes()
             .chain(
-                Some(self.enclosing_namespace())
-                    .filter(|e| !e.is_empty())
+                Some(self.enclosing_namespace_prefix())
+                    .filter(|e| !e.path.is_empty())
                     .map(|e| (DeclineTier::EnclosingNamespace, e)),
             )
-            .chain(std::iter::once((DeclineTier::Root, ROOT)))
+            .chain(std::iter::once((DeclineTier::Root, root)))
     }
 
     /// Walk F#'s referenced-assembly name-lookup precedence — every reading in
@@ -1153,9 +1167,9 @@ impl<'a> Resolver<'a> {
     /// again.
     pub(super) fn resolve_assembly_path_tiered<R>(
         &self,
-        records: impl Fn(&[String]) -> AssemblyPath<R>,
+        records: impl Fn(PathKey<'_>) -> AssemblyPath<R>,
         as_written_vetoes_opens: bool,
-        shadow_at: impl Fn(&[String]) -> ShadowVeto,
+        shadow_at: impl Fn(PrefixRef<'_>) -> ShadowVeto,
     ) -> TieredResolution<R> {
         self.resolve_assembly_path_over(
             self.assembly_prefixes_by_priority(),
@@ -1176,16 +1190,17 @@ impl<'a> Resolver<'a> {
     /// tier ordering the verdicts assume does not hold.
     pub(super) fn resolve_assembly_path_over<'p, R>(
         &self,
-        prefixes: impl Iterator<Item = (DeclineTier, &'p [String])>,
-        records: impl Fn(&[String]) -> AssemblyPath<R>,
+        prefixes: impl Iterator<Item = (DeclineTier, PrefixRef<'p>)>,
+        records: impl Fn(PathKey<'_>) -> AssemblyPath<R>,
         as_written_vetoes_opens: bool,
-        shadow_at: impl Fn(&[String]) -> ShadowVeto,
+        shadow_at: impl Fn(PrefixRef<'_>) -> ShadowVeto,
     ) -> TieredResolution<R> {
         // The veto's root reading is held and consumed when the walk reaches the
         // ROOT tier (the final, empty prefix), instead of recomputing it —
         // `records` is pure, and the root reading is the common case's most
         // expensive one to duplicate.
-        let mut root = as_written_vetoes_opens.then(|| records(&[]));
+        let root_key = PathKey::new(Some(self.assemblies.names().root()), &[]);
+        let mut root = as_written_vetoes_opens.then(|| records(root_key));
         if let Some(AssemblyPath::Occupied(cause)) = root {
             return TieredResolution::ShadowDeferred(DeclineSite {
                 cause,
@@ -1216,10 +1231,10 @@ impl<'a> Resolver<'a> {
                 // Only the ROOT tier has an empty prefix (a reading/namespace
                 // prefix is never empty), so the held value is consumed exactly
                 // there.
-                Some(r) if prefix.is_empty() => r,
+                Some(r) if prefix.path.is_empty() => r,
                 other => {
                     root = other;
-                    records(prefix)
+                    records(prefix.key())
                 }
             };
             // Read before the match consumes the reading; `None` for the two
@@ -1278,14 +1293,20 @@ impl<'a> Resolver<'a> {
     /// stays sound (it never records a wrong entity, only declines).
     pub(super) fn assembly_type_path_core(
         &self,
-        prefix: &[String],
-        segments: &[String],
+        prefix: PathKey<'_>,
+        source: &Segments,
         arity: usize,
     ) -> AssemblyPath<TypePathReading> {
-        let base = prefix.len();
-        let mut names: Vec<String> = prefix.to_vec();
+        let segments = &source.texts;
+        let base = prefix.text.len();
+        let mut names: Vec<String> = prefix.text.to_vec();
         names.extend(segments.iter().cloned());
         let n = names.len();
+        // As in [`Self::assembly_path_records`]: the ids of each source
+        // position's namespace.
+        let ids = self.assemblies.names().extend_ids(prefix.id, &source.names);
+        let namespace_at = |k: usize| PathKey::new(ids[k - base], &names[..k]);
+        let name_at = |k: usize| NameKey::new(source.names[k - base], &names[k]);
 
         // Decline a path F# resolves to a project **type/module** ahead of the
         // referenced assemblies. This is the *type-namespace* check — a project
@@ -1309,9 +1330,11 @@ impl<'a> Resolver<'a> {
         // is perfectly good (`Ns.Color.Inner` resolves), so the filter is
         // position-scoped, not kind-blanket.
         let type_position_candidates = |k: usize| {
-            let mut candidates =
-                self.assemblies
-                    .public_types_named_at_arity(&names[..k], &names[k], arity_at(k));
+            let mut candidates = self.assemblies.public_types_named_at_arity_at(
+                namespace_at(k),
+                name_at(k),
+                arity_at(k),
+            );
             if k + 1 == n {
                 candidates.retain(|&h| !self.assemblies.is_authoritative_module(h));
             }
@@ -1335,7 +1358,7 @@ impl<'a> Resolver<'a> {
             let candidates = type_position_candidates(k);
             let slot = self
                 .assemblies
-                .lookup_type(&names[..k], &names[k], arity_at(k))
+                .lookup_type_at(namespace_at(k), name_at(k), arity_at(k))
                 .filter(|&handle| self.assemblies.is_public(handle));
             let selected = match slot {
                 Some(handle) if candidates.contains(&handle) => handle,
@@ -1638,8 +1661,13 @@ impl<'a> Resolver<'a> {
         // Stopping at the first split that yields roots would silently drop the other
         // encoding's module: its unique values would vanish, and a colliding value would
         // look unique and bind the wrong assembly (review round 7).
+        let names = self.assemblies.names();
+        let interned = names.lookup_extension(Some(names.root()), path);
         for k in (0..n).rev() {
-            let roots = self.assemblies.public_entities_named(&path[..k], &path[k]);
+            let roots = self.assemblies.public_entities_named_at(
+                PathKey::new(interned.ids[k], &path[..k]),
+                NameKey::new(interned.names[k], &path[k]),
+            );
             if roots.is_empty() {
                 continue;
             }
@@ -1701,7 +1729,7 @@ impl<'a> Resolver<'a> {
             // colliding name takes the relative `Demo.Sub`. The latest open with a
             // match wins.
             for (_, prefix) in self.open_reading_prefixes() {
-                let mut full = prefix.to_vec();
+                let mut full = prefix.path.to_vec();
                 full.extend_from_slice(path);
                 if self.open_type_target_shadowed(&full) {
                     return None; // an open routes it into project territory

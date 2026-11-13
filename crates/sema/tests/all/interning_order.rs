@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::test_support::names::{intern_paths, interned_paths, with_fresh_names};
+use borzoi_sema::test_support::names::{interned_paths, with_fresh_names};
 use borzoi_sema::{AssemblyEnv, ResolvedProject, resolve_project};
 use proptest::prelude::*;
 
@@ -44,7 +44,7 @@ fn resolve(sources: &[String], env: &AssemblyEnv) -> ResolvedProject {
 /// filled first in an order `seed` picks, and compare. Returns how many paths
 /// the first run interned, so a caller can tell the comparison was not empty.
 fn assert_order_invariant(sources: &[String], base: &AssemblyEnv, seed: u64) -> usize {
-    let first_env = with_fresh_names(base);
+    let first_env = with_fresh_names(base, &[]);
     let first = resolve(sources, &first_env);
     let mut paths = interned_paths(&first_env);
     let walked = paths.len();
@@ -57,8 +57,7 @@ fn assert_order_invariant(sources: &[String], base: &AssemblyEnv, seed: u64) -> 
         .collect();
     paths.extend(decoys);
     shuffle(&mut paths, seed);
-    let second_env = with_fresh_names(base);
-    intern_paths(&second_env, &paths);
+    let second_env = with_fresh_names(base, &paths);
     let second = resolve(sources, &second_env);
     assert!(
         first == second,

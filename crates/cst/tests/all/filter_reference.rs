@@ -28,6 +28,7 @@ use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
 use borzoi_cst::tokens::{FilteredKind, FilteredTokens, RawTokens, lex_full_trivia};
 use proptest::prelude::*;
 
+use crate::line_table_reference::NEWLINE_SHAPES;
 use crate::parser_panic_sweep::{CORE, WIDE};
 use crate::token_table_reference::LEXICAL;
 
@@ -210,14 +211,20 @@ fn assert_reached(seen: &BTreeSet<FilteredKind>, what: &str) {
     assert!(missed.is_empty(), "{what} never reach {missed:?}");
 }
 
-/// Every one- and two-piece source over the lexical alphabet and the filter's
-/// rewriting shapes.
+/// The pieces the pairs and the random walk draw on: the lexical alphabet,
+/// the filter's rewriting shapes, and line breaks inside tokens and inactive
+/// code, which move the line of every token after them.
+fn pieces() -> impl Iterator<Item = &'static &'static str> + Clone {
+    LEXICAL.iter().chain(FILTER_SHAPES).chain(NEWLINE_SHAPES)
+}
+
+/// Every one- and two-piece source over [`pieces`].
 #[test]
 fn every_lexical_pair_matches_the_reference_filter() {
     let mut seen = BTreeSet::new();
-    for a in LEXICAL.iter().chain(FILTER_SHAPES) {
+    for a in pieces() {
         check(a, &mut seen);
-        for b in LEXICAL.iter().chain(FILTER_SHAPES) {
+        for b in pieces() {
             check(&format!("{a}{b}"), &mut seen);
         }
     }
@@ -293,7 +300,7 @@ proptest! {
     fn random_sources_match_the_reference_filter(
         pieces in prop::collection::vec(
             prop::sample::select(
-                LEXICAL.iter().chain(WIDE).chain(FILTER_SHAPES).copied().collect::<Vec<_>>(),
+                pieces().chain(WIDE).copied().collect::<Vec<_>>(),
             ),
             0..16,
         )
