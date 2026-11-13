@@ -4959,6 +4959,22 @@ fn diff_ast_record_bare_members_and_chain() {
     assert_asts_match("type R =\n    { X: int }\n    member this.M = 1\nand S =\n    { Y: int }\n");
 }
 
+/// #555 — a member indented deeper than a bar-less single-case repr arrives
+/// with no `OBLOCKSEP`, and FCS's `tyconDefnRhsBlock` takes it as a bare
+/// trailing member of the abbreviation `U` (`parser_diff_bare_member_grid`
+/// covers every repr and layout).
+#[test]
+fn diff_ast_abbrev_deeper_bare_member() {
+    assert_asts_match("type U =\n    U\n     member _.X = 1\n");
+}
+
+/// #555 — a member aligned with an explicit `struct … end` repr, behind the
+/// separator after `end`.
+#[test]
+fn diff_ast_struct_end_bare_member() {
+    assert_asts_match("type P =\n    struct\n    end\n    member _.X = 1\n");
+}
+
 /// Phase 9.13b — a trailing `with` after a pure *object model* (`type C() =
 /// member … with member …`): the repr keeps its own members (kind
 /// `Unspecified`, ctor duplicated), the with-block's member goes to the outer
