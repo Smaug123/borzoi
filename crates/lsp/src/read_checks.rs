@@ -19,7 +19,9 @@
 //! path leads to now: a symlink re-pointed anywhere above it changes the
 //! inode the stamp names. So, while the stamp of `d` holds,
 //!
-//! - **a listing** of `d` holds (its entries and their types);
+//! - **a listing** of `d` holds (its entries and their types), when it read
+//!   every entry: a listing that failed at some entry can recover with no
+//!   entry changing;
 //! - **what a path names**, following symlinks or not, whether it is there,
 //!   and **its canonical spelling** hold while the stamp of every directory
 //!   its resolution looks an entry up in holds: each step of the resolution
@@ -57,7 +59,7 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use borzoi_msbuild::observed::EntryKind;
-use borzoi_msbuild::observed::{Failure, Observation, Read, ReadCounts};
+use borzoi_msbuild::observed::{Failure, Listed, Observation, Read, ReadCounts};
 
 use crate::observed::HostDisk;
 use crate::paths::lexically_normalize;
@@ -265,7 +267,15 @@ impl<D: Probe> ReadChecks<D> {
             return None;
         }
         match &read.observation {
-            Observation::Listing(Ok(_)) => Some(vec![path.clone()]),
+            // A listing that failed at some entry can recover with no entry
+            // changing, so only a whole listing has a witness.
+            Observation::Listing(Ok(entries))
+                if entries
+                    .iter()
+                    .all(|entry| matches!(entry, Listed::Entry { kind: Ok(_), .. })) =>
+            {
+                Some(vec![path.clone()])
+            }
             Observation::Listing(Err(failure)) if failure.is_absent() => {
                 self.resolution(path, true)
             }

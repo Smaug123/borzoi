@@ -1453,7 +1453,8 @@ dozen, and the counts report it.
   directory it is looked up in is witnessed (its search permission decides
   the lookup, and a `chmod` moves its stamp). An `lstat` of a path ending
   in a separator follows a final symlink, so such a spelling has no
-  `LinkKind` witness. Codex found two spellings a narrower witness missed
+  `LinkKind` witness. A listing that failed at some entry has none
+  either: the failure can clear with no entry changing. Codex found two spellings a narrower witness missed
   (`Exists('link/')`, and a link whose target ends with a separator, to
   another link); the narrower witnesses went, and a property on the host's
   file system now generates trees with symlinks of every such spelling.
@@ -1580,6 +1581,7 @@ Planted, each caught, then removed:
 | the directory a `..` leaves not stamped (Codex) | `a_directory_a_dot_is_looked_up_in_is_witnessed` |
 | a `.` dropped from the walk (Codex) | `a_directory_a_dot_is_looked_up_in_is_witnessed` |
 | a package version trusted without its commit marker (Codex) | `a_package_is_trusted_only_once_committed_before_the_evaluation` |
+| a listing that failed at an entry witnessed by its directory (Codex) | `a_listing_with_a_failed_entry_is_asked_every_time` |
 
 Three plants first passed every test: the canonical-spelling witness (the
 model could not move a directory), the seeded pass's reads and the graph walk

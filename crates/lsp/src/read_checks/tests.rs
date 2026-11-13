@@ -44,6 +44,9 @@ struct Model {
     /// A change made at the next query: one that lands between a check's
     /// stamps and its question.
     interleaved: Option<Op>,
+    /// Every listing also reports an entry it could not read, as a
+    /// transient I/O error during iteration does.
+    unreadable_entry: bool,
 }
 
 fn failure(kind: io::ErrorKind) -> Failure {
@@ -58,6 +61,7 @@ impl Model {
             granularity,
             next_ino: 1,
             interleaved: None,
+            unreadable_entry: false,
         };
         model.entries.insert(
             PathBuf::from("/"),
@@ -190,6 +194,7 @@ impl Model {
                 self.create(&from, Node::Link(to));
             }
             Op::Interleave(op) => self.interleaved = Some((**op).clone()),
+            Op::Unreadable(on) => self.unreadable_entry = *on,
             Op::Generation => {}
         }
     }
@@ -260,7 +265,7 @@ impl Model {
                 if !matches!(self.entries[&dir].node, Node::Dir) {
                     return Err(failure(io::ErrorKind::NotADirectory));
                 }
-                Ok(self
+                let mut listed: Vec<Listed> = self
                     .entries
                     .iter()
                     .filter(|(p, _)| p.parent() == Some(dir.as_path()) && **p != dir)
@@ -268,7 +273,11 @@ impl Model {
                         name: p.file_name().unwrap().to_os_string(),
                         kind: Ok(Model::kind_of(&e.node)),
                     })
-                    .collect())
+                    .collect();
+                if self.unreadable_entry {
+                    listed.push(Listed::Unreadable(failure(io::ErrorKind::Other)));
+                }
+                Ok(listed)
             })),
         }
     }
@@ -364,6 +373,12 @@ enum Op {
     MoveAndLink(usize),
     /// Make this change at the next query a check asks.
     Interleave(Box<Op>),
+    /// Make every listing report an entry it could not read, or stop. The
+    /// generator does not make it: a transient failure appearing is no
+    /// change to the disk, and nothing stamped can see it; what the checker
+    /// owes is to notice one clearing
+    /// (`a_listing_with_a_failed_entry_is_asked_every_time`).
+    Unreadable(bool),
     /// Begin a generation at the clock's time and check every read.
     Generation,
 }
@@ -560,4 +575,36 @@ fn a_change_within_the_tick_of_the_stamp_is_not_missed() {
     assert!(holds);
     // The stamp of `/w`, listed.
     assert_eq!((counts.listings, counts.stats), (0, 1), "{counts:?}");
+}
+
+/// A listing that failed at some entry is asked again in every generation:
+/// the failure can clear without the directory changing (Codex).
+#[test]
+fn a_listing_with_a_failed_entry_is_asked_every_time() {
+    let model = Rc::new(RefCell::new(Model::new(1)));
+    model.borrow_mut().apply(&Op::Dir(0));
+    model.borrow_mut().apply(&Op::Advance(10_000));
+    model.borrow_mut().apply(&Op::Unreadable(true));
+    let check = Check::new(Read {
+        path: path(0),
+        observation: model
+            .borrow()
+            .answer(&path(0), &Observation::Listing(Ok(Vec::new()))),
+    });
+    let mut checker = ReadChecks::with_disk(Rc::clone(&model));
+    let generation = |checker: &mut ReadChecks<_>| {
+        let now = model.borrow().clock;
+        checker.begin_generation(Nanos(now));
+        let holds = checker.holds(&check);
+        checker.end_generation();
+        model.borrow_mut().clock += SECOND;
+        holds
+    };
+    assert!(generation(&mut checker));
+    assert!(generation(&mut checker));
+    model.borrow_mut().apply(&Op::Unreadable(false));
+    assert!(
+        !generation(&mut checker),
+        "a cleared failure was not noticed"
+    );
 }
