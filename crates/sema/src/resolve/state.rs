@@ -206,10 +206,22 @@ impl ScopeEntry {
         resolution: Resolution,
         generation: usize,
     ) -> Self {
+        Self::binding_named(names, names.logical(name), resolution, generation)
+    }
+
+    /// [`Self::binding`] of a name already interned: a [`Def`]'s.
+    pub(super) fn binding_named(
+        names: &NameTable,
+        name: Name,
+        resolution: Resolution,
+        generation: usize,
+    ) -> Self {
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = names;
         ScopeEntry {
-            name: names.logical(name),
+            name,
             #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: name.to_string(),
+            text: names.text(name).to_string(),
             resolution,
             from_open: false,
             generation,

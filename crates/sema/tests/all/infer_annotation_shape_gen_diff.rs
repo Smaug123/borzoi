@@ -622,7 +622,15 @@ fn run_chunk(chunk_index: usize, anns: &[Ann]) -> Vec<Row> {
     let ours: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved
+                    .def(*id)
+                    .spelling(crate::common::constrained_fixture_env())
+                    .into_owned(),
+                ty.render(),
+            )
+        })
         .collect();
 
     let path = temp_fs_file(&format!("ann_sweep{chunk_index}"), &src);

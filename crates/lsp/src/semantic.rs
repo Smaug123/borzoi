@@ -6715,8 +6715,8 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+        let (resolved, env) = sema
+            .resolved_project_and_env_for(&proj, &mut ws, &HashMap::new())
             .expect("resolved project");
         assert_eq!(resolved.len(), 2);
 
@@ -6735,7 +6735,7 @@ mod tests {
 
         let (file_idx, def) = resolved.item_def(res).expect("the item's def");
         assert_eq!(file_idx, 0);
-        assert_eq!(def.name, "foo");
+        assert_eq!(def.spelling(&env), "foo");
     }
 
     #[test]

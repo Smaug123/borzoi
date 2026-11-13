@@ -149,7 +149,7 @@ fn run() -> Run {
     let def_types = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.clone()))
+        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.clone()))
         .collect();
 
     let line_starts = line_starts(&corpus.fsharp);

@@ -198,8 +198,8 @@ fn an_incomplete_projection_publishes_only_what_no_assemblies_would() {
         let (ri, ii) = resolve_and_infer(src, &incomplete);
         let (re, ie) = resolve_and_infer(src, &empty);
 
-        let without_assemblies = published(&re, &ie);
-        let leaked: Vec<_> = published(&ri, &ii)
+        let without_assemblies = published(&empty, &re, &ie);
+        let leaked: Vec<_> = published(&incomplete, &ri, &ii)
             .into_iter()
             .filter(|(site, ty)| without_assemblies.get(site) != Some(ty))
             .collect();
@@ -209,9 +209,10 @@ fn an_incomplete_projection_publishes_only_what_no_assemblies_would() {
              have supplied, so it came out of the assemblies: {src:?}: {leaked:?}"
         );
 
-        let under_complete = published(&rc, &ic);
-        any_loses |= under_complete != published(&ri, &ii);
-        any_keeps |= !under_complete.is_empty() && under_complete == published(&ri, &ii);
+        let under_complete = published(&complete, &rc, &ic);
+        any_loses |= under_complete != published(&incomplete, &ri, &ii);
+        any_keeps |=
+            !under_complete.is_empty() && under_complete == published(&incomplete, &ri, &ii);
     }
 
     assert!(
@@ -228,15 +229,21 @@ fn an_incomplete_projection_publishes_only_what_no_assemblies_would() {
 /// Every type this file published, in a form two runs over the same source can
 /// be compared by: expression types keyed by range, binder types by binder name
 /// (a `DefId` is an allocation index, not a stable identity across runs).
-fn published(resolved: &ResolvedFile, inferred: &InferredFile) -> BTreeMap<String, String> {
+fn published(
+    env: &AssemblyEnv,
+    resolved: &ResolvedFile,
+    inferred: &InferredFile,
+) -> BTreeMap<String, String> {
     let exprs = inferred
         .types()
         .iter()
         .map(|(range, ty)| (format!("expr {range:?}"), ty.render()));
-    let defs = inferred
-        .def_types()
-        .iter()
-        .map(|(def, ty)| (format!("def {}", resolved.def(*def).name), ty.render()));
+    let defs = inferred.def_types().iter().map(|(def, ty)| {
+        (
+            format!("def {}", resolved.def(*def).spelling(env)),
+            ty.render(),
+        )
+    });
     exprs.chain(defs).collect()
 }
 

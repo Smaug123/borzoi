@@ -237,16 +237,17 @@ fn main() {
     );
 
     let mut defs = 0usize;
-    let mut def_names: HashSet<&str> = HashSet::new();
+    let mut def_names: HashSet<std::borrow::Cow<'_, str>> = HashSet::new();
     let mut name_differs: BTreeMap<String, usize> = BTreeMap::new();
     for (r, text) in resolved.iter().zip(&texts) {
         for def in r.defs() {
             defs += 1;
-            def_names.insert(&def.name);
+            let spelling = def.spelling(&env);
             let spelled = text.get(usize::from(def.range.start())..usize::from(def.range.end()));
-            if spelled != Some(def.name.as_str()) {
+            if spelled != Some(&*spelling) {
                 *name_differs.entry(format!("{:?}", def.kind)).or_default() += 1;
             }
+            def_names.insert(spelling);
         }
     }
     let differs: usize = name_differs.values().sum();

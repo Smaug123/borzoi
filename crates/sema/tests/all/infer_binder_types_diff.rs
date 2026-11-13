@@ -72,14 +72,14 @@ fn assert_binder_sound(source: &str) -> usize {
                 "we inferred `{}` for binder `{}` at {key:?} but FCS reports no binder there \
                  in {source:?}",
                 ty.render(),
-                def.name
+                def.spelling(crate::common::full_bcl_env())
             )
         });
         assert_eq!(
             &ty.render(),
             fcs_ty,
             "binder-type mismatch for `{}` at {key:?} in {source:?}: ours=`{}`, FCS=`{fcs_ty}`",
-            def.name,
+            def.spelling(crate::common::full_bcl_env()),
             ty.render()
         );
         checked += 1;
@@ -327,7 +327,7 @@ fn tuple_containing_a_function_is_parenthesised() {
     let t_ty = inferred
         .def_types()
         .iter()
-        .find(|(id, _)| resolved.def(**id).name == "t")
+        .find(|(id, _)| resolved.def(**id).spelling(crate::common::full_bcl_env()) == "t")
         .map(|(_, ty)| ty.render());
     assert_eq!(
         t_ty.as_deref(),
@@ -366,7 +366,7 @@ fn binder_render_under(source: &str, name: &str, recovery: &SyntaxRecovery) -> O
     inferred
         .def_types()
         .iter()
-        .find(|(id, _)| resolved.def(**id).name == name)
+        .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
         .map(|(_, ty)| ty.render())
 }
 
@@ -375,7 +375,7 @@ fn binder_render(source: &str, name: &str) -> Option<String> {
     inferred
         .def_types()
         .iter()
-        .find(|(id, _)| resolved.def(**id).name == name)
+        .find(|(id, _)| resolved.def(**id).spelling(crate::common::full_bcl_env()) == name)
         .map(|(_, ty)| ty.render())
 }
 
@@ -857,7 +857,7 @@ fn shadowed_annotations_defer() {
         let x_typed = inferred
             .def_types()
             .keys()
-            .any(|id| resolved.def(*id).name == "x");
+            .any(|id| resolved.def(*id).spelling(crate::common::full_bcl_env()) == "x");
         assert!(
             !x_typed,
             "the shadowed annotation must defer `x` in {source:?}"
@@ -950,7 +950,7 @@ fn a_constrained_head_defers_but_its_twin_does_not() {
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).name == name)
+            .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
             .map(|(_, ty)| ty.render())
     };
 
@@ -1013,7 +1013,7 @@ fn an_error_obsolete_head_or_argument_defers_but_a_warning_one_does_not() {
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).name == name)
+            .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
             .map(|(_, ty)| ty.render())
     };
 
@@ -1088,7 +1088,7 @@ fn a_rejecting_attribute_on_an_abbreviation_defers_but_a_warning_one_does_not() 
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).name == name)
+            .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
             .map(|(_, ty)| ty.render())
     };
 

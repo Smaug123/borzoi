@@ -518,23 +518,23 @@ fn check(source: &str, cells: &[Cell], tally: &mut Tally) {
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
                  there\n{source}",
-                def.name
+                def.spelling(&env)
             )
         });
         assert_eq!(
             &ours,
             theirs,
             "binder type mismatch for `{}` at {key:?} (line {})\n{source}",
-            def.name,
+            def.spelling(&env),
             line_of(key.0)
         );
         assert!(
             !dumps.hides_constraint(key, &ours),
             "binder `{}` typed `{ours}`, which FCS constrains\n{source}",
-            def.name
+            def.spelling(&env)
         );
         tally.binders += 1;
-        ours_by_name.insert((def.name.to_string(), line_of(key.0)), ours);
+        ours_by_name.insert((def.spelling(&env).into_owned(), line_of(key.0)), ours);
     }
     for (line, name, obligated, label) in cells {
         tally.cells += 1;
@@ -666,7 +666,7 @@ fn a_pattern_does_not_override_an_earlier_argument_check() {
             &borzoi_sema::PrecedingTypes::default(),
         );
         for (def, ty) in inferred.def_types() {
-            let name = resolved.def(*def).name.to_string();
+            let name = resolved.def(*def).spelling(&env).into_owned();
             let ty = ty.render();
             match name.as_str() {
                 "x" | "y" | "v" => assert_eq!(ty, "System.String", "`{name}` in {body}"),
@@ -707,7 +707,7 @@ fn a_later_pattern_does_not_override_an_earlier_clause() {
             &borzoi_sema::PrecedingTypes::default(),
         );
         for (def, ty) in inferred.def_types() {
-            if resolved.def(*def).name.as_str() == "x" {
+            if resolved.def(*def).spelling(&env) == "x" {
                 assert_eq!(ty.render(), x, "`x` in {body}");
             }
         }
@@ -742,7 +742,7 @@ fn a_pattern_does_not_wake_an_earlier_member_lookup() {
             "a member resolved in {body}"
         );
         for (def, ty) in inferred.def_types() {
-            let name = resolved.def(*def).name.to_string();
+            let name = resolved.def(*def).spelling(&env).into_owned();
             assert!(
                 !matches!(name.as_str(), "o" | "f"),
                 "`{name} : {}` published in {body}",
@@ -776,7 +776,7 @@ fn a_mismatched_pattern_does_not_leave_its_names_to_the_clause() {
             &borzoi_sema::PrecedingTypes::default(),
         );
         for (def, ty) in inferred.def_types() {
-            if resolved.def(*def).name.as_str() == "x" {
+            if resolved.def(*def).spelling(&env) == "x" {
                 assert_eq!(ty.render(), "System.Int32", "`x` in {body}");
             }
         }
@@ -801,7 +801,7 @@ fn a_mismatched_field_pattern_does_not_leave_its_names_to_the_clause() {
         &borzoi_sema::PrecedingTypes::default(),
     );
     for (def, ty) in inferred.def_types() {
-        if resolved.def(*def).name.as_str() == "x" {
+        if resolved.def(*def).spelling(&env) == "x" {
             assert_eq!(ty.render(), "System.Int32", "`x`");
         }
     }
@@ -869,7 +869,7 @@ fn a_pattern_does_not_override_a_condition_on_its_parameter() {
             &borzoi_sema::PrecedingTypes::default(),
         );
         for (def, ty) in inferred.def_types() {
-            let name = resolved.def(*def).name.to_string();
+            let name = resolved.def(*def).spelling(&env).into_owned();
             let ty = ty.render();
             let expected = fcs
                 .iter()

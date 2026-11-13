@@ -328,6 +328,7 @@ fn sweep_file(file: &FileCensus, report: &mut Report) {
         return;
     };
 
+    let env = AssemblyEnv::default();
     let resolved = catch_unwind(AssertUnwindSafe(|| {
         let parsed = parse(&source);
         if !parsed.errors.is_empty() {
@@ -338,7 +339,7 @@ fn sweep_file(file: &FileCensus, report: &mut Report) {
         Some(resolve_file(
             &impl_file,
             &ProjectItems::default(),
-            &AssemblyEnv::default(),
+            &env,
             &recovery,
         ))
     }));
@@ -410,12 +411,14 @@ fn sweep_file(file: &FileCensus, report: &mut Report) {
                     Some(def) if def.range == expected => {
                         *report.matches.entry(bname).or_default() += 1;
                     }
-                    Some(def) if def.name == text => report
-                        .alt_binders
-                        .push(site(format!("binder {:?} at {:?}", def.name, def.range))),
-                    Some(def) => report
-                        .divergences
-                        .push(site(format!("binder {:?} at {:?}", def.name, def.range))),
+                    Some(def) if def.spelling(&env) == text => report.alt_binders.push(site(
+                        format!("binder {:?} at {:?}", def.spelling(&env), def.range),
+                    )),
+                    Some(def) => report.divergences.push(site(format!(
+                        "binder {:?} at {:?}",
+                        def.spelling(&env),
+                        def.range
+                    ))),
                     None => report
                         .divergences
                         .push(site(format!("{res:?} (no in-file def)"))),

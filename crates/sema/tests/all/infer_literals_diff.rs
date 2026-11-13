@@ -786,7 +786,7 @@ proptest! {
         let x_ty = inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).name == "x")
+            .find(|(id, _)| resolved.def(**id).spelling(&env) == "x")
             .map(|(_, ty)| ty.render());
         prop_assert_eq!(x_ty, Some("System.Int64".to_string()), "src={:?}", src);
     }

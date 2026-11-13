@@ -4007,7 +4007,7 @@ fn grade_use(
                     match resolution_def(loaded, file_idx, res) {
                         Some((actual_file_idx, def)) => format!(
                             "binder {:?} at {}:{}..{}",
-                            def.name,
+                            def.spelling(&loaded.assembly_env),
                             loaded.parses.paths[actual_file_idx].display(),
                             u32::from(def.range.start()),
                             u32::from(def.range.end())
@@ -4496,7 +4496,7 @@ fn resolution_summary(loaded: &LoadedProject, file_idx: usize, res: Resolution) 
             match resolution_def(loaded, file_idx, res) {
                 Some((actual_file_idx, def)) => format!(
                     "project {:?} at {}:{}..{}",
-                    def.name,
+                    def.spelling(&loaded.assembly_env),
                     loaded.parses.paths[actual_file_idx].display(),
                     u32::from(def.range.start()),
                     u32::from(def.range.end())

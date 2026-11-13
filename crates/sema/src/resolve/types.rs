@@ -190,21 +190,22 @@ impl<'a> Resolver<'a> {
         slot: SlotClass,
         access_root_len: Option<usize>,
     ) {
-        let def = Def::from_token(name, DefKind::Type);
-        let key = def.key().to_string();
+        let names = self.assemblies.names();
+        let def = Def::from_token(names, name, DefKind::Type);
+        let key = names.text(def.name());
         let range = def.range;
         let id = self.intern(def);
         self.type_def_arities.insert(id, arity);
         self.type_defs_by_arity
             .entry(self.container_path.id())
             .or_default()
-            .insert((key.clone(), arity), id);
+            .insert((key.to_string(), arity), id);
         self.record(range, Resolution::Local(id));
         *self
             .type_decl_counts
             .entry(self.container_path.id())
             .or_default()
-            .entry(key.clone())
+            .entry(key.to_string())
             .or_default()
             .entry(arity)
             .or_default() += 1;
@@ -214,19 +215,19 @@ impl<'a> Resolver<'a> {
         self.type_defs
             .entry(self.container_path.id())
             .or_default()
-            .insert(key.clone(), id);
+            .insert(key.to_string(), id);
         // The parallel slot-class entry (same key, same last-wins) — whether
         // this type's name enters FCS's unqualified slot and can evict a
         // same-named value ([`head_value_slot`](Self::head_value_slot)).
         self.type_slot_classes
             .entry(self.container_path.to_vec())
             .or_default()
-            .insert(key.clone(), slot);
+            .insert(key.to_string(), slot);
         let def = (u32::from(range.start()), slot);
         self.type_slot_history.update(
             self.assemblies.names(),
             self.container_path.id(),
-            &key,
+            key,
             |history| history.push(def),
         );
         // The parallel access-root entry (same key, same last-wins): a `private`
@@ -236,8 +237,8 @@ impl<'a> Resolver<'a> {
         self.type_access_roots
             .entry(self.container_path.to_vec())
             .or_default()
-            .insert(key.clone(), access_root_len);
-        self.mark_decl(&key).ty = true;
+            .insert(key.to_string(), access_root_len);
+        self.mark_decl(key).ty = true;
     }
 
     /// Push the generic parameters of an optional header (`type Foo<'T>`,
@@ -284,7 +285,12 @@ impl<'a> Resolver<'a> {
             // `ident()`; the binder's range/name is the sigil-inclusive `'T`
             // occurrence (trivia-trimmed by `typar_occurrence`), matching FCS.
             let key = id_text(&ident).to_string();
-            let id = self.intern(Def::from_range(&name, range, DefKind::TypeParam));
+            let id = self.intern(Def::from_range(
+                self.assemblies.names(),
+                &name,
+                range,
+                DefKind::TypeParam,
+            ));
             self.record(range, Resolution::Local(id));
             frame.push((key, id));
         }
@@ -380,14 +386,15 @@ impl<'a> Resolver<'a> {
             // An operator-named case (`([])` / `( :: )`, FSharp.Core's `list`) has
             // no identifier token; FCS records its compiled `op_Nil` /
             // `op_ColonColon` name, so define it under that.
+            let names = self.assemblies.names();
             let def = if let Some(ident) = case.ident() {
-                Def::from_token(&ident, DefKind::UnionCase)
+                Def::from_token(names, &ident, DefKind::UnionCase)
             } else if let Some((name, range)) = case.operator_name() {
-                Def::from_op_name(name, range, DefKind::UnionCase)
+                Def::from_op_name(names, name, range, DefKind::UnionCase)
             } else {
                 continue;
             };
-            let name = def.key().to_string();
+            let (name_id, name) = (def.name(), names.text(def.name()));
             let range = def.range;
             let id = self.intern(def);
             if let Some(root) = &repr_access_root {
@@ -468,12 +475,12 @@ impl<'a> Resolver<'a> {
                 .or_default()
                 .entry(type_key.clone())
                 .or_default()
-                .insert(name.clone(), res);
+                .insert(name.to_string(), res);
             if let Some(own) = own_key {
                 self.own_union_cases
                     .entry(own)
                     .or_default()
-                    .push((name.clone(), res));
+                    .push((name.to_string(), res));
             }
             // The defining occurrence resolves to itself.
             self.record(range, res);
@@ -490,13 +497,8 @@ impl<'a> Resolver<'a> {
             }
             if !require_qualified {
                 let generation = self.scope.open_generation;
-                let assemblies = self.assemblies;
-                self.module_frame().push(ScopeEntry::binding(
-                    assemblies.names(),
-                    &name,
-                    res,
-                    generation,
-                ));
+                self.module_frame()
+                    .push(ScopeEntry::binding_named(names, name_id, res, generation));
             }
         }
     }
@@ -583,14 +585,15 @@ impl<'a> Resolver<'a> {
             // An operator-named enum case (`| ([]) = 0`, FCS's bar-led
             // `unionCaseName EQUALS`) carries the compiled `op_Nil` /
             // `op_ColonColon` name rather than an identifier token.
+            let names = self.assemblies.names();
             let def = if let Some(ident) = case.ident() {
-                Def::from_token(&ident, DefKind::EnumCase)
+                Def::from_token(names, &ident, DefKind::EnumCase)
             } else if let Some((name, range)) = case.operator_name() {
-                Def::from_op_name(name, range, DefKind::EnumCase)
+                Def::from_op_name(names, name, range, DefKind::EnumCase)
             } else {
                 continue;
             };
-            let case_name = def.key().to_string();
+            let case_name = names.text(def.name());
             let range = def.range;
             let id = self.intern(def);
             // Reachable only as `Color.Red`: give it a cross-file handle so a later
@@ -617,7 +620,7 @@ impl<'a> Resolver<'a> {
                 .or_default()
                 .entry(type_key.clone())
                 .or_default()
-                .insert(case_name.clone(), res);
+                .insert(case_name.to_string(), res);
         }
     }
 
@@ -637,8 +640,9 @@ impl<'a> Resolver<'a> {
     /// The binder is a [`Resolution::Local`]; exporting it for cross-file
     /// qualified references is a later slice, mirroring the union-case path.
     pub(super) fn define_exception_case(&mut self, name: &SyntaxToken, is_private: bool) {
-        let def = Def::from_token(name, DefKind::ExceptionCase);
-        let entry_name = def.key().to_string();
+        let names = self.assemblies.names();
+        let def = Def::from_token(names, name, DefKind::ExceptionCase);
+        let (entry_id, entry_name) = (def.name(), names.text(def.name()));
         let range = def.range;
         let id = self.intern(def);
         // An exception constructor is a value-namespace member, like a non-qualified
@@ -646,7 +650,7 @@ impl<'a> Resolver<'a> {
         // declaration, frame entry, and cross-file open (so find-references spans
         // its cross-file uses); an anonymous-root constructor stays `Local` and its
         // module is marked hidden.
-        let res = match self.export_case(&entry_name, id, is_private, None, CaseKind::Exception) {
+        let res = match self.export_case(entry_name, id, is_private, None, CaseKind::Exception) {
             Some(item_id) => Resolution::Item(item_id),
             None => {
                 self.note_hidden_value_module(self.container_path.to_vec());
@@ -657,15 +661,10 @@ impl<'a> Resolver<'a> {
         // The constructor is a dottable value at a *segment* (`E.x` is member
         // access on it) — but distinct from a `let` value, because at a dotted
         // *head* it does not commit member access (see [`DeclKinds::exception_ctor`]).
-        self.mark_decl(&entry_name).exception_ctor = true;
+        self.mark_decl(entry_name).exception_ctor = true;
         let generation = self.scope.open_generation;
-        let assemblies = self.assemblies;
-        self.module_frame().push(ScopeEntry::binding(
-            assemblies.names(),
-            &entry_name,
-            res,
-            generation,
-        ));
+        self.module_frame()
+            .push(ScopeEntry::binding_named(names, entry_id, res, generation));
     }
 
     /// Intern an active-pattern definition's recognizer and cases
@@ -757,12 +756,13 @@ impl<'a> Resolver<'a> {
         // The recognizer value, ranged over the `|Even|Odd|` span. Its `name` is
         // the literal source (`(|Even|Odd|)`) — only used for hover display; case
         // uses look up by case name, not by this.
-        let recognizer = Def {
-            name: apn.syntax().text().to_string(),
+        let names = self.assemblies.names();
+        let recognizer = Def::from_range(
+            names,
+            &apn.syntax().text().to_string(),
             range,
-            kind: DefKind::ActivePattern,
-            provisional: false,
-        };
+            DefKind::ActivePattern,
+        );
         let recognizer_id = self.intern(recognizer);
         self.record(range, Resolution::Local(recognizer_id));
 
@@ -775,8 +775,8 @@ impl<'a> Resolver<'a> {
             // The case token's defining occurrence self-resolves to itself, as a
             // distinct symbol from the recognizer (FCS reports it with full name
             // `Even`, not `…(|Even|Odd|)`).
-            let token_def = Def::from_token(&tok, DefKind::ActivePatternCase);
-            let case_name = token_def.key().to_string();
+            let token_def = Def::from_token(names, &tok, DefKind::ActivePatternCase);
+            let (case_id, case_name) = (token_def.name(), names.text(token_def.name()));
             let token_range = token_def.range;
             let token_id = self.intern(token_def);
             self.record(token_range, Resolution::Local(token_id));
@@ -788,12 +788,7 @@ impl<'a> Resolver<'a> {
             // carries the case name for hover. (The token occurrence above and
             // these uses are separate symbols in FCS, so they are not grouped —
             // matching FCS, which gives them distinct full names.)
-            let use_def = Def {
-                name: case_name.clone(),
-                range,
-                kind: DefKind::ActivePattern,
-                provisional: false,
-            };
+            let use_def = Def::from_range(names, case_name, range, DefKind::ActivePattern);
             let use_id = self.intern(use_def);
             // Every case of one recognizer shares its shape, keyed by the *use*
             // identity — the case's `use_id` def, which is also the `ExportedItem`'s
@@ -825,7 +820,7 @@ impl<'a> Resolver<'a> {
                     let item_idx = self.items.len();
                     let item_id = ItemId::new(self.item_base as usize + item_idx);
                     self.items.push(ExportedItem {
-                        name: case_name.clone(),
+                        name: case_name.to_string(),
                         qualified: None,
                         id: item_id,
                         def: super::model::ExportDef::Own(use_id),
@@ -859,12 +854,8 @@ impl<'a> Resolver<'a> {
             // root / a local recognizer); `case_reference` (pattern position) still
             // finds it. Without this an `Item`-backed case would leak into
             // expression lookup and shadow a same-named ordinary value.
-            let mut entry = ScopeEntry::binding(
-                self.assemblies.names(),
-                &case_name,
-                case_res,
-                self.scope.open_generation,
-            );
+            let mut entry =
+                ScopeEntry::binding_named(names, case_id, case_res, self.scope.open_generation);
             entry.pattern_only = true;
             entries.push(entry);
         }
@@ -1661,19 +1652,17 @@ impl<'a> Resolver<'a> {
         if raw == "_" {
             return None;
         }
-        let name = id_text(tok).to_string();
-        let range = tok.text_range();
-        let id = self.intern(Def {
-            name: raw.to_string(),
-            range,
-            kind: DefKind::Value { is_function: false },
-            provisional: false,
-        });
+        // A self-identifier is never a prefix operator's token, so its
+        // definition's name is its `id_text`.
+        let names = self.assemblies.names();
+        let def = Def::from_token(names, tok, DefKind::Value { is_function: false });
+        let (name, range) = (def.name(), def.range);
+        let id = self.intern(def);
         let res = Resolution::Local(id);
         self.record(range, res);
-        Some(ScopeEntry::binding(
-            self.assemblies.names(),
-            &name,
+        Some(ScopeEntry::binding_named(
+            names,
+            name,
             res,
             self.scope.open_generation,
         ))
@@ -3786,7 +3775,12 @@ impl<'a> Resolver<'a> {
         // No argument-expression set to give: this *is* the walk that computes
         // one, and it reads only the occurrence ranges, which or-pattern pairing
         // never changes.
-        for name in pattern_names(arg, BinderRole::Pattern, &HashSet::default()) {
+        for name in pattern_names(
+            arg,
+            BinderRole::Pattern,
+            &HashSet::default(),
+            self.assemblies,
+        ) {
             self.excluded_param_ranges.insert(name.range());
         }
     }
@@ -4279,7 +4273,11 @@ impl<'a> Resolver<'a> {
             return;
         }
         let emit = if emit_eligible {
-            Some(self.intern(Def::from_token(name_tok, DefKind::Member)))
+            Some(self.intern(Def::from_token(
+                self.assemblies.names(),
+                name_tok,
+                DefKind::Member,
+            )))
         } else {
             None
         };

@@ -2516,6 +2516,15 @@ pub fn constrained_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
     })
 }
 
+/// An env with no assemblies, shared by every case that resolves against
+/// one and then reads a definition's spelling, which is an id into the env's
+/// name table.
+pub fn empty_env() -> &'static borzoi_sema::AssemblyEnv {
+    use std::sync::OnceLock;
+    static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
+    ENV.get_or_init(borzoi_sema::AssemblyEnv::default)
+}
+
 pub fn full_bcl_env() -> &'static borzoi_sema::AssemblyEnv {
     use std::sync::OnceLock;
     static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();

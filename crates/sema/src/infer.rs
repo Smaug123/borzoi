@@ -2386,7 +2386,11 @@ impl<'a> Gen<'a> {
                 return false;
             };
             declared
-                .get(&(container.text_range(), d.name.to_string(), *arity))
+                .get(&(
+                    container.text_range(),
+                    d.spelling(self.env).into_owned(),
+                    *arity,
+                ))
                 .is_none_or(|&n| n == 1)
         });
         out
@@ -2432,7 +2436,7 @@ impl<'a> Gen<'a> {
             .filter(|e| matches!(e.case_kind(), Some(CaseKind::Union { .. })))
             .map(|e| e.id())
             .collect();
-        self.constructor_names = constructor_names(file, self.resolved);
+        self.constructor_names = constructor_names(file, self.resolved, self.env);
         let mut out = HashMap::default();
         let mut records: ProjectRecords = HashMap::default();
         let recovery = self.resolved.recovery();
@@ -8776,7 +8780,11 @@ fn is_headerless(file: &ImplFile) -> bool {
 /// modules' values have no cross-file handle. So there every definition of
 /// those kinds counts, and every value's, local ones included, which can only
 /// make a name contested.
-fn constructor_names(file: &ImplFile, resolved: &ResolvedFile) -> HashMap<String, usize> {
+fn constructor_names(
+    file: &ImplFile,
+    resolved: &ResolvedFile,
+    env: &AssemblyEnv,
+) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::default();
     for e in resolved.exports().iter() {
         *counts.entry(e.name().to_string()).or_default() += 1;
@@ -8791,7 +8799,7 @@ fn constructor_names(file: &ImplFile, resolved: &ResolvedFile) -> HashMap<String
                     | DefKind::ActivePatternCase
                     | DefKind::EnumCase
             ) {
-                *counts.entry(def.name.clone()).or_default() += 1;
+                *counts.entry(def.spelling(env).into_owned()).or_default() += 1;
             }
         }
     }
@@ -9105,7 +9113,7 @@ mod tests {
         inferred
             .def_types()
             .iter()
-            .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
+            .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
             .collect()
     }
 

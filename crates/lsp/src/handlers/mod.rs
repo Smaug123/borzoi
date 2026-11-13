@@ -57,12 +57,8 @@ pub fn file_export_symbols(
     file: &ImplFile,
     recovery: &SyntaxRecovery,
 ) -> Vec<(String, SymbolKind, Range)> {
-    let resolved = resolve_file(
-        file,
-        &ProjectItems::default(),
-        &AssemblyEnv::default(),
-        recovery,
-    );
+    let env = AssemblyEnv::default();
+    let resolved = resolve_file(file, &ProjectItems::default(), &env, recovery);
     let lines = LineIndex::new(text);
     resolved
         .exports()
@@ -82,7 +78,7 @@ pub fn file_export_symbols(
             }
             let kind = symbol_kind_for(def.kind)?;
             Some((
-                def.name.clone(),
+                def.spelling(&env).into_owned(),
                 kind,
                 indexed_range_to_lsp(&lines, def.range),
             ))

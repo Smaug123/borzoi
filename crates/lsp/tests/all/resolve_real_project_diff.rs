@@ -472,7 +472,7 @@ fn project_resolution_matches_fcs() {
                             if def_idx != i {
                                 tally.cross_file_match += 1;
                             }
-                        } else if def.name == text {
+                        } else if def.spelling(&env) == text {
                             tally.alt_binders.push(site(
                                 format!("{:?}:{}..{}", decl.file.file_name(), decl.start, decl.end),
                                 format!("{:?}:{:?}", def_path.file_name(), def.range),
@@ -487,7 +487,7 @@ fn project_resolution_matches_fcs() {
                                 ),
                                 format!(
                                     "binder {:?} at {:?}:{:?}",
-                                    def.name,
+                                    def.spelling(&env),
                                     def_path.file_name(),
                                     def.range
                                 ),

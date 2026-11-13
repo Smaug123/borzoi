@@ -1,8 +1,10 @@
 //! Pure extraction of the name occurrences a pattern contributes: the binders
 //! it introduces, and the or-pattern *aliases* that re-spell one of them.
 
+use crate::AssemblyEnv;
 use crate::def::{Def, DefKind};
 use crate::hash::HashSet;
+use crate::names::{Name, NameTable};
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, LongIdentPat, Pat, SyntaxNode, SyntaxToken};
 
@@ -77,12 +79,14 @@ pub fn pattern_names(
     pat: &Pat,
     role: BinderRole,
     argument_expressions: &HashSet<TextRange>,
+    env: &AssemblyEnv,
 ) -> Vec<PatternName> {
     let mut out = Vec::new();
     collect(
         pat,
         Ctx::from_role(role),
         argument_expressions,
+        env.names(),
         &mut out,
         &mut None,
     );
@@ -101,16 +105,16 @@ pub fn pattern_names(
 /// or-pattern's alternatives are not paired either: pairing only turns a later
 /// alternative's binder into an alias of an earlier one *of the same name*, so
 /// every occurrence's name is a binder's name.
-pub fn every_let_pattern_binder_name(root: &SyntaxNode) -> HashSet<String> {
+pub fn every_let_pattern_binder_name(root: &SyntaxNode, names: &NameTable) -> HashSet<String> {
     let mut out = Vec::new();
     let mut walked = Some(HashSet::default());
     let none = HashSet::default();
     for pat in root.descendants_of::<Pat>() {
-        collect(&pat, Ctx::LetHead, &none, &mut out, &mut walked);
+        collect(&pat, Ctx::LetHead, &none, names, &mut out, &mut walked);
     }
     out.iter()
         .map(|name| match name {
-            PatternName::Binder(def) => def.key().to_string(),
+            PatternName::Binder(def) => names.text(def.name()).to_string(),
             PatternName::Alias { .. } => {
                 unreachable!("a walk that does not pair alternatives yields no alias")
             }
@@ -213,6 +217,7 @@ fn collect(
     pat: &Pat,
     ctx: Ctx,
     argument_expressions: &HashSet<TextRange>,
+    names: &NameTable,
     out: &mut Vec<PatternName>,
     walked: &mut Option<HashSet<(SyntaxNode, Ctx)>>,
 ) {
@@ -224,7 +229,11 @@ fn collect(
     match pat {
         Pat::Named(p) => {
             if let Some(tok) = p.ident() {
-                out.push(PatternName::Binder(Def::from_token(&tok, ctx.leaf_kind())));
+                out.push(PatternName::Binder(Def::from_token(
+                    names,
+                    &tok,
+                    ctx.leaf_kind(),
+                )));
             }
         }
         Pat::OptionalVal(p) => {
@@ -233,7 +242,11 @@ fn collect(
             // optional); the bound ident is `x`, backticks already stripped by
             // the token text.
             if let Some(tok) = p.ident() {
-                out.push(PatternName::Binder(Def::from_token(&tok, ctx.leaf_kind())));
+                out.push(PatternName::Binder(Def::from_token(
+                    names,
+                    &tok,
+                    ctx.leaf_kind(),
+                )));
             }
         }
         // Refutable heads that introduce no names. `IsInst` (`:? T`) tests a
@@ -243,13 +256,27 @@ fn collect(
         Pat::Wildcard(_) | Pat::Const(_) | Pat::Null(_) | Pat::IsInst(_) | Pat::Quote(_) => {}
         Pat::Paren(p) => {
             if let Some(inner) = p.inner() {
-                collect(&inner, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &inner,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
         }
         Pat::Typed(p) => {
             // The annotation (`p.ty()`) names types, never binders.
             if let Some(inner) = p.pat() {
-                collect(&inner, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &inner,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
         }
         Pat::Attrib(p) => {
@@ -257,12 +284,19 @@ fn collect(
             // binders; only the inner pattern binds. Transparent, exactly like
             // `Typed`.
             if let Some(inner) = p.pat() {
-                collect(&inner, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &inner,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
         }
         Pat::Tuple(p) => {
             for el in p.elements() {
-                collect(&el, ctx.descend(), argument_expressions, out, walked);
+                collect(&el, ctx.descend(), argument_expressions, names, out, walked);
             }
         }
         Pat::ArrayOrList(p) => {
@@ -270,7 +304,7 @@ fn collect(
             // names, exactly like a `Tuple` element — value deconstruction, never
             // a function-binding head, so every element descends the context.
             for el in p.elements() {
-                collect(&el, ctx.descend(), argument_expressions, out, walked);
+                collect(&el, ctx.descend(), argument_expressions, names, out, walked);
             }
         }
         Pat::Record(p) => {
@@ -280,7 +314,14 @@ fn collect(
             // context — exactly like a `Tuple` element.
             for field in p.fields() {
                 if let Some(value) = field.pat() {
-                    collect(&value, ctx.descend(), argument_expressions, out, walked);
+                    collect(
+                        &value,
+                        ctx.descend(),
+                        argument_expressions,
+                        names,
+                        out,
+                        walked,
+                    );
                 }
             }
         }
@@ -290,10 +331,24 @@ fn collect(
             // so both operands descend the context, exactly like a `Tuple`
             // element — a `let`-head `as` is a value deconstruction.
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &lhs,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &rhs,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
         }
         Pat::ListCons(p) => {
@@ -302,10 +357,24 @@ fn collect(
             // both operands descend the context — exactly like a `Tuple` element
             // or an `As`.
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &lhs,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &rhs,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
         }
         Pat::Ands(p) => {
@@ -314,7 +383,14 @@ fn collect(
             // deconstruction, never a function-binding head, so each operand
             // descends the context, exactly like a `Tuple` element.
             for operand in p.operands() {
-                collect(&operand, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &operand,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
         }
         Pat::Or(p) => {
@@ -332,11 +408,25 @@ fn collect(
             // first `v` in source order either way.
             let start = out.len();
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &lhs,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
             let boundary = out.len();
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), argument_expressions, out, walked);
+                collect(
+                    &rhs,
+                    ctx.descend(),
+                    argument_expressions,
+                    names,
+                    out,
+                    walked,
+                );
             }
             if walked.is_none() {
                 canonicalise_alternatives(
@@ -376,6 +466,7 @@ fn collect(
                         .and_then(|li| li.idents().last())
                     {
                         out.push(PatternName::Binder(Def::from_token(
+                            names,
                             &head,
                             DefKind::Value {
                                 is_function: has_args,
@@ -383,7 +474,7 @@ fn collect(
                         )));
                     }
                     for arg in &args {
-                        collect(arg, Ctx::Param, argument_expressions, out, walked);
+                        collect(arg, Ctx::Param, argument_expressions, names, out, walked);
                     }
                 }
                 Ctx::LetNested | Ctx::Param | Ctx::Pattern if has_args => {
@@ -391,7 +482,7 @@ fn collect(
                     // is a reference, not a binder, so only the arguments bind —
                     // in the same context the application was reached in.
                     for arg in &args {
-                        collect(arg, ctx, argument_expressions, out, walked);
+                        collect(arg, ctx, argument_expressions, names, out, walked);
                     }
                 }
                 Ctx::LetNested | Ctx::Param | Ctx::Pattern => {
@@ -402,6 +493,7 @@ fn collect(
                     // head (`A.B`) is a qualified reference and binds nothing.
                     if let Some(name) = single_segment(p) {
                         out.push(PatternName::Binder(Def::provisional_from_token(
+                            names,
                             &name,
                             ctx.leaf_kind(),
                         )));
@@ -454,28 +546,28 @@ fn canonicalise_alternatives(
     let binds = |def: &Def| !def.provisional && !argument_expressions.contains(&def.range);
     // Small, linear-scanned association lists: an or-pattern binds a handful of
     // names, so a hash map would cost more than it saves.
-    let left_binders: Vec<(String, TextRange)> = names[..left]
+    let left_binders: Vec<(Name, TextRange)> = names[..left]
         .iter()
         .filter_map(|name| match name {
-            PatternName::Binder(def) if binds(def) => Some((def.key().to_string(), def.range)),
+            PatternName::Binder(def) if binds(def) => Some((def.name(), def.range)),
             _ => None,
         })
         .collect();
     // How many bindings of each name the right alternative has used up, so its
     // k-th `v` claims the left's k-th rather than all of them claiming the first.
-    let mut claimed: Vec<(String, usize)> = Vec::new();
+    let mut claimed: Vec<(Name, usize)> = Vec::new();
     let mut demoted: Vec<(TextRange, TextRange)> = Vec::new();
     for name in names[left..].iter_mut() {
         match name {
             PatternName::Binder(def) if binds(def) => {
-                let key = &*def.key();
-                let index = match claimed.iter_mut().find(|(seen, _)| seen == key) {
+                let key = def.name();
+                let index = match claimed.iter_mut().find(|(seen, _)| *seen == key) {
                     Some((_, count)) => {
                         *count += 1;
                         *count - 1
                     }
                     None => {
-                        claimed.push((key.to_string(), 1));
+                        claimed.push((key, 1));
                         0
                     }
                 };
@@ -483,7 +575,7 @@ fn canonicalise_alternatives(
                 // agree — so keep the binder rather than lose the name).
                 let Some(&(_, binder)) = left_binders
                     .iter()
-                    .filter(|(seen, _)| seen == key)
+                    .filter(|(seen, _)| *seen == key)
                     .nth(index)
                 else {
                     continue;
@@ -546,6 +638,9 @@ fn names_active_pat(p: &LongIdentPat) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The env every case interns its binders' names in.
+    static ENV: std::sync::LazyLock<AssemblyEnv> = std::sync::LazyLock::new(AssemblyEnv::default);
     use borzoi_cst::parser::parse;
     use borzoi_cst::syntax::{AstNode, ImplFile, ModuleDecl};
     use proptest::prelude::*;
@@ -586,7 +681,7 @@ mod tests {
     }
 
     fn names(defs: &[Def]) -> Vec<String> {
-        defs.iter().map(|d| d.name.clone()).collect()
+        defs.iter().map(|d| d.spelling(&ENV).into_owned()).collect()
     }
 
     /// The binders of `pat`, asserting it contributes no or-pattern alias.
@@ -595,7 +690,7 @@ mod tests {
     /// or-pattern goes through here and gets the absence checked for free; the
     /// or-pattern cases read [`pattern_names`] directly.
     fn binders(pat: &Pat, role: BinderRole) -> Vec<Def> {
-        pattern_names(pat, role, &HashSet::default())
+        pattern_names(pat, role, &HashSet::default(), &ENV)
             .into_iter()
             .map(|name| match name {
                 PatternName::Binder(def) => def,
@@ -959,10 +1054,10 @@ mod tests {
                 usize::from(range.end()) - offset
             )
         };
-        pattern_names(&head_pat(pat_src), role, &HashSet::default())
+        pattern_names(&head_pat(pat_src), role, &HashSet::default(), &ENV)
             .iter()
             .map(|occurrence| match occurrence {
-                PatternName::Binder(def) => format!("{}@{}", def.name, show(def.range)),
+                PatternName::Binder(def) => format!("{}@{}", def.spelling(&ENV), show(def.range)),
                 PatternName::Alias { range, binder } => {
                     let name = &pat_src
                         [usize::from(range.start()) - offset..usize::from(range.end()) - offset];
@@ -1041,7 +1136,8 @@ mod tests {
             pattern_names(
                 &head_pat("(A None | B None)"),
                 BinderRole::Pattern,
-                &HashSet::default()
+                &HashSet::default(),
+                &ENV
             )
             .iter()
             .all(|o| matches!(o, PatternName::Binder(def) if def.provisional))
@@ -1065,12 +1161,17 @@ mod tests {
             &head_pat(src),
             BinderRole::Pattern,
             &HashSet::from_iter([argument]),
+            &ENV,
         );
         let rendered: Vec<String> = names
             .iter()
             .map(|occurrence| match occurrence {
                 PatternName::Binder(def) => {
-                    format!("{}@{}", def.name, u32::from(def.range.start()) - 4)
+                    format!(
+                        "{}@{}",
+                        def.spelling(&ENV),
+                        u32::from(def.range.start()) - 4
+                    )
                 }
                 PatternName::Alias { range, binder } => format!(
                     "@{}->{}",
@@ -1264,7 +1365,7 @@ mod tests {
             prop_assert_eq!(names(&defs), expected);
             for d in &defs {
                 let span = usize::from(d.range.start())..usize::from(d.range.end());
-                prop_assert_eq!(&src[span], d.name.as_str());
+                prop_assert_eq!(&src[span], &*d.spelling(&ENV));
                 prop_assert_eq!(d.kind, DefKind::Value { is_function: false });
             }
         }
@@ -1347,7 +1448,7 @@ mod tests {
             prop_assert_eq!(names(&defs), expected);
             for d in &defs {
                 let span = usize::from(d.range.start())..usize::from(d.range.end());
-                prop_assert_eq!(&src[span], d.name.as_str());
+                prop_assert_eq!(&src[span], &*d.spelling(&ENV));
                 prop_assert_eq!(d.kind, DefKind::Value { is_function: false });
             }
         }
@@ -1417,7 +1518,7 @@ mod tests {
                 .pat()
                 .expect("head pat");
 
-            let occurrences = pattern_names(&pat, BinderRole::Let, &HashSet::default());
+            let occurrences = pattern_names(&pat, BinderRole::Let, &HashSet::default(), &ENV);
             let text = |range: TextRange| {
                 &src[usize::from(range.start())..usize::from(range.end())]
             };
@@ -1436,7 +1537,7 @@ mod tests {
                 if let PatternName::Binder(def) = occurrence
                     && !def.provisional
                 {
-                    let name = def.key().into_owned();
+                    let name = ENV.names().text(def.name()).to_string();
                     prop_assert!(
                         !bound.contains(&name),
                         "{:?} binds {name:?} twice",
@@ -1460,8 +1561,8 @@ mod tests {
                         "{src:?}: alias at {range:?} names no earlier binder"
                     )));
                 };
-                let written = Def::from_range(text(*range), *range, def.kind);
-                prop_assert_eq!(def.key(), written.key());
+                let written = Def::from_range(ENV.names(), text(*range), *range, def.kind);
+                prop_assert_eq!(def.name(), written.name());
             }
         }
     }
@@ -1471,9 +1572,9 @@ mod tests {
     fn binder_names_node_by_node(root: &SyntaxNode) -> HashSet<String> {
         let mut names = HashSet::default();
         for pat in root.descendants_of::<Pat>() {
-            for name in pattern_names(&pat, BinderRole::Let, &HashSet::default()) {
+            for name in pattern_names(&pat, BinderRole::Let, &HashSet::default(), &ENV) {
                 if let PatternName::Binder(def) = name {
-                    names.insert(def.key().to_string());
+                    names.insert(ENV.names().text(def.name()).to_string());
                 }
             }
         }
@@ -1541,7 +1642,7 @@ mod tests {
         fn one_shared_walk_names_every_nodes_binders(src in any_pattern_file()) {
             let root = parse(&src).root;
             prop_assert_eq!(
-                every_let_pattern_binder_name(&root),
+                every_let_pattern_binder_name(&root, ENV.names()),
                 binder_names_node_by_node(&root),
                 "{:?}",
                 src
@@ -1557,7 +1658,7 @@ mod tests {
         for shape in SHAPES.iter().filter(|shape| shape.kind == Kind::Impl) {
             for n in [SHORT, 64] {
                 let root = parse(&shape.source(n)).root;
-                let names = every_let_pattern_binder_name(&root);
+                let names = every_let_pattern_binder_name(&root, ENV.names());
                 assert_eq!(
                     names,
                     binder_names_node_by_node(&root),
