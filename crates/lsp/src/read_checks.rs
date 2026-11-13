@@ -254,6 +254,43 @@ impl<D: Probe> ReadChecks<D> {
         holds
     }
 
+    /// List `dir` now, as a reader that will depend on the listing does,
+    /// and return the read as a check (counted as a listing). Inside a
+    /// generation the directory is stamped first (a `stat`, shared with
+    /// every check that names it this generation), and when the listing is
+    /// one that stamp decides (a fact, and an answer: see the module docs)
+    /// the check is born with that stamp as its witness, so the next
+    /// generation confirms it by the `stat` alone. A change after the stamp
+    /// moves it, so the witness is never newer than what the listing saw.
+    pub fn list(&self, dir: &Path) -> Check {
+        let query = Read {
+            path: dir.to_path_buf(),
+            observation: Observation::Listing(Ok(Vec::new())),
+        };
+        let stamped = match (self.files.generation(), self.files.now()) {
+            (Some(generation), Some(now)) if dir.is_absolute() => {
+                let id = self.dir_id(dir.to_path_buf());
+                self.dir_stamp(id, generation).map(|stamp| (id, stamp, now))
+            }
+            _ => None,
+        };
+        let read = Read {
+            observation: self.ask(&query),
+            ..query
+        };
+        let witness = stamped
+            .filter(|_| matches!(read.observation, Observation::Listing(Ok(_))))
+            .filter(|_| a_fact(&read.observation))
+            .map(|(id, stamp, taken)| Witness {
+                dirs: vec![(id, stamp)],
+                taken,
+            });
+        Check {
+            read,
+            witness: RefCell::new(witness),
+        }
+    }
+
     /// Whether `check`'s witness, taken in an earlier generation, still holds:
     /// none of its stamps is racy, and every directory's stamp is unchanged.
     fn witnessed(&self, check: &Check, generation: u64) -> bool {

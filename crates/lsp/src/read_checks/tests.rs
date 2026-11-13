@@ -417,6 +417,12 @@ struct Seen {
     witnessed: usize,
     /// Checks that found their answer moved.
     moved: usize,
+    /// Listings [`ReadChecks::list`] made that a later generation confirmed
+    /// by their born witness alone, with no listing asked.
+    born_witnessed: usize,
+    /// Listings [`ReadChecks::list`] made that a later generation found
+    /// moved.
+    born_moved: usize,
 }
 
 /// Every non-text query at every path, recorded against the model as it is.
@@ -446,6 +452,10 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
     }
     let checks = checks(&model.borrow());
     let mut checker = ReadChecks::with_disk(Rc::clone(&model));
+    // Listings the checker made itself, as a reader that depends on them
+    // does (`ReadChecks::list`): one more per generation, held to the same
+    // property in every later generation.
+    let mut born: Vec<Check> = Vec::new();
     for op in ops {
         if !matches!(op, Op::Generation) {
             model.borrow_mut().apply(op);
@@ -484,6 +494,36 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
         if counts.listings + counts.canonicalizations < 2 * PATHS.len() as u64 {
             seen.witnessed += 1;
         }
+        // The born listings, each alone in a generation of its own, so
+        // that a confirmation asking no listing shows its witness held.
+        for check in &born {
+            let before = model
+                .borrow()
+                .answer(&check.read().path, &check.read().observation);
+            checker.begin_generation(Nanos(now));
+            let holds = checker.holds(check);
+            let asked = checker.end_generation().listings;
+            let truth = model
+                .borrow()
+                .answer(&check.read().path, &check.read().observation);
+            if holds {
+                prop_assert!(
+                    truth == check.read().observation || before == check.read().observation,
+                    "{:?}, listed by the checker, held, but the disk moved: {:?}",
+                    check.read().path,
+                    truth
+                );
+                if asked == 0 {
+                    seen.born_witnessed += 1;
+                }
+            } else {
+                seen.born_moved += 1;
+            }
+        }
+        checker.begin_generation(Nanos(now));
+        let listed = checker.list(&path(born.len() % PATHS.len()));
+        checker.end_generation();
+        born.push(listed);
     }
     Ok(())
 }
@@ -532,7 +572,10 @@ fn the_generator_reaches_witnessed_and_moved_checks() {
             .current();
         run(granularity, &setup, &ops, &mut seen).unwrap();
     }
-    assert!(seen.witnessed > 50 && seen.moved > 50, "{seen:?}");
+    assert!(
+        seen.witnessed > 50 && seen.moved > 50 && seen.born_witnessed > 50 && seen.born_moved > 50,
+        "{seen:?}"
+    );
 }
 
 /// A listing confirmed by its directory's stamp alone costs one `stat`, and
