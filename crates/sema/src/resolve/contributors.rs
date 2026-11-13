@@ -492,11 +492,17 @@ impl Resolver<'_> {
                             binders.extend(declared_identifiers(binding.syntax()));
                             continue;
                         };
-                        for name in pattern_names(&head, BinderRole::Let, &HashSet::default()) {
+                        let names = self.assemblies.names();
+                        for name in pattern_names(
+                            &head,
+                            BinderRole::Let,
+                            &HashSet::default(),
+                            self.assemblies,
+                        ) {
                             if let PatternName::Binder(def) = name
                                 && def.kind != DefKind::Parameter
                             {
-                                binders.insert(def.key().to_string());
+                                binders.insert(names.text(def.name()).to_string());
                             }
                         }
                         // An active pattern's cases are pattern constructors.
@@ -1191,7 +1197,8 @@ mod attribute_trust_tests {
                 &[PathBuf::from("/p/N.fsi")],
             );
             let qnof = qnof.into_iter().next().expect("one qnof");
-            let surface = super::super::signature_surface(&sig, &qnof);
+            let env = AssemblyEnv::default();
+            let surface = super::super::signature_surface(&sig, &qnof, env.names());
             let items = ProjectItems {
                 core_attribute_alias_declared: alias_declared,
                 assembly_core_attribute_aliases: Arc::new(aliases.clone()),

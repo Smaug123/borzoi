@@ -620,7 +620,11 @@ fn compare_file(root: &Path, file: &FileCensus, references: &OracleReferences, t
         let res = rf.resolution_at(use_range);
         let ours = |res: Resolution| match res {
             Resolution::Local(_) | Resolution::Item(_) => match rf.resolved_def(res) {
-                Some(def) => format!("binder={:?} at {}", def.name, at(def.range)),
+                Some(def) => format!(
+                    "binder={:?} at {}",
+                    def.spelling(&references.env),
+                    at(def.range)
+                ),
                 None => "no-in-file-def".to_string(),
             },
             Resolution::Unresolved => "unresolved".to_string(),
@@ -734,10 +738,12 @@ fn compare_file(root: &Path, file: &FileCensus, references: &OracleReferences, t
                         None
                     }
                     // Same-named in-file binder, different range.
-                    Some(def) if def.name == text => {
-                        tally
-                            .alt_binders
-                            .push(site(format!("binder {:?} at {:?}", def.name, def.range)));
+                    Some(def) if def.spelling(&references.env) == text => {
+                        tally.alt_binders.push(site(format!(
+                            "binder {:?} at {:?}",
+                            def.spelling(&references.env),
+                            def.range
+                        )));
                         Some(format!(
                             "alt-binder fcs={} ours={} {check}",
                             at(expected),
@@ -747,12 +753,14 @@ fn compare_file(root: &Path, file: &FileCensus, references: &OracleReferences, t
                     // A *differently-named* binder — we resolved to the wrong
                     // symbol entirely.
                     Some(def) => {
-                        tally
-                            .divergences
-                            .push(site(format!("binder {:?} at {:?}", def.name, def.range)));
+                        tally.divergences.push(site(format!(
+                            "binder {:?} at {:?}",
+                            def.spelling(&references.env),
+                            def.range
+                        )));
                         Some(format!(
                             "divergence binder={:?} at {}",
-                            def.name,
+                            def.spelling(&references.env),
                             at(def.range)
                         ))
                     }

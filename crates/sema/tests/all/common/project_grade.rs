@@ -150,7 +150,10 @@ pub fn check_with(
             // nothing (an error-recovered declaration), so the erroring
             // count sees it.
             if idx == last {
-                ours_by_name.insert((d.name.to_string(), line_of(key.0)), ours.clone());
+                ours_by_name.insert(
+                    (d.spelling(full_bcl_env()).into_owned(), line_of(key.0)),
+                    ours.clone(),
+                );
             }
             if dumps.is_ungraded(key) {
                 continue;
@@ -161,7 +164,7 @@ pub fn check_with(
                 }
                 theirs => tally.wrong.push(format!(
                     "{name} binder `{}` (line {}): ours `{ours}`, FCS {theirs:?}\n{}",
-                    d.name,
+                    d.spelling(full_bcl_env()),
                     line_of(key.0),
                     dump(sources)
                 )),

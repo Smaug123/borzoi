@@ -633,15 +633,16 @@ impl<'a> Resolver<'a> {
                 }
                 let mut entries = Vec::new();
                 if let Some(ident) = e.ident() {
-                    let def = Def::from_token(&ident, DefKind::PatternLocal);
-                    let name = def.key().to_string();
+                    let def =
+                        Def::from_token(self.assemblies.names(), &ident, DefKind::PatternLocal);
+                    let name = def.name();
                     let range = def.range;
                     let id = self.intern(def);
                     let res = Resolution::Local(id);
                     self.record(range, res);
-                    entries.push(ScopeEntry::binding(
+                    entries.push(ScopeEntry::binding_named(
                         self.assemblies.names(),
-                        &name,
+                        name,
                         res,
                         self.scope.open_generation,
                     ));
@@ -793,7 +794,12 @@ impl<'a> Resolver<'a> {
         }
         let mut entries = Vec::new();
         for element in &elements {
-            for pat_name in pattern_names(element, BinderRole::Param, &HashSet::default()) {
+            for pat_name in pattern_names(
+                element,
+                BinderRole::Param,
+                &HashSet::default(),
+                self.assemblies,
+            ) {
                 let PatternName::Binder(def) = pat_name else {
                     continue;
                 };
@@ -802,27 +808,27 @@ impl<'a> Resolver<'a> {
                 }
                 if def.provisional {
                     self.opaque_binders.insert(def.range);
-                    let name = def.key().to_string();
+                    let name = def.name();
                     let a_case = self
-                        .case_reference(&name)
+                        .case_reference(self.assemblies.names().text(name))
                         .is_some_and(|r| !matches!(r, Resolution::Deferred(_)));
                     if !a_case {
-                        entries.push(ScopeEntry::binding(
+                        entries.push(ScopeEntry::binding_named(
                             self.assemblies.names(),
-                            &name,
+                            name,
                             Resolution::Deferred(DeferredReason::UnboundName),
                             self.scope.open_generation,
                         ));
                     }
                     continue;
                 }
-                let name = def.key().to_string();
+                let name = def.name();
                 let range = def.range;
                 let res = Resolution::Local(self.intern(def));
                 self.record(range, res);
-                entries.push(ScopeEntry::binding(
+                entries.push(ScopeEntry::binding_named(
                     self.assemblies.names(),
-                    &name,
+                    name,
                     res,
                     self.scope.open_generation,
                 ));
@@ -909,7 +915,7 @@ impl<'a> Resolver<'a> {
             // `excluded_param_ranges` now names this pattern's argument
             // *expressions* — the occurrences the or-pattern pairing must not
             // count as bindings. Bound before the loop so the borrow ends here.
-            let names = pattern_names(&pat, role, &self.excluded_param_ranges);
+            let names = pattern_names(&pat, role, &self.excluded_param_ranges, self.assemblies);
             let mut aliases = AliasTargets::default();
             for pat_name in names {
                 // An or-pattern's later alternative re-spelling a name the first
@@ -943,18 +949,19 @@ impl<'a> Resolver<'a> {
                 // X`, FS0049). It is not bound here, but it may hide an
                 // enclosing binder of its name.
                 if def.provisional {
-                    entries.extend(self.resolve_provisional_case_head(&def.key(), def.range));
+                    let name = self.assemblies.names().text(def.name());
+                    entries.extend(self.resolve_provisional_case_head(name, def.range));
                     continue;
                 }
-                let name = def.key().to_string();
+                let name = def.name();
                 let range = def.range;
                 let id = self.intern(def);
                 let res = Resolution::Local(id);
                 self.record(range, res);
                 aliases.interned(range, res);
-                entries.push(ScopeEntry::binding(
+                entries.push(ScopeEntry::binding_named(
                     self.assemblies.names(),
-                    &name,
+                    name,
                     res,
                     self.scope.open_generation,
                 ));

@@ -123,7 +123,7 @@ fn ours(source: &str) -> Option<String> {
     inferred
         .def_types()
         .iter()
-        .find(|(id, _)| resolved.def(**id).name == "v")
+        .find(|(id, _)| resolved.def(**id).spelling(env) == "v")
         .map(|(_, ty)| ty.render())
 }
 

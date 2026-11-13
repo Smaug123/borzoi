@@ -4425,7 +4425,7 @@ impl ResolvedFile {
             Some(Resolution::Entity(h)) => env.is_abbreviation(*h) || is_target(*h),
             Some(Resolution::Local(id)) => self
                 .own_abbrev_type_simple_names
-                .contains(&*self.defs[id.index()].key()),
+                .contains(env.names().text(self.defs[id.index()].name())),
             // No other variant is ever recorded for an attribute; if one
             // appears, defer rather than trust it.
             Some(_) => true,
@@ -4750,6 +4750,9 @@ impl ResolvedProject {
                 .iter()
                 .map(|file| {
                     let mut file = ResolvedFile::clone(file);
+                    for def in &mut file.defs {
+                        *def = def.rekey(from, to);
+                    }
                     for decl in &mut file.export_decls {
                         decl.path = decl.path.rekey(from, to);
                         decl.kind = rekey_kind(&decl.kind);

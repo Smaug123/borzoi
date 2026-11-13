@@ -159,7 +159,10 @@ fn published(env: &AssemblyEnv, src: &str) -> HashMap<String, String> {
         out.insert(format!("expr@{range:?}"), ty.render());
     }
     for (def, ty) in inferred.def_types() {
-        out.insert(format!("def:{}", resolved.def(*def).name), ty.render());
+        out.insert(
+            format!("def:{}", resolved.def(*def).spelling(env)),
+            ty.render(),
+        );
     }
     for (range, res) in inferred.member_resolutions() {
         // Rendered through the env: a `Resolution::Member` carries an

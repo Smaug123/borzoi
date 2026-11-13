@@ -507,7 +507,7 @@ fn a_quoted_operator_name_is_never_its_compiled_name() {
                 "{text:?} at {}..{}: we bind {:?}, FCS {:?}\n{}",
                 u.start,
                 u.end,
-                def.name,
+                def.spelling(full_bcl_env()),
                 u.full_name,
                 c.src
             );

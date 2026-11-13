@@ -60,7 +60,8 @@ use borzoi_cst::syntax::NodeOrToken;
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use borzoi_sema::{
-    Def, DefKind, ProjectFile, Resolution, ResolvedProject, SourceFile, signature_partners,
+    AssemblyEnv, Def, DefKind, ProjectFile, Resolution, ResolvedProject, SourceFile,
+    signature_partners,
 };
 
 use super::depth::{BoundedParseError, parse_bounded};
@@ -78,11 +79,34 @@ pub enum SourceDoc {
     Declined(SourceDocDecline),
 }
 
+/// A binder as the collector and signature pairing read it: how its name is
+/// spelled, where it is, and what kind of binder it is. A sema [`Def`] gives
+/// one against the env it was resolved against ([`Binder::of`]); pairing makes
+/// one from a signature declaration's name token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binder {
+    /// The name as the source spells it ([`Def::spelling`]).
+    pub spelling: String,
+    pub range: TextRange,
+    pub kind: DefKind,
+}
+
+impl Binder {
+    /// `def`, a definition resolved against `env`.
+    pub fn of(def: &Def, env: &AssemblyEnv) -> Self {
+        Binder {
+            spelling: def.spelling(env).into_owned(),
+            range: def.range,
+            kind: def.kind,
+        }
+    }
+}
+
 /// Why [`SourceDoc`] could not establish a declaration's documentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SourceDocDecline {
     /// The definition's range does not land on a declaration we can find in
-    /// the tree (a stale or synthetic [`Def`]).
+    /// the tree (a stale or synthetic [`Binder`]).
     NoDeclaration,
     /// A value binder inside a `let` binding but outside its head pattern.
     PatternBinder,
@@ -192,7 +216,7 @@ impl SourceDocIndex {
 
     /// The documentation FCS attaches to the declaration `def` names. `def`
     /// must be a binder of the file this index was built over.
-    pub fn doc_for(&self, def: &Def) -> SourceDoc {
+    pub fn doc_for(&self, def: &Binder) -> SourceDoc {
         match self.grab_rule(def) {
             Ok(None) => SourceDoc::Attached(Vec::new()),
             Ok(Some(GrabRule::At(token))) => match self.block_before(&token) {
@@ -280,14 +304,14 @@ impl SourceDocIndex {
     }
 
     /// The type definition `def` names.
-    fn type_defn_of(&self, def: &Def) -> Option<SyntaxNode> {
+    fn type_defn_of(&self, def: &Binder) -> Option<SyntaxNode> {
         let element = covering(&self.root, def.range)?;
         ancestors(&element).find(|n| n.kind() == SyntaxKind::TYPE_DEFN)
     }
 
     /// Whether the type definition `def` names declares a member, union case
     /// or enum case named `name` — what FCS looks a `T.name` up in.
-    fn type_declares(&self, def: &Def, name: &str) -> bool {
+    fn type_declares(&self, def: &Binder, name: &str) -> bool {
         let Some(defn) = self.type_defn_of(def) else {
             return false;
         };
@@ -321,7 +345,7 @@ impl SourceDocIndex {
 
     /// Which token `def`'s declaration grabs at, or `None` for a binder FCS
     /// gives no documentation (parameters, pattern locals, type parameters).
-    fn grab_rule(&self, def: &Def) -> Result<Option<GrabRule>, SourceDocDecline> {
+    fn grab_rule(&self, def: &Binder) -> Result<Option<GrabRule>, SourceDocDecline> {
         let element = covering(&self.root, def.range).ok_or(SourceDocDecline::NoDeclaration)?;
         match def.kind {
             // An active-pattern case token's own symbol (`FSharpActivePatternCase`
@@ -964,17 +988,23 @@ pub fn member_element(lines: &[String]) -> Result<DocElement, SourceRenderError>
 pub struct ProjectDocs<'a> {
     files: &'a [ProjectFile],
     resolved: &'a ResolvedProject,
+    env: &'a AssemblyEnv,
     partners: Vec<Option<usize>>,
     indexes: HashMap<usize, SourceDocIndex>,
     declarations: HashMap<usize, Declarations>,
 }
 
 impl<'a> ProjectDocs<'a> {
-    /// `resolved` must be a fold of (a prefix of) `files`.
-    pub fn new(files: &'a [ProjectFile], resolved: &'a ResolvedProject) -> Self {
+    /// `resolved` must be a fold of (a prefix of) `files` against `env`.
+    pub fn new(
+        files: &'a [ProjectFile],
+        resolved: &'a ResolvedProject,
+        env: &'a AssemblyEnv,
+    ) -> Self {
         ProjectDocs {
             files,
             resolved,
+            env,
             partners: signature_partners(files),
             indexes: HashMap::new(),
             declarations: HashMap::new(),
@@ -996,6 +1026,7 @@ impl<'a> ProjectDocs<'a> {
             | Resolution::Deferred(_)
             | Resolution::Unresolved => return None,
         };
+        let def = &Binder::of(def, self.env);
         let project_file = self.files.get(file)?;
         if !project_file
             .recovery
@@ -1095,7 +1126,7 @@ impl<'a> ProjectDocs<'a> {
         &mut self,
         file: usize,
         signature: usize,
-        def: &Def,
+        def: &Binder,
     ) -> Result<Pairing, SourceDocDecline> {
         let sig_file = &self.files[signature];
         if !sig_file.recovery.clean_through(sig_file.file.syntax()) {
@@ -1116,7 +1147,7 @@ impl<'a> ProjectDocs<'a> {
     }
 
     /// The doc of `def`, a binder of file `file`.
-    fn doc_in(&mut self, file: usize, def: &Def) -> SourceDoc {
+    fn doc_in(&mut self, file: usize, def: &Binder) -> SourceDoc {
         let root = self.files[file].file.syntax();
         self.indexes
             .entry(file)
@@ -1143,12 +1174,8 @@ mod tests {
         let parse = parse(src);
         let recovery = SyntaxRecovery::of(&parse);
         let file = ImplFile::cast(parse.root).expect("impl root");
-        let resolved = resolve_file(
-            &file,
-            &ProjectItems::default(),
-            &AssemblyEnv::default(),
-            &recovery,
-        );
+        let env = AssemblyEnv::default();
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let index = SourceDocIndex::new(file.syntax());
         let mut defs: Vec<&Def> = resolved
             .resolutions()
@@ -1158,7 +1185,10 @@ mod tests {
         defs.sort_by_key(|d| d.range.start());
         defs.dedup_by_key(|d| d.range);
         defs.into_iter()
-            .map(|d| (d.name.clone(), index.doc_for(d)))
+            .map(|d| {
+                let binder = Binder::of(d, &env);
+                (binder.spelling.clone(), index.doc_for(&binder))
+            })
             .collect()
     }
 

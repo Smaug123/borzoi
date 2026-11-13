@@ -34,7 +34,7 @@ fn bcl_env() -> AssemblyEnv {
 }
 
 /// Resolve and infer `source` against the BCL env.
-fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
+fn resolve_and_infer(source: &str) -> (AssemblyEnv, ResolvedFile, InferredFile) {
     let parsed = parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -51,16 +51,16 @@ fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
         &env,
         &borzoi_sema::PrecedingTypes::default(),
     );
-    (resolved, inferred)
+    (env, resolved, inferred)
 }
 
 /// The canonical render of the binder named `name`, if we emitted one.
 fn binder_render(source: &str, name: &str) -> Option<String> {
-    let (resolved, inferred) = resolve_and_infer(source);
+    let (env, resolved, inferred) = resolve_and_infer(source);
     inferred
         .def_types()
         .iter()
-        .find(|(id, _)| resolved.def(**id).name == name)
+        .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
         .map(|(_, ty)| ty.render())
 }
 
@@ -68,7 +68,7 @@ fn binder_render(source: &str, name: &str) -> Option<String> {
 /// assert every binder type we produced agrees with FCS at that exact
 /// declaration range. Returns how many we checked.
 fn assert_binder_sound(source: &str) -> usize {
-    let (resolved, inferred) = resolve_and_infer(source);
+    let (env, resolved, inferred) = resolve_and_infer(source);
 
     let path = temp_fs_file("infer_ann_entity", source);
     let json = invoke_fcs_dump("binder-types", &path);
@@ -87,14 +87,14 @@ fn assert_binder_sound(source: &str) -> usize {
                 "we inferred `{}` for binder `{}` at {key:?} but FCS reports no binder there \
                  in {source:?}",
                 ty.render(),
-                def.name
+                def.spelling(&env)
             )
         });
         assert_eq!(
             &ty.render(),
             fcs_ty,
             "binder-type mismatch for `{}` at {key:?} in {source:?}: ours=`{}`, FCS=`{fcs_ty}`",
-            def.name,
+            def.spelling(&env),
             ty.render()
         );
         checked += 1;
@@ -180,11 +180,11 @@ fn entity_annotation_defer_shapes_stay_silent() {
             "unresolved bare name without the open",
         ),
     ] {
-        let (resolved, inferred) = resolve_and_infer(source);
+        let (env, resolved, inferred) = resolve_and_infer(source);
         let x_typed = inferred
             .def_types()
             .keys()
-            .any(|id| resolved.def(*id).name == "x");
+            .any(|id| resolved.def(*id).spelling(&env) == "x");
         assert!(!x_typed, "{why}: {source:?}");
     }
 }

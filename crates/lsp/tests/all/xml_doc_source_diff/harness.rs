@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use borzoi::workspace::implicit_symbols;
 use borzoi::xml_doc::source::{
@@ -160,6 +160,8 @@ pub struct OurProject {
     pub texts: Vec<String>,
     pub files: Vec<ProjectFile>,
     pub resolved: ResolvedProject,
+    /// The env `resolved` was folded against.
+    pub env: Arc<AssemblyEnv>,
 }
 
 impl OurProject {
@@ -194,10 +196,12 @@ impl OurProject {
             .zip(recoveries)
             .map(|((f, q), r)| ProjectFile::new(f, q, r))
             .collect();
-        let resolved = resolve_project_files(&files, &AssemblyEnv::default());
+        let env = Arc::new(AssemblyEnv::default());
+        let resolved = resolve_project_files(&files, &env);
         OurProject {
             texts,
             files,
+            env,
             resolved,
         }
     }
@@ -272,7 +276,7 @@ pub struct Graded {
 /// Grade every occurrence our resolver recorded in every file of `ours`
 /// against `fcs` (parallel to the files).
 pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
-    let mut docs = ProjectDocs::new(&ours.files, &ours.resolved);
+    let mut docs = ProjectDocs::new(&ours.files, &ours.resolved, &ours.env);
     let mut out = Vec::new();
     for (i, oracle_file) in fcs.iter().enumerate() {
         let text = &ours.texts[i];
@@ -332,7 +336,7 @@ pub fn grade(ours: &OurProject, fcs: &[OracleFile]) -> Vec<Graded> {
             out.push(Graded {
                 file: i,
                 range,
-                name: def.name.clone(),
+                name: def.spelling(&ours.env).into_owned(),
                 def_kind: def.kind,
                 is_definition,
                 declared_in: Some(declared_in),

@@ -44,7 +44,7 @@ fn resolve(src: &str) -> ResolvedFile {
     resolve_file(
         &ImplFile::cast(parsed.root).expect("impl file"),
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::empty_env(),
         &recovery,
     )
 }
@@ -82,9 +82,11 @@ fn assert_def_at(rf: &ResolvedFile, src: &str, use_range: TextRange, def_range: 
         .resolved_def(res)
         .unwrap_or_else(|| panic!("{res:?} at {use_range:?} has no in-file def in {src:?}"));
     assert_eq!(
-        def.range, def_range,
+        def.range,
+        def_range,
         "wrong def for {use_range:?} in {src:?}: got {:?} ({})",
-        def.range, def.name
+        def.range,
+        def.spelling(crate::common::empty_env())
     );
 }
 

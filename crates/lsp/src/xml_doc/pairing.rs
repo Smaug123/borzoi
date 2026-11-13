@@ -32,10 +32,11 @@ use std::collections::HashMap;
 
 use borzoi_cst::syntax::NodeOrToken;
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
-use borzoi_sema::{Def, DefKind};
+use borzoi_sema::DefKind;
 
 use super::source::{
-    ancestors, covering, ident_text, in_head_pattern, is_self_identifier, type_arity, unticked,
+    Binder, ancestors, covering, ident_text, in_head_pattern, is_self_identifier, type_arity,
+    unticked,
 };
 
 /// A type as FCS's type table keys it.
@@ -85,9 +86,9 @@ enum Slot {
 /// One file's pairable declarations.
 #[derive(Debug, Default)]
 pub(super) struct Declarations {
-    groups: HashMap<Group, Vec<(Slot, Def)>>,
+    groups: HashMap<Group, Vec<(Slot, Binder)>>,
     /// Each type definition's cases, in declaration order.
-    cases: HashMap<(Vec<String>, TypeKey), Vec<Def>>,
+    cases: HashMap<(Vec<String>, TypeKey), Vec<Binder>>,
     /// Every declaration's name was read; when not, a name absent from
     /// [`Self::groups`] may yet be declared.
     complete: bool,
@@ -97,7 +98,7 @@ pub(super) struct Declarations {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Pairing {
     /// The signature declaration (a binder of the signature file).
-    Paired(Def),
+    Paired(Binder),
     /// Nothing: the signature hides it, or it is not a declaration
     /// conformance pairs (a local, a parameter, a class `let`).
     NoPartner,
@@ -127,11 +128,11 @@ impl Declarations {
         decls
     }
 
-    fn add(&mut self, container: Vec<String>, table: Table, slot: Slot, def: Def) {
+    fn add(&mut self, container: Vec<String>, table: Table, slot: Slot, def: Binder) {
         let group = Group {
             container,
             table,
-            name: unticked(&def.name),
+            name: unticked(&def.spelling),
         };
         self.groups.entry(group).or_default().push((slot, def));
     }
@@ -237,7 +238,7 @@ impl Declarations {
         }
     }
 
-    fn exact(&self, group: &Group, slot: &Slot) -> Vec<&Def> {
+    fn exact(&self, group: &Group, slot: &Slot) -> Vec<&Binder> {
         self.groups
             .get(group)
             .into_iter()
@@ -266,7 +267,7 @@ impl Declarations {
 /// declarations `sig`.
 pub(super) fn pair(
     root: &SyntaxNode,
-    def: &Def,
+    def: &Binder,
     imp: &Declarations,
     sig: &Declarations,
 ) -> Pairing {
@@ -319,13 +320,17 @@ pub(super) fn pair(
                     Pairing::Unmodelled
                 };
             };
-            let names = |defs: &[Def]| defs.iter().map(|d| unticked(&d.name)).collect::<Vec<_>>();
+            let names = |defs: &[Binder]| {
+                defs.iter()
+                    .map(|d| unticked(&d.spelling))
+                    .collect::<Vec<_>>()
+            };
             let ours: Vec<String> = cases.iter().map(|c| unticked(c.text())).collect();
             if names(theirs) != ours {
                 return Pairing::Ambiguous;
             }
-            let name = unticked(&def.name);
-            match theirs.iter().position(|d| unticked(&d.name) == name) {
+            let name = unticked(&def.spelling);
+            match theirs.iter().position(|d| unticked(&d.spelling) == name) {
                 Some(i) if ours.iter().filter(|n| **n == name).count() == 1 => {
                     Pairing::Paired(theirs[i].clone())
                 }
@@ -352,8 +357,8 @@ enum ImplSlot {
     },
 }
 
-fn implementation_slot(element: &NodeOrToken<SyntaxNode, SyntaxToken>, def: &Def) -> ImplSlot {
-    let name = unticked(&def.name);
+fn implementation_slot(element: &NodeOrToken<SyntaxNode, SyntaxToken>, def: &Binder) -> ImplSlot {
+    let name = unticked(&def.spelling);
     let keyed = |node: &SyntaxNode, table, slot| match container_of(node) {
         Some(container) => ImplSlot::Keyed {
             group: Group {
@@ -592,11 +597,10 @@ fn member_name_token(member: &SyntaxNode) -> Option<SyntaxToken> {
     }
 }
 
-fn def_at(token: &SyntaxToken, kind: DefKind) -> Def {
-    Def {
-        name: token.text().to_string(),
+fn def_at(token: &SyntaxToken, kind: DefKind) -> Binder {
+    Binder {
+        spelling: token.text().to_string(),
         range: token.text_range(),
         kind,
-        provisional: false,
     }
 }

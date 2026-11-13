@@ -954,7 +954,7 @@ fn grade(label: &str, folded: &Folded) -> Graded {
                 panic!(
                     "{label}: we inferred `{ours}` for binder `{}` at {key:?} but FCS reports \
                      no binder there\n{}",
-                    def.name,
+                    def.spelling(full_bcl_env()),
                     ctx(key)
                 );
             };
@@ -962,16 +962,16 @@ fn grade(label: &str, folded: &Folded) -> Graded {
                 &ours,
                 theirs,
                 "{label}: binder type mismatch for `{}`\n{}",
-                def.name,
+                def.spelling(full_bcl_env()),
                 ctx(key)
             );
             assert!(
                 !dump.hides_constraint(key, &ours),
                 "{label}: binder `{}` typed `{ours}`, which FCS constrains\n{}",
-                def.name,
+                def.spelling(full_bcl_env()),
                 ctx(key)
             );
-            binders.insert(def.name.clone(), ours);
+            binders.insert(def.spelling(full_bcl_env()).into_owned(), ours);
         }
         g.nodes.push(nodes);
         g.binders.push(binders);
