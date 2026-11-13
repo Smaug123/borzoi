@@ -6161,7 +6161,8 @@ impl AssemblyEnv {
     /// Whether the assembly called `assembly` names the type `handle`: it
     /// declares it, or forwards its path there ([`Self::forwarded_target_at_path`]).
     /// Only a non-generic top-level type is asked about; any other answers
-    /// `false`.
+    /// `false`. Only the FCS-differential comparator asks it.
+    #[cfg(feature = "test-support")]
     pub(crate) fn assembly_names_type(&self, assembly: &str, handle: EntityHandle) -> bool {
         let entity = self.entity(handle);
         if !self.top_level_types.contains(&handle) || !entity.generic_parameters.is_empty() {

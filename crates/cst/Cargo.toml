@@ -21,8 +21,9 @@ accessor-trace = []
 # the rowan reference differential (`tests/all/flat_tree_reference.rs`).
 # Test-only, on for this crate's own tests through the self-reference below.
 rowan-reference = ["dep:rowan"]
-# Asserts on every parse that each token table rebuilds exactly the stream of
-# the pipeline stage it replaces (`docs/token-pipeline-soa-plan.md`, D7).
+# Asserts on every lex that the raw token table rebuilds exactly the stream of
+# the full-trivia driver iterator, which runs the same preprocessor through a
+# queue (`docs/token-pipeline-soa-plan.md`, D7).
 # Test-only, on for this crate's own tests through the self-reference below.
 token-reference = []
 
