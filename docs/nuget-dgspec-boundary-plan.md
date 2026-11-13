@@ -1913,9 +1913,11 @@ MSBuild keeps the last and drops the rest. The executor (A₁.3c) reads a
 target's XML from that file and range. The answer is exact only when:
 - the walk is not opaque, so no file it did not reach can define the name
   later;
-- it walked no `Directory.Build.*` file the SDK chain did not ask for.
-  Without an SDK that reaches `Microsoft.Common.targets`, the walk splices
-  those files in itself, and MSBuild imports neither;
+- every `Directory.Build.*` file the walk spliced in itself stands for an
+  import an SDK chain really makes: the walk reached that file's import
+  point in `Microsoft.Common.props` or `.targets`. Without it MSBuild
+  imports no such file, and whatever it defines or steers is the walk's
+  alone;
 - the name, and every name defined, is plain: printable ASCII, no `%`, no
   whitespace. MSBuild compares names unescaped, untrimmed and
   `OrdinalIgnoreCase`, which on plain names is ASCII case folding.
