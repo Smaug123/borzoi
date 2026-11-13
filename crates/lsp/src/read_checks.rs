@@ -524,7 +524,15 @@ mod host_tests {
         std::fs::remove_dir(root.join("elsewhere/target")).unwrap();
         checker.begin_generation(at);
         for check in &checks {
-            assert!(!checker.holds(check), "{:?} held", check.read().path);
+            // Every answer moved but `lstat` of `chain`, which is the link.
+            let truth = HostDisk.answer(&check.read().path, &check.read().observation);
+            assert_eq!(
+                checker.holds(check),
+                truth == check.read().observation,
+                "{:?} {:?}",
+                check.read().path,
+                check.read().observation
+            );
         }
         checker.end_generation();
     }
