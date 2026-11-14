@@ -1532,7 +1532,7 @@ pub struct WatchedChangeEffect {
 
 /// Handle one notification as the loop does when nothing supersedes it: a
 /// text sync applied with its diagnostics, anything else by
-/// [`handle_other_notification`]. A cancellation or `exit` does nothing here:
+/// `handle_other_notification`. A cancellation or `exit` does nothing here:
 /// the loop handles those itself.
 pub fn handle_notification(state: &mut State, conn: &Connection, not: Notification) {
     match Incoming::read(Message::Notification(not)) {

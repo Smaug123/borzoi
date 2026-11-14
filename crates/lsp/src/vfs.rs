@@ -415,7 +415,8 @@ fn file_key(uri: &Uri) -> Option<String> {
 /// reads only if the two share a key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DocumentKey {
-    /// A `file:` URI, by [`file_key`].
+    /// A `file:` URI, by its lexically normalised path under the platform's
+    /// case rule.
     Path(String),
     /// Any other URI, by its spelling.
     Uri(String),
