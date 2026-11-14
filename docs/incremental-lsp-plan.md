@@ -2564,8 +2564,7 @@ The oracle:
   installed version), which `WITNESSED` gains, and
   `InstalledVersionContents` (the framework pack's DLL, rewritten in place
   inside an installed version), unwitnessed by D3's axiom. The existing
-  `.dll` writes are unchanged, and still flushed: the pinned framework-DLL
-  deletion now passes through `named_by`'s trusted-version arm.
+  `.dll` writes are unchanged, and still flushed.
   `unwatched_assembly_writes_agree_with_a_fresh_session` generates scripts
   that write and delete the assets files and the package DLL and never flush;
   its non-vacuity check asks for comparisons with such a write pending and
@@ -2581,12 +2580,12 @@ The oracle:
   copy of `System.Console.dll` and a package. A rebuild of that output, with
   its watch event or without one, rebuilds the referencing env and leaves the
   other the same allocation (`Arc::ptr_eq`), and an unchanged generation
-  builds no env and confirms each by `stat`s alone; an event inside the
-  package version the env trusts drops it, one inside a version it never
-  read drops nothing, and on a case-folding file system one under another
-  spelling of the version drops it too; a package is trusted only once
+  builds no env and confirms each by `stat`s alone; an event naming files no
+  env read drops nothing, an unwatched in-place rewrite inside a trusted
+  package version goes unseen (the exemption is live), and any event at all
+  then makes the next confirmation see it; a package is trusted only once
   committed; an env made under another workspace is built again. The first
-  three fail on 6a.
+  two fail on 6a.
 - `csharp_ref_assembly_env_e2e::a_cs_edit_and_its_event_rebuild_only_the_env_with_a_csharp_edge`
   (the plan's C# oracle, on `csharp_ref_assembly_env_e2e`'s fixture plus an
   F#-only project): a `.cs` edit adding a namespace and its event put the
