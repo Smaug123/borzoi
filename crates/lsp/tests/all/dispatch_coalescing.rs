@@ -1840,11 +1840,12 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
 
 /// The spans that begin a unit of work whose result is cached, after which a
 /// running request passes a checkpoint (`docs/incremental-lsp-plan.md`,
-/// Stage 9). The env is one unit, from resolving its references to reading
-/// their DLLs (`build_env_from_dll_paths`, inside it).
-const UNIT_SPANS: [&str; 5] = [
+/// Stage 9). An env is two: resolving its references, and building it from
+/// them (reading their DLLs, `build_env_from_dll_paths`, inside it).
+const UNIT_SPANS: [&str; 6] = [
     "evaluate_project",
     "parse_compile_item",
+    "resolve_references",
     "build_assembly_env",
     "resolve_project",
     "infer_project",
@@ -1864,6 +1865,10 @@ struct SpanTrace {
     begun_after: Vec<&'static str>,
     /// `lsp.request` spans begun: one per run.
     runs: usize,
+    /// The unit spans open now, by id: a unit begun inside another is part
+    /// of it.
+    open_units: Vec<u64>,
+    next_id: u64,
     in_first_run: bool,
     stopped: usize,
 }
@@ -1907,7 +1912,8 @@ impl tracing::Subscriber for StopAtSpan {
             trace.in_first_run = trace.runs == 1;
             return tracing::span::Id::from_u64(REQUEST_SPAN_ID);
         }
-        if trace.sent_at.is_some() && trace.stopped == 0 && UNIT_SPANS.contains(&name) {
+        let unit = UNIT_SPANS.contains(&name);
+        if trace.sent_at.is_some() && trace.stopped == 0 && unit && trace.open_units.is_empty() {
             trace.begun_after.push(name);
         }
         if trace.in_first_run {
@@ -1917,6 +1923,14 @@ impl tracing::Subscriber for StopAtSpan {
                 trace.sent_at = Some(index);
                 self.input.send(self.sends.clone()).unwrap();
             }
+        }
+        if unit {
+            // Ids above the request's, one per unit span, so closing one is
+            // seen.
+            trace.next_id += 1;
+            let id = REQUEST_SPAN_ID + trace.next_id;
+            trace.open_units.push(id);
+            return tracing::span::Id::from_u64(id);
         }
         tracing::span::Id::from_u64(1)
     }
@@ -1928,9 +1942,12 @@ impl tracing::Subscriber for StopAtSpan {
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
     fn try_close(&self, id: tracing::span::Id) -> bool {
-        if id.into_u64() == REQUEST_SPAN_ID {
-            self.trace.lock().unwrap().in_first_run = false;
+        let id = id.into_u64();
+        let mut trace = self.trace.lock().unwrap();
+        if id == REQUEST_SPAN_ID {
+            trace.in_first_run = false;
         }
+        trace.open_units.retain(|open| *open != id);
         true
     }
 }
@@ -1954,6 +1971,8 @@ struct LatencyScenario {
     /// Project files rewritten after the setup, with no watch event, so the
     /// request evaluates each again.
     rewrite: Vec<PathBuf>,
+    /// Files given new contents after the setup, with no watch event.
+    replace: Vec<(PathBuf, String)>,
     request: Message,
 }
 
@@ -2029,6 +2048,7 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
                 .iter()
                 .map(|name| s_dir.join(format!("{name}.fsproj")))
                 .collect(),
+            replace: Vec::new(),
             request: request(
                 "hover",
                 "textDocument/hover",
@@ -2039,15 +2059,43 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
             ),
         },
         LatencyScenario {
+            name: "a hover over a cached fold whose project file gained a comment \
+                   (the env's references resolved again, alike)",
+            setup: opens.iter().cloned().chain([hover_c.clone()]).collect(),
+            rewrite: vec![world.root.join("P").join("P.fsproj")],
+            replace: Vec::new(),
+            request: hover_c.clone(),
+        },
+        LatencyScenario {
+            name: "a hover over a cached fold whose project gained a reference to a project \
+                   with no output (the env's references resolved again, evaluating it)",
+            setup: opens.iter().cloned().chain([hover_c.clone()]).collect(),
+            rewrite: Vec::new(),
+            replace: vec![(
+                world.root.join("P").join("P.fsproj"),
+                format!(
+                    "<Project>\n  <ItemGroup>\n{}  </ItemGroup>\n  <ItemGroup>\n    \
+                     <ProjectReference Include=\"../Q/Q.fsproj\" />\n  </ItemGroup>\n</Project>\n",
+                    SOURCES
+                        .iter()
+                        .map(|s| format!("    <Compile Include=\"{}\" />\n", s.file()))
+                        .collect::<String>()
+                ),
+            )],
+            request: hover_c.clone(),
+        },
+        LatencyScenario {
             name: "a cold hover (parses, env, fold, inference)",
             setup: opens.clone(),
             rewrite: Vec::new(),
+            replace: Vec::new(),
             request: hover_c.clone(),
         },
         LatencyScenario {
             name: "cold references (the whole project, then its scan)",
             setup: opens.clone(),
             rewrite: Vec::new(),
+            replace: Vec::new(),
             request: request(
                 "references",
                 "textDocument/references",
@@ -2062,12 +2110,14 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
             name: "cold semantic tokens",
             setup: opens.clone(),
             rewrite: Vec::new(),
+            replace: Vec::new(),
             request: tokens_c("tokens"),
         },
         LatencyScenario {
             name: "a hover over a cached fold (inference only)",
             setup: opens.iter().cloned().chain([tokens_c("warm")]).collect(),
             rewrite: Vec::new(),
+            replace: Vec::new(),
             request: hover_c,
         },
         LatencyScenario {
@@ -2085,6 +2135,7 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
                 q.join("Q.fsproj"),
                 r.join("R.fsproj"),
             ],
+            replace: Vec::new(),
             request: request("symbols", "workspace/symbol", json!({ "query": "" })),
         },
         LatencyScenario {
@@ -2098,6 +2149,7 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
                 ])
                 .collect(),
             rewrite: Vec::new(),
+            replace: Vec::new(),
             request: request("symbols", "workspace/symbol", json!({ "query": "" })),
         },
     ]
@@ -2110,9 +2162,25 @@ fn run_latency_case(
     scenario: &LatencyScenario,
     at: Option<usize>,
 ) -> (SpanTrace, Value) {
+    // Put back after the case, so each case starts from the same disk.
+    let originals: Vec<(PathBuf, String)> = scenario
+        .replace
+        .iter()
+        .map(|(path, _)| path)
+        .chain(&scenario.rewrite)
+        .map(|path| {
+            (
+                path.clone(),
+                crate::common::host_fs::read_to_string(path).unwrap(),
+            )
+        })
+        .collect();
     let mut session = Session::start(&world.root, false);
     session.deliver(scenario.setup.clone());
     session.settle();
+    for (path, text) in &scenario.replace {
+        std::fs::write(path, text).unwrap();
+    }
     for project in &scenario.rewrite {
         // A text this session has not evaluated.
         static REWRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -2141,6 +2209,9 @@ fn run_latency_case(
     let answer =
         serde_json::to_value(answer.remove(0).response_result.map_err(|e| e.code)).unwrap();
     let trace = std::mem::take(&mut *trace.lock().unwrap());
+    for (path, text) in originals {
+        std::fs::write(path, text).unwrap();
+    }
     (trace, answer)
 }
 
@@ -2149,9 +2220,10 @@ fn run_latency_case(
 /// handler's own, each unit's, and every span inside them) stops the request
 /// once, no unit of work begins before the stopped step ends (the
 /// notification is handled next), and the request then answers as it does
-/// unstopped. Swept over every such span of a cold hover, cold
-/// references, cold semantic tokens, a hover whose fold is cached and whose
-/// inference is not, and `workspace/symbol` over two projects.
+/// unstopped. Swept over every such span of each [`latency_scenarios`]
+/// scenario: cold requests, cached folds whose inference, ownership, project
+/// files or env references moved, and `workspace/symbol` over several
+/// projects.
 #[test]
 fn a_request_stops_for_a_notification_wherever_it_arrives() {
     on_server_stack(|| {
