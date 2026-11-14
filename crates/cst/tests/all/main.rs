@@ -19,6 +19,7 @@ mod filtered_table;
 mod flat_tree_reference;
 mod flat_tree_scans;
 mod kind_name_totality;
+mod language_features;
 mod langversion_gate;
 mod layout_perturbation_sweep;
 mod lexer_diff;

@@ -218,6 +218,7 @@ dependencies = [
 name = "borzoi-cst"
 version = "0.1.0"
 dependencies = [
+ "borzoi-astgen",
  "borzoi-cst",
  "borzoi-oracle-harness",
  "borzoi-stats",

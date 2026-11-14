@@ -1,0 +1,125 @@
+# FCS's language features: one row per `LanguageFeature` case in the compiler's
+# src/Compiler/Facilities/LanguageFeatures.fs, and what borzoi does with each.
+# Hand-edited; the single source for `LanguageFeature`, the parser's version
+# gates and the typed facades' kind intervals. `tools/astgen` reads it and
+# generates crates/cst/src/syntax/generated/features.rs and the `vN` facades
+# (`cargo run -p borzoi-astgen --example generate`). See
+# docs/ast-versioning-plan.md, "The feature table".
+#
+# Columns (tab-separated; `#` lines are comments):
+#   feature       FCS's `LanguageFeature` case name.
+#   introduced    Its version in FCS's `features` map: 4.7 ... 11.0, or preview.
+#   fcs_stage     Where FCS's parse pipeline consults it, `+`-joined: lex,
+#                 lexfilter, parse, post-parse. `check` when only the type
+#                 checker or a later phase does.
+#   fcs_effect    What FCS does below `introduced`, `+`-joined. Diagnose: a
+#                 diagnostic over the tree it builds at every version. Reshape:
+#                 a hard error with recovery, a relabelled token or a different
+#                 token stream. Severity: an existing diagnostic appears or
+#                 changes severity. `-` for a `check` row.
+#   borzoi        What borzoi models, `+`-joined: Kind(SYNTAX_KIND) (a node kind
+#                 the feature introduced: a facade interval and a gate),
+#                 Positional(detector) (a gate on a construct with no kind of its
+#                 own), Shape (the parse itself depends on the version), Trivia
+#                 (a directive or other trivia), or Unmodelled(reason) alone.
+#   engaged       live, deferred(reason) (modelled in the table but inert: no
+#                 gate, no interval), or `-` for an Unmodelled row.
+#   fcs_sites     `LanguageFeature.X` uses per file of FCS's parse pipeline,
+#                 outside `//` comments, as path=count joined by `,` (paths
+#                 under src/Compiler); `-` for none. Held to the compiler by
+#                 borzoi-cst's language_features test.
+#   display_name  FCS's name for it in FS3350 (FSComp.txt, braces unescaped as FCS does).
+#   notes         Free text.
+feature	introduced	fcs_stage	fcs_effect	borzoi	engaged	fcs_sites	display_name	notes
+SingleUnderscorePattern	4.7	parse	Reshape	Unmodelled(lenient at every version until PR 3)	-	pars.fsy=2	single underscore pattern	FCS raises a parse error on `_.` in a pattern long identifier below 4.7 and recovers to a different tree.
+WildCardInForLoop	4.7	parse	Reshape	Unmodelled(lenient at every version until PR 3)	-	SyntaxTree/ParseHelpers.fs=1	wild card in for loop	FS0525 on `for _ = …` below 4.7; pinned by parser_diff_feature_gates::unmodelled_gates_are_pinned.
+RelaxWhitespace	4.7	lexfilter	Severity	Positional(lexfilter undentation limit)	live	SyntaxTree/LexFilter.fs=1	whitespace relaxation	Moves the FS0058 offside warnings only; never the token stream.
+ImplicitYield	4.7	check	-	Unmodelled(checker-only)	-	-	implicit yield	
+FixedIndexSlice3d4d	5.0	check	-	Unmodelled(checker-only)	-	-	fixed-index slice 3d/4d	
+DotlessFloat32Literal	5.0	lex	Reshape	Positional(dotless_float32_span)	live	lex.fsl=1	dotless float32 literal	FCS's lexer reports FS1153 and substitutes 0.0f; we report FS1153 and keep the value.
+AndBang	5.0	check	-	Unmodelled(checker-only)	-	-	applicative computation expressions	
+NullableOptionalInterop	5.0	check	-	Unmodelled(checker-only)	-	-	nullable optional interop	
+DefaultInterfaceMemberConsumption	5.0	check	-	Unmodelled(checker-only)	-	-	default interface member consumption	
+OpenTypeDeclaration	5.0	check	-	Unmodelled(checker-only)	-	-	open type declaration	
+PackageManagement	5.0	check	-	Unmodelled(checker-only)	-	-	package management	
+WitnessPassing	5.0	check	-	Unmodelled(checker-only)	-	-	witness passing for trait constraints in F# quotations	
+InterfacesWithMultipleGenericInstantiation	5.0	check	-	Unmodelled(checker-only)	-	-	interfaces with multiple generic instantiation	
+NameOf	5.0	check	-	Unmodelled(checker-only)	-	-	nameof	
+StringInterpolation	5.0	check	-	Kind(INTERP_STRING_EXPR)	deferred(PR 3: parse-phase legality diagnostic and facade interval)	-	string interpolation	FCS checks it in the type checker (CheckExpressions.fs).
+AdditionalTypeDirectedConversions	6.0	check	-	Unmodelled(checker-only)	-	-	additional type-directed conversions	
+RelaxWhitespace2	6.0	lexfilter	Reshape	Shape	live	SyntaxTree/LexFilter.fs=1	whitespace relaxation v2	The +1 offside grace and CtxtMatch pops change the token stream.
+OverloadsForCustomOperations	6.0	check	-	Unmodelled(checker-only)	-	-	overloads for custom operations	
+ExpandedMeasurables	6.0	check	-	Unmodelled(checker-only)	-	-	more types support units of measure	
+ResumableStateMachines	6.0	check	-	Unmodelled(checker-only)	-	-	resumable state machines	
+StructActivePattern	6.0	check	-	Unmodelled(checker-only)	-	-	struct representation for active patterns	
+PrintfBinaryFormat	6.0	check	-	Unmodelled(checker-only)	-	-	binary formatting for integers	
+IndexerNotationWithoutDot	6.0	check	-	Unmodelled(checker-only)	-	-	expr[idx] notation for indexing and slicing	LexFilter.fs's SupportsFeature check is commented out.
+RefCellNotationInformationals	6.0	check	-	Unmodelled(checker-only)	-	-	informational messages related to reference cells	
+UseBindingValueDiscard	6.0	check	-	Unmodelled(checker-only)	-	-	discard pattern in use binding	
+NonVariablePatternsToRightOfAsPatterns	6.0	check	-	Unmodelled(checker-only)	-	-	non-variable patterns to the right of 'as' patterns	
+AttributesToRightOfModuleKeyword	6.0	parse	Diagnose	Positional(module_attributes_span)	live	pars.fsy=3	attributes to the right of the 'module' keyword	
+DelegateTypeNameResolutionFix	6.0	check	-	Unmodelled(checker-only)	-	-	fix to resolution of delegate type names, see https://github.com/dotnet/fsharp/issues/10228	
+BetterExceptionPrinting	7.0	check	-	Unmodelled(checker-only)	-	-	automatic generation of 'Message' property for 'exception' declarations	
+ReallyLongLists	7.0	check	-	Unmodelled(checker-only)	-	-	list literals of any size	
+ErrorOnDeprecatedRequireQualifiedAccess	7.0	check	-	Unmodelled(checker-only)	-	-	give error on deprecated access of construct with RequireQualifiedAccess attribute	
+RequiredPropertiesSupport	7.0	check	-	Unmodelled(checker-only)	-	-	support for required properties	
+InitPropertiesSupport	7.0	check	-	Unmodelled(checker-only)	-	-	support for consuming init properties	
+LowercaseDUWhenRequireQualifiedAccess	7.0	check	-	Unmodelled(checker-only)	-	-	Allow lowercase DU when RequireQualifiedAccess attribute	
+InterfacesWithAbstractStaticMembers	7.0	parse	Diagnose	Positional(static_abstract_span)	live	pars.fsy=4	static abstract interface members	From 7.0 FCS warns FS3535 at the same span; not reported (#nowarn is not consumed).
+SelfTypeConstraints	7.0	check	-	Unmodelled(checker-only)	-	-	self type constraints	SELF_CONSTRAINT is a child of TyparConstraint, not a dispatch-enum variant.
+AccessorFunctionShorthand	8.0	parse	Diagnose	Kind(DOT_LAMBDA_EXPR)	deferred(PR 3: gating `_.M` waits for Legality-class diagnostics)	pars.fsy=2	underscore dot shorthand for accessor only function	Pinned lenient by parser_diff_feature_gates::unmodelled_gates_are_pinned.
+MatchNotAllowedForUnionCaseWithNoData	8.0	check	-	Unmodelled(checker-only)	-	-	Pattern match discard is not allowed for union case that takes no data.	
+CSharpExtensionAttributeNotRequired	8.0	check	-	Unmodelled(checker-only)	-	-	Allow implicit Extension attribute on declaring types, modules	
+ErrorForNonVirtualMembersOverrides	8.0	check	-	Unmodelled(checker-only)	-	-	Raises errors for non-virtual members overrides	
+WarningWhenInliningMethodImplNoInlineMarkedFunction	8.0	check	-	Unmodelled(checker-only)	-	-	Raises warnings when 'let inline ... =' is used together with [<MethodImpl(MethodImplOptions.NoInlining)>] attribute. Function is not getting inlined.	
+EscapeDotnetFormattableStrings	8.0	check	-	Unmodelled(checker-only)	-	-	Escapes curly braces before calling FormattableStringFactory.Create when interpolated string literal is typed as FormattableString	
+ArithmeticInLiterals	8.0	check	-	Unmodelled(checker-only)	-	-	Arithmetic and logical operations in literals, enum definitions and attributes	
+ErrorReportingOnStaticClasses	8.0	check	-	Unmodelled(checker-only)	-	-	Error reporting on static classes	
+TryWithInSeqExpression	8.0	check	-	Unmodelled(checker-only)	-	-	Support for try-with in sequence expressions	
+WarningWhenCopyAndUpdateRecordChangesAllFields	8.0	check	-	Unmodelled(checker-only)	-	-	Raises warnings when an copy-and-update record expression changes all fields of a record.	
+StaticMembersInInterfaces	8.0	check	-	Unmodelled(checker-only)	-	-	Static members in interfaces	
+NonInlineLiteralsAsPrintfFormat	8.0	check	-	Unmodelled(checker-only)	-	-	String values marked as literals and IL constants as printf format	
+NestedCopyAndUpdate	8.0	check	-	Unmodelled(checker-only)	-	-	Nested record field copy-and-update	
+ExtendedStringInterpolation	8.0	lex	Reshape	Unmodelled(ungated: `$$"""` is lexed as 8.0 does at every version until PR 3)	-	lex.fsl=1	Extended string interpolation similar to C# raw string literals.	
+WarningWhenMultipleRecdTypeChoice	8.0	check	-	Unmodelled(checker-only)	-	-	Raises warnings when multiple record type matches were found during name resolution because of overlapping field names.	
+ImprovedImpliedArgumentNames	8.0	check	-	Unmodelled(checker-only)	-	-	Improved implied argument names	
+DiagnosticForObjInference	8.0	check	-	Unmodelled(checker-only)	-	-	Diagnostic 3559 (warn when obj inferred) at informational level, off by default	
+WarningWhenTailRecAttributeButNonTailRecUsage	8.0	check	-	Unmodelled(checker-only)	-	-	Raises warnings if a member or function has the 'TailCall' attribute, but is not being used in a tail recursive way.	
+StaticLetInRecordsDusEmptyTypes	8.0	check	-	Unmodelled(checker-only)	-	-	Allow static let bindings in union, record, struct, non-incremental-class types	
+StrictIndentation	8.0	lexfilter+parse	Reshape+Severity	Shape	live	SyntaxTree/LexFilter.fs=1,pars.fsy=1	Raises errors on incorrect indentation, allows better recovery and analysis during editing	FS0058 becomes an error and contexts push strictly; the pars.fsy empty-interface FS0058 is unmodelled at every version.
+ConstraintIntersectionOnFlexibleTypes	8.0	parse	Diagnose	Kind(INTERSECTION_TYPE)+Positional(typar_decl_intersection_span)	live	pars.fsy=2	Constraint intersection on flexible types	
+WhileBang	8.0	parse	Diagnose	Kind(WHILE_BANG_EXPR)	live	pars.fsy=1	'while!' expression	
+ExtendedFixedBindings	8.0	check	-	Unmodelled(checker-only)	-	-	extended fixed bindings for byref and GetPinnableReference	
+PreferStringGetPinnableReference	8.0	check	-	Unmodelled(checker-only)	-	-	prefer String.GetPinnableReference in fixed bindings	
+NullnessChecking	9.0	lexfilter	Reshape	Kind(WITH_NULL_TYPE)	live	SyntaxTree/LexFilter.fs=1	nullness checking	Below 9.0 FCS's LexFilter does not relabel the `|` and its parse differs; we keep the maximal tree and report FS3350.
+ReuseSameFieldsInStructUnions	9.0	check	-	Unmodelled(checker-only)	-	-	Share underlying fields in a [<Struct>] discriminated union as long as they have same name and type	
+PreferExtensionMethodOverPlainProperty	9.0	check	-	Unmodelled(checker-only)	-	-	prefer extension method over plain property	
+WarningIndexedPropertiesGetSetSameType	9.0	check	-	Unmodelled(checker-only)	-	-	Indexed properties getter and setter must have the same type	
+WarningWhenTailCallAttrOnNonRec	9.0	check	-	Unmodelled(checker-only)	-	-	Raises warnings if the 'TailCall' attribute is used on non-recursive functions.	
+UnionIsPropertiesVisible	9.0	check	-	Unmodelled(checker-only)	-	-	Union case test properties	
+BooleanReturningAndReturnTypeDirectedPartialActivePattern	9.0	check	-	Unmodelled(checker-only)	-	-	Boolean-returning and return-type-directed partial active patterns	
+LowerInterpolatedStringToConcat	9.0	check	-	Unmodelled(checker-only)	-	-	Optimizes interpolated strings in certain cases, by lowering to concatenation	
+LowerIntegralRangesToFastLoops	9.0	check	-	Unmodelled(checker-only)	-	-	Optimizes certain uses of the integral range (..) and range-step (.. ..) operators to fast while-loops.	
+LowerSimpleMappingsInComprehensionsToFastLoops	9.0	check	-	Unmodelled(checker-only)	-	-	Lowers [for x in xs -> f x] and [|for x in xs -> f x|] to fast loops when xs is a list or an array, respectively.	
+ParsedHashDirectiveArgumentNonQuotes	9.0	lex+post-parse	Diagnose	Trivia	live	SyntaxTree/SyntaxTreeOps.fs=3,SyntaxTree/WarnScopes.fs=1	# directives with non-quoted string arguments	Directive::warning_numbers reads it; its FS3350 and FS0203 are not reported.
+EmptyBodiedComputationExpressions	9.0	check	-	Unmodelled(checker-only)	-	-	Support for computation expressions with empty bodies: builder { }	
+EnforceAttributeTargets	10.0	check	-	Unmodelled(checker-only)	-	-	Enforce AttributeTargets	
+UseTypeSubsumptionCache	10.0	check	-	Unmodelled(checker-only)	-	-	Use type conversion cache during compilation	
+AllowObjectExpressionWithoutOverrides	10.0	check	-	Unmodelled(checker-only)	-	-	Allow object expressions without overrides	
+DontWarnOnUppercaseIdentifiersInBindingPatterns	10.0	check	-	Unmodelled(checker-only)	-	-	Don't warn on uppercase identifiers in binding patterns	
+DeprecatePlacesWhereSeqCanBeOmitted	10.0	check	-	Unmodelled(checker-only)	-	-	Deprecate places where 'seq' can be omitted	
+SupportValueOptionsAsOptionalParameters	10.0	check	-	Unmodelled(checker-only)	-	-	Support ValueOption as valid type for optional member parameters	
+WarnWhenUnitPassedToObjArg	10.0	check	-	Unmodelled(checker-only)	-	-	Warn when unit is passed to a member accepting `obj` argument, e.g. `Method(o:obj)` will warn if called via `Method()`.	
+UseBangBindingValueDiscard	10.0	check	-	Unmodelled(checker-only)	-	-	Allows use! _ = ... in computation expressions	
+BetterAnonymousRecordParsing	10.0	lexfilter	Diagnose	Unmodelled(ungated: `>|}` and `@>|}` split at every version until PR 3)	-	SyntaxTree/LexFilter.fs=3	Support for better anonymous record parsing	
+ScopedNowarn	10.0	lex	Diagnose	Unmodelled(#nowarn and #warnon are not consumed)	-	SyntaxTree/WarnScopes.fs=3	Support for scoped enabling / disabling of warnings by #warn and #nowarn directives, also inside modules	
+AllowTypedLetUseAndBang	10.0	parse	Diagnose	Positional(typed_bang_binding_span)+Positional(typed_yield_or_return_span)	live	pars.fsy=5	Allow let! and use! type annotations without requiring parentheses	
+UnmanagedConstraintCsharpInterop	10.0	check	-	Unmodelled(checker-only)	-	-	Interop between C#'s and F#'s unmanaged generic constraint (emit additional modreq)	
+AllowAccessModifiersToAutoPropertiesGettersAndSetters	10.0	check	-	Unmodelled(checker-only)	-	SyntaxTree/SyntaxTreeOps.fs=2	Allow access modifiers to auto properties getters and setters	The SyntaxTreeOps.fs check is called from CheckExpressions.fs.
+ReturnFromFinal	10.0	check	-	Unmodelled(checker-only)	-	-	Support for ReturnFromFinal/YieldFromFinal in computation expressions to enable tailcall optimization when available on the builder.	
+ErrorOnInvalidDeclsInTypeDefinitions	10.0	lexfilter	Severity	Positional(lexfilter nested-declaration FS0058)	live	SyntaxTree/LexFilter.fs=1	Error when invalid declarations are used in type definitions.	Adds FS0058 from 10.0 on; the tree does not move.
+WarnWhenFunctionValueUsedAsInterpolatedStringArg	11.0	check	-	Unmodelled(checker-only)	-	-	Warn when a function value is used as an interpolated string argument	
+PreprocessorElif	11.0	lex	Diagnose	Trivia	live	lex.fsl=3	#elif preprocessor directive	
+FromEndSlicing	preview	check	-	Kind(INDEX_FROM_END_EXPR)	deferred(PR 3: parse-phase legality diagnostic and facade interval)	-	from-end slicing	FCS checks it in the type checker (CheckExpressions.fs).
+MethodOverloadsCache	preview	check	-	Unmodelled(checker-only)	-	-	Support for caching method overload resolution results for improved compilation performance.	
+ImplicitDIMCoverage	11.0	check	-	Unmodelled(checker-only)	-	-	Implicit dispatch slot coverage for default interface member implementations	

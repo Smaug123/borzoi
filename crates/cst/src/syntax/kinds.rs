@@ -5,12 +5,13 @@
 //! `tools/fcs-dump ast` is trivial. Only the kinds Phase 1 needs are listed;
 //! grow per language-feature phase.
 //!
-//! This module also owns the **interval table** ([`kind_interval`] /
-//! [`kind_in_surface`]) — the single source of truth for which language version
-//! a kind is legal at, shared by the parser's version gate and the per-version
-//! typed facades (`docs/ast-versioning-plan.md` D5).
+//! It also answers which language versions a kind is legal at ([`kind_interval`] /
+//! [`kind_in_surface`]), from the feature table `crates/cst/language-features.tsv`
+//! that the parser's version gates and the per-version facades share
+//! (`docs/ast-versioning-plan.md`, "The feature table").
 
 use crate::language_version::{LanguageFeature, LanguageVersion};
+use crate::syntax::kind_feature;
 
 /// `u16` repr keeps a syntax-table entry small, and is what rowan's trees
 /// store for the rowan reference differential, which round-trips kinds
@@ -3120,13 +3121,12 @@ impl SyntaxKind {
 /// syntax: a node of that kind is in surface at `lang` iff
 /// `introduced <= lang < removed`.
 ///
-/// This is the seed of the plan's D5 interval table — the single source of
-/// truth consulted by both the parser's version gate ([`kind_in_surface`]) and
-/// the per-version typed facades (`docs/ast-versioning-plan.md` Stage 4). It is
-/// seeded from FCS's `featureVersionMap`
-/// (`../fsharp/src/Compiler/Facilities/LanguageFeatures.fs`): a kind's
-/// `introduced` is the version of the `LanguageFeature` that first made that
-/// syntax legal.
+/// Derived from the live `Kind` rows of `crates/cst/language-features.tsv`
+/// through [`kind_feature`]: a kind's `introduced` is the version FCS's
+/// `features` map gives the feature that first made that syntax legal. The
+/// facades `tools/astgen` generates read the same rows, so a kind's interval
+/// and its facade membership cannot disagree (`docs/ast-versioning-plan.md`,
+/// "The feature table").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KindInterval {
     /// The first language version at which the kind is legal. `None` ⇒ legal
@@ -3136,7 +3136,7 @@ pub struct KindInterval {
     /// removed). `None` ⇒ never removed. No modelled kind is removed today, but
     /// the field is carried from the start so the table format does not churn
     /// when a future version drops a construct (`docs/ast-versioning-plan.md`
-    /// D2/D5).
+    /// D2).
     pub removed: Option<LanguageVersion>,
 }
 
@@ -3149,44 +3149,9 @@ impl KindInterval {
     };
 }
 
-/// The [`LanguageFeature`] whose introduction made a node of `kind` legal, for
-/// the kinds FCS gates while parsing; `None` for a kind legal since before our
-/// F# 4.6 floor.
-///
-/// Every row is a feature FCS checks *in the parser* with
-/// `CheckLanguageFeatureAndRecover`, so the gate over this table reports exactly
-/// where FCS's parse does; `parser_diff_feature_gates` grades the rows against
-/// FCS at every version.
-///
-/// Two post-floor kinds have no row, deliberately:
-///
-/// - `INTERP_STRING_EXPR` (`StringInterpolation`, F# 5.0): FCS checks it in the
-///   type checker, not the parser, so a parse-time row would report what FCS's
-///   parse does not.
-/// - `DOT_LAMBDA_EXPR` (`AccessorFunctionShorthand`, F# 8.0): FCS checks it in
-///   the parser, but a row would make every file using `_.M` version-dependent
-///   under [`diagnostics_are_version_invariant`]; see `docs/fcs-divergences.md`,
-///   "Language-version pinning".
-///
-/// [`diagnostics_are_version_invariant`]: crate::parser::diagnostics_are_version_invariant
-pub fn kind_feature(kind: SyntaxKind) -> Option<LanguageFeature> {
-    match kind {
-        SyntaxKind::WHILE_BANG_EXPR => Some(LanguageFeature::WhileBang),
-        SyntaxKind::INTERSECTION_TYPE => {
-            Some(LanguageFeature::ConstraintIntersectionOnFlexibleTypes)
-        }
-        SyntaxKind::WITH_NULL_TYPE => Some(LanguageFeature::NullnessChecking),
-        _ => None,
-    }
-}
-
 /// The [`KindInterval`] for `kind` — the version range over which a node of that
 /// kind is legal F# syntax: from the introduction of its [`kind_feature`], if it
 /// has one.
-///
-/// The published facades are `v8` (F# 8.0) and `v9` (= the union, F# 9.0+), so
-/// the one row that separates them is [`WITH_NULL_TYPE`](SyntaxKind::WITH_NULL_TYPE)
-/// (nullness, F# 9.0); the 8.0 rows are in surface in both.
 pub fn kind_interval(kind: SyntaxKind) -> KindInterval {
     KindInterval {
         introduced: kind_feature(kind).map(LanguageFeature::introduced),
@@ -3196,7 +3161,7 @@ pub fn kind_interval(kind: SyntaxKind) -> KindInterval {
 
 /// Whether a node of `kind` is in the typed surface at `lang` — i.e. legal at
 /// that language version (`introduced <= lang < removed`). The authority the
-/// parser's version gate and the facade projections share, so that "the tree
+/// facade projections share with the parser's version gate, so that "the tree
 /// holds a node out of surface at `lang`" and "the `vN` projection is not total
 /// here" are by construction the same fact (`docs/ast-versioning-plan.md` P2).
 pub fn kind_in_surface(kind: SyntaxKind, lang: LanguageVersion) -> bool {
@@ -3210,6 +3175,7 @@ pub fn kind_in_surface(kind: SyntaxKind, lang: LanguageVersion) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::DEFERRED_KIND_FEATURES;
 
     /// Every discriminant below the `__LAST` sentinel must round-trip
     /// through [`SyntaxKind::from_raw`] back to the same `u16` — this is the
@@ -3251,9 +3217,8 @@ mod tests {
         assert!(!SyntaxKind::HASH_TOK.is_trivia());
     }
 
-    /// The interval table agrees with FCS's `featureVersionMap`
-    /// (`LanguageFeatures.fs`) for every kind we gate, and treats everything
-    /// else as present since before the floor.
+    /// The live `Kind` rows give the kinds the parser gates today their FCS
+    /// versions, and everything else is present since before the floor.
     #[test]
     fn interval_table_matches_fcs() {
         for (kind, introduced) in [
@@ -3307,14 +3272,23 @@ mod tests {
         }
     }
 
-    /// The post-floor kinds left without a row (see [`kind_feature`]) are in
-    /// surface even at the floor. Giving one a row is a deliberate change that
-    /// must update this assertion and the reasons on [`kind_feature`].
+    /// A deferred `Kind` row records the feature that introduced its kind but
+    /// gives it no interval: the kind is in surface even at the floor until
+    /// the row goes live.
     #[test]
-    fn unrowed_post_floor_kinds_are_always_in_surface() {
-        for kind in [SyntaxKind::INTERP_STRING_EXPR, SyntaxKind::DOT_LAMBDA_EXPR] {
+    fn deferred_kinds_are_always_in_surface() {
+        let deferred: Vec<SyntaxKind> = DEFERRED_KIND_FEATURES.iter().map(|&(k, _)| k).collect();
+        assert_eq!(
+            deferred,
+            [
+                SyntaxKind::INTERP_STRING_EXPR,
+                SyntaxKind::DOT_LAMBDA_EXPR,
+                SyntaxKind::INDEX_FROM_END_EXPR,
+            ],
+        );
+        for kind in deferred {
             assert_eq!(kind_interval(kind), KindInterval::ALWAYS, "{kind:?}");
-            assert!(kind_in_surface(kind, LanguageVersion::V4_6), "{kind:?}");
+            assert!(kind_in_surface(kind, LanguageVersion::MIN), "{kind:?}");
         }
     }
 }
