@@ -109,7 +109,10 @@ fn project(rng: &mut SplitMix64) -> String {
     }
     // A `UsingTask` may rebind a built-in task.
     if rng.below(15) == 0 {
-        out.push_str("  <UsingTask TaskName=\"Message\" AssemblyFile=\"missing.dll\" />\n");
+        out.push_str(&format!(
+            "  <UsingTask TaskName=\"{}\" AssemblyFile=\"missing.dll\" />\n",
+            rng.pick(&["Message", "Outer+Message", "Microsoft.Build.Tasks.Message"])
+        ));
     }
     // Defaults an item a target creates takes too.
     if rng.below(5) == 0 {

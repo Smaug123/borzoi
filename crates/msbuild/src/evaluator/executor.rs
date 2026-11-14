@@ -792,16 +792,16 @@ fn attribute(node: Node<'_, '_>, name: &str) -> Result<Option<String>, Decline> 
 }
 
 /// Whether a `UsingTask` of `task_name` may bind the task an element names
-/// `name`: MSBuild matches a task by its name or the last segment of a
-/// qualified one, case-insensitively. A name it cannot read may bind
-/// anything.
+/// `name`. MSBuild matches a task by its name or by the last segment of a
+/// qualified one, a namespace (`X.Message`) or a nested type
+/// (`Outer+Message`), case-insensitively. Any name ending in `name` counts,
+/// which over-approximates that, and so does a name it cannot read.
 fn may_bind(task_name: &str, name: &str) -> bool {
     let task_name = task_name.trim();
     task_name.contains(['$', '@', '%'])
         || task_name
-            .rsplit('.')
-            .next()
-            .is_some_and(|last| last.eq_ignore_ascii_case(name))
+            .to_ascii_lowercase()
+            .ends_with(&name.to_ascii_lowercase())
 }
 
 /// Whether escaped text holds an item or metadata reference.
