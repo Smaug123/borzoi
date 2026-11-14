@@ -92,7 +92,7 @@ impl<'a> Gen<'a> {
             _ => return Some(None),
         };
         let r = self.solver.table.fresh();
-        self.solver.eq(self.solver.tys.var(r), result);
+        self.eq(scope, self.solver.tys.var(r), result);
         Some(Some(r))
     }
 

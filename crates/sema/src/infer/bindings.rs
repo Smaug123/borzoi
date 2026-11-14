@@ -210,8 +210,7 @@ impl<'a> Gen<'a> {
                     // let g x = (x, a)`).
                     let dv = self.def_var(def);
                     if let Some(rhs_var) = rhs_var {
-                        self.solver
-                            .eq(self.solver.tys.var(dv), self.solver.tys.var(rhs_var));
+                        self.eq(scope, self.solver.tys.var(dv), self.solver.tys.var(rhs_var));
                     }
                 }
                 self.solve(scope);
@@ -383,7 +382,7 @@ impl<'a> Gen<'a> {
 
         let arg_vars = self.param_vars(scope, head, cx);
         let r = self.solver.table.fresh();
-        self.solver.eq(self.solver.tys.var(r), t);
+        self.eq(scope, self.solver.tys.var(r), t);
         if let Some(rhs) = rhs {
             debug_assert!(
                 rhs.syntax()
@@ -456,7 +455,7 @@ impl<'a> Gen<'a> {
             && let Some(def) = self.facts.def_at(tok.text_range())
         {
             let dv = self.def_var(def);
-            self.solver.eq(self.solver.tys.var(dv), t);
+            self.eq(scope, self.solver.tys.var(dv), t);
             if let Some(rhs) = rhs {
                 debug_assert!(
                     rhs.syntax()
@@ -484,11 +483,10 @@ impl<'a> Gen<'a> {
     /// reunifying them lets the parameter generalise together with the function
     /// (`let id x = x` ⇒ `'a -> 'a`). Incomplete bindings skip this entirely,
     /// preserving the exact soundness boundary the #701 review rounds settled.
-    fn slot_binder_reunify(&mut self, scope: &Scope) {
-        for &(def, slot) in &scope.params {
+    fn slot_binder_reunify(&mut self, scope: &mut Scope) {
+        for (def, slot) in scope.params.clone() {
             let dv = self.def_var(def);
-            self.solver
-                .eq(self.solver.tys.var(slot), self.solver.tys.var(dv));
+            self.eq(scope, self.solver.tys.var(slot), self.solver.tys.var(dv));
         }
     }
 
@@ -514,7 +512,7 @@ impl<'a> Gen<'a> {
     /// the binding defers.
     fn function_type(
         &mut self,
-        scope: &Scope,
+        scope: &mut Scope,
         head: &LongIdentPat,
         arg_vars: &[TyVid],
         ret: Option<TyVid>,
@@ -544,7 +542,7 @@ impl<'a> Gen<'a> {
             fun_ty = self.solver.tys.fun(self.solver.tys.var(arg), fun_ty);
         }
         let fv = self.def_var(f_def);
-        self.solver.eq(self.solver.tys.var(fv), fun_ty);
+        self.eq(scope, self.solver.tys.var(fv), fun_ty);
         // This binding's parameters are this head's: the scope is the
         // binding's own, and a local function is not walked.
         for &(param, _) in &scope.params {
@@ -595,7 +593,7 @@ impl<'a> Gen<'a> {
             Ok((_, TyKind::Var(slot))) => *slot,
             Ok((t, _)) => {
                 let slot = self.solver.table.fresh();
-                self.solver.eq(self.solver.tys.var(slot), t);
+                self.eq(scope, self.solver.tys.var(slot), t);
                 slot
             }
             Err(why) => {

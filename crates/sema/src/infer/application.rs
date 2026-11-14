@@ -75,7 +75,8 @@ impl<'a> Gen<'a> {
         let d = self.solver.table.fresh();
         let r = self.solver.table.fresh();
         // Genuinely true: applying `func` forces it to a function shape.
-        self.solver.eq(
+        self.eq(
+            scope,
             self.solver.tys.var(tf),
             self.solver
                 .tys

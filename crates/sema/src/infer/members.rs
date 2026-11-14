@@ -155,7 +155,8 @@ impl<'a> Gen<'a> {
             // The static receiver's type is the rooting entity itself, ground at
             // generation time.
             let recv = self.solver.table.fresh();
-            self.solver.eq(
+            self.eq(
+                scope,
                 self.solver.tys.var(recv),
                 self.solver.tys.named_path(self.facts.env.names(), &path),
             );
@@ -607,7 +608,7 @@ impl<'a> Gen<'a> {
             };
             let body = self.solver.instantiate(self.facts.env.types(), ty);
             let uv = self.solver.table.fresh();
-            self.solver.eq(self.solver.tys.var(uv), body);
+            self.eq(scope, self.solver.tys.var(uv), body);
             return Some(uv);
         };
         if self.binders.is_withheld(def) {
@@ -617,7 +618,7 @@ impl<'a> Gen<'a> {
         if let Some(scheme) = self.binders.scheme(def) {
             let body = self.solver.instantiate(self.solver.tys, scheme);
             let uv = self.solver.table.fresh();
-            self.solver.eq(self.solver.tys.var(uv), body);
+            self.eq(scope, self.solver.tys.var(uv), body);
             return Some(uv);
         }
         let dv = self.def_var(def);
@@ -640,7 +641,12 @@ impl<'a> Gen<'a> {
     /// record-label environment and fixes the receiver to that record, so a
     /// receiver inference learns only later is that record too, or FCS
     /// rejects the program.
-    pub(super) fn wake_record_field(&mut self, head: Ty, m: &SuspendedMember) -> bool {
+    pub(super) fn wake_record_field(
+        &mut self,
+        scope: &mut Scope,
+        head: Ty,
+        m: &SuspendedMember,
+    ) -> bool {
         let TyKind::Project { path, args } = self.solver.tys.kind(head) else {
             return false;
         };
@@ -666,8 +672,8 @@ impl<'a> Gen<'a> {
         let mut fresh: HashMap<u32, TyVid> = HashMap::default();
         let receiver = self.solver.instantiate_rec(env_tys, declared, &mut fresh);
         let field = self.solver.instantiate_rec(env_tys, field, &mut fresh);
-        self.solver.eq(receiver, head);
-        self.solver.eq(self.solver.tys.var(m.result), field);
+        self.eq(scope, receiver, head);
+        self.eq(scope, self.solver.tys.var(m.result), field);
         true
     }
 

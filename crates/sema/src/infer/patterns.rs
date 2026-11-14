@@ -283,7 +283,8 @@ impl<'a> Gen<'a> {
     /// walked before the pattern. Each kind is decided here, so a new kind of
     /// suspended constraint must be:
     ///
-    /// - a pending equality, argument check or dropped check-mode relation
+    /// - an equality is already in the table ([`Self::eq`]);
+    /// - a pending argument check or dropped check-mode relation
     ///   ([`Scope::dropped`]) is applied as an equality under a snapshot, rolled
     ///   back after, and the pattern contradicts them if any of them, or
     ///   relating `pt` after them, fails (a check FCS meets by coercion fails
@@ -307,7 +308,6 @@ impl<'a> Gen<'a> {
         let mut receivers: Vec<TyVid> = Vec::new();
         for c in &self.solver.constraints {
             match c {
-                Constraint::Eq(a, b) => eqs.push((*a, *b)),
                 Constraint::ArgCheck(ac) => {
                     eqs.push((self.solver.tys.var(ac.arg), self.solver.tys.var(ac.dom)))
                 }
@@ -439,10 +439,10 @@ impl<'a> Gen<'a> {
             PatShape::Annotated(def, t) => {
                 let t = *t;
                 let v = self.register_binder(scope, *def, site);
-                self.solver.eq(self.solver.tys.var(v), t);
+                self.eq(scope, self.solver.tys.var(v), t);
                 if site == BinderSite::Param {
                     let dv = self.def_var(*def);
-                    self.solver.eq(self.solver.tys.var(dv), t);
+                    self.eq(scope, self.solver.tys.var(dv), t);
                     // An annotation mentioning an implicitly scoped type
                     // variable ([`Self::open_head_typars`]) fixes the
                     // parameter's structure but not its type, which the body
@@ -482,7 +482,7 @@ impl<'a> Gen<'a> {
                             && !matches!(**arg, PatShape::Wildcard)
                         {
                             let at = self.gen_pattern(scope, arg, site);
-                            self.solver.eq(at, fields);
+                            self.eq(scope, at, fields);
                         }
                         ret
                     }
