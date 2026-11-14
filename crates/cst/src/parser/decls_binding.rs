@@ -903,7 +903,11 @@ impl<'src> Parser<'src> {
             opened_block = self.parse_let_equals_rhs(allow_modifiers);
         }
         // Recorded last, after any binding nested in the RHS recorded its own.
-        self.last_binding_owns_close = opened_block && self.rhs_closed_cleanly;
+        self.last_binding_close = if opened_block {
+            self.rhs_close
+        } else {
+            RhsClose::NoBlock
+        };
         self.builder.finish_node();
     }
 

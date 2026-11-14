@@ -73,6 +73,7 @@ impl<'src> Parser<'src> {
         // wrap the main expression and its `when` clauses in one node.
         let rhs_cp = self.builder.checkpoint();
         let rhs_start = self.filtered.pos();
+        let raw_rhs_start = self.raw_pos;
         self.parse_seq_block_body("expected expression after `=`");
 
         // FSharp.Core static-optimization clauses — `mainExpr when 'T : ty =
@@ -107,13 +108,31 @@ impl<'src> Parser<'src> {
         if opened_block {
             self.drain_let_rhs_block();
         }
-        self.rhs_closed_cleanly = opened_block
-            && self.filtered.pos() == before_drain
-            && self.block_balance(rhs_start, before_drain) == 0
+        // A bracket the RHS left open ends, in FCS, wherever its lex filter's
+        // `*_COMING_SOON` tokens for a later `type`/`module` arrive
+        // (`LPAREN … ends_coming_soon_or_recover` and its kin), not by the
+        // binding terminator's panic mode. Our filter does not make them yet,
+        // so leftovers with a bracket open are left to the loop.
+        let bracket_left_open = self.filtered.pos() != before_drain
+            && self.raw_bracket_left_open(raw_rhs_start, self.raw_pos);
+        self.rhs_close = if !opened_block {
+            RhsClose::NoBlock
+        } else if self.filtered.pos() != before_drain {
+            if bracket_left_open {
+                RhsClose::Unowned
+            } else {
+                RhsClose::Leftovers
+            }
+        } else if self.block_balance(rhs_start, before_drain) == 0
             && matches!(
                 self.peek(),
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
-            );
+            )
+        {
+            RhsClose::Clean
+        } else {
+            RhsClose::Unowned
+        };
 
         opened_block
     }

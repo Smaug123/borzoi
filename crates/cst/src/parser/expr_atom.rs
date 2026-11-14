@@ -1008,13 +1008,14 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::Let)), _))
         );
-        // Whether the group's last binding owns the close at the cursor, and
-        // whether the group parsed cleanly, decide whether the declaration
-        // takes it (`close_module_let_block`).
-        self.last_binding_owns_close = false;
+        // How the group's last binding's RHS block ended (`RhsClose`), and
+        // whether the group parsed cleanly, decide how the declaration takes
+        // its close (`close_module_let_block`).
+        self.last_binding_close = RhsClose::NoBlock;
         let errors_before = self.errors.len();
         self.parse_let_head_and_bindings();
-        let owns_block = self.last_binding_owns_close;
+        let rhs_close = self.last_binding_close;
+        let owns_block = rhs_close == RhsClose::Clean;
         // A closer the lex filter's outer wrapper swallowed (a stray `)` or
         // `}`, `LexFilter.fs:2831-2836`) still pending after the RHS is an
         // error FCS's parser met there; ours surfaces only when the close
@@ -1122,6 +1123,24 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
         if clean && owns_block {
             self.close_module_let_block(block_let);
+        } else if block_let
+            && (rhs_close == RhsClose::Leftovers || swallowed_pending)
+            && !self.end_before_block_end_after_decl_end()
+        {
+            // Leftovers in the RHS block, or a swallowed closer pending after
+            // it, are an error FCS's parser met inside the RHS: `OBLOCKBEGIN
+            // typedExpr… recover` reduces the RHS, and the
+            // `hardwhiteDefnBindingsTerminator` is taken by panic mode, which
+            // discards flat through the first `ODECLEND`. Whether the error
+            // reached the terminator, or FCS recovered from it inside a nested
+            // construct (a `match` clause, a lambda) and kept what follows,
+            // depends on error states this parser does not model, so the
+            // discard stops short of a line that starts a declaration: keeping
+            // one FCS discards is only a placement difference, losing one it
+            // keeps is not (`docs/parser-recovery-oracle.md`, "What recovery
+            // must match").
+            let stop = self.declaration_line_before_decl_end(let_span.start);
+            self.discard_through_decl_end(stop);
         }
     }
 
@@ -1138,10 +1157,8 @@ impl<'src> Parser<'src> {
     /// mode discards tokens flat, with no block counting, through the first
     /// `ODECLEND`. Otherwise the `ODECLEND` stays the loop's.
     ///
-    /// After an error inside the binding the loop decides, as before: how
-    /// FCS's parser recovers depends on where its yacc error arises, which our
-    /// error list does not say. Each virtual is bumped as the loop bumps
-    /// layout, after the trivia before it, so the tree is the loop's.
+    /// Each virtual is bumped as the loop bumps layout, after the trivia
+    /// before it, so the tree is the loop's.
     fn close_module_let_block(&mut self, block_let: bool) {
         if !matches!(
             self.peek(),
@@ -1164,7 +1181,104 @@ impl<'src> Parser<'src> {
                 span,
             });
         }
-        while let Some((res, _)) = self.peek().cloned() {
+        self.discard_through_decl_end(None);
+    }
+
+    /// Whether a raw `end` sits between the first `ODECLEND` at or after the
+    /// cursor and the next `OBLOCKEND`. Panic mode recovers with FsYacc's
+    /// error suppression still open (no new error is reported until three
+    /// tokens have shifted), and a suppressed error there discards through the
+    /// `end` and closes the body at that `OBLOCKEND`. Which happens depends on
+    /// error states this parser does not model, so the module loop's own
+    /// recovery is kept there: it closes the body at its first `BlockEnd` and
+    /// leaves the `end` as debris after it.
+    fn end_before_block_end_after_decl_end(&self) -> bool {
+        let tokens = self.filtered.tokens();
+        let Some(decl_end) = (self.filtered.pos()..tokens.len())
+            .find(|&i| tokens.kind(i) == FilteredKind::Virtual(Virtual::DeclEnd))
+        else {
+            return false;
+        };
+        (decl_end + 1..tokens.len())
+            .map(|i| tokens.kind(i))
+            .take_while(|&k| k != FilteredKind::Virtual(Virtual::BlockEnd))
+            .any(|k| k == FilteredKind::Token(TokenKind::End))
+    }
+
+    /// Where the discard after an error in the block `let` starting at byte
+    /// `let_start` must stop short: the first line before the first
+    /// `ODECLEND` at or after the cursor that starts a declaration, or a
+    /// separator `;` that may set one off. A declaration starts with a
+    /// declaration keyword (`let`, `use`, `open`, `type`, `module`,
+    /// `exception`) or an attribute list (`[<`), which only a declaration
+    /// takes there, after nothing but trivia on its line (a comment
+    /// included). A declaration at the `ODECLEND` itself stops the discard
+    /// only when it is dedented past the `let`: the layout virtuals there
+    /// then separate it in an enclosing body, and the discard would take them.
+    ///
+    /// Read off the raw tokens, since inside an expression the lex filter
+    /// swallows `type` and `module`, in one forward pass that tracks whether
+    /// only trivia has followed the last line break, so a long line costs
+    /// its length once.
+    fn declaration_line_before_decl_end(&self, let_start: usize) -> Option<usize> {
+        let tokens = self.filtered.tokens();
+        let decl_end = (self.filtered.pos()..tokens.len())
+            .find(|&i| tokens.kind(i) == FilteredKind::Virtual(Virtual::DeclEnd))
+            .map_or(self.source.len(), |i| tokens.span(i).start);
+        let column = |at: usize| at - self.source[..at].rfind('\n').map_or(0, |n| n + 1);
+        let let_column = column(let_start);
+        let breaks_line = |i: usize| self.raw_tokens.text(i).contains('\n');
+        let is_trivia = |i: usize| self.raw_tokens.kind(i).trivia_syntax_kind().is_some();
+        // Whether the cursor follows a line break with only trivia between.
+        let mut at_line_start = (0..self.raw_pos)
+            .rev()
+            .find(|&i| !is_trivia(i) || breaks_line(i))
+            .is_none_or(is_trivia);
+        for i in self.raw_pos..self.raw_tokens.len() {
+            let start = self.raw_tokens.span(i).start;
+            if start > decl_end {
+                break;
+            }
+            if is_trivia(i) {
+                at_line_start |= breaks_line(i);
+                continue;
+            }
+            let kind = self.raw_tokens.kind(i);
+            let starts_declaration = matches!(
+                kind,
+                RawKind::Lexed(
+                    TokenKind::Let
+                        | TokenKind::Use
+                        | TokenKind::Open
+                        | TokenKind::Type
+                        | TokenKind::Module
+                        | TokenKind::Exception
+                        | TokenKind::LBrackLess
+                        | TokenKind::Semi
+                )
+            );
+            if at_line_start
+                && starts_declaration
+                && (start < decl_end || column(start) < let_column)
+            {
+                return Some(start);
+            }
+            if start == decl_end {
+                break;
+            }
+            at_line_start = false;
+        }
+        None
+    }
+
+    /// FCS's panic mode after an error in a block `let`: discard tokens flat,
+    /// with no block counting, through the first `ODECLEND` (or to the end),
+    /// or up to the byte `stop` if a token starts there first.
+    fn discard_through_decl_end(&mut self, stop: Option<usize>) {
+        while let Some((res, span)) = self.peek().cloned() {
+            if stop.is_some_and(|stop| span.start >= stop) {
+                return;
+            }
             match res {
                 Ok(FilteredToken::Virtual(v)) => {
                     self.bump_layout_virtual();

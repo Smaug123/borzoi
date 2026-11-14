@@ -27,11 +27,12 @@ impl<'src> Parser<'src> {
             raw_pos: 0,
             filtered: FilteredCursor::new(filtered_tokens),
             block_depth_prefix,
+            raw_bracket_prefix: None,
             raw_consumed_end: 0,
             builder: TreeBuilder::new(),
             errors: Vec::new(),
-            last_binding_owns_close: false,
-            rhs_closed_cleanly: false,
+            last_binding_close: RhsClose::NoBlock,
+            rhs_close: RhsClose::NoBlock,
             warnings: Vec::new(),
             interp_nest: Vec::new(),
             obj_brace_base_new: None,
@@ -506,6 +507,75 @@ impl<'src> Parser<'src> {
     /// in O(1) from [`Self::block_depth_prefix`].
     pub(super) fn block_balance(&self, from: usize, to: usize) -> i32 {
         self.block_depth_prefix[to] - self.block_depth_prefix[from]
+    }
+
+    /// Whether the raw tokens `from..to` leave a bracket open: for some kind
+    /// of bracket, more openers than closers of that kind. The kinds are FCS's
+    /// `TokenLExprParen` openers with the closers `parenTokensBalance` pairs
+    /// them with (`LexFilter.fs:408-426`): `( )`, `[ ]`, `[| |]`, `{ }`, `{| |}`,
+    /// `<@ @>`, `<@@ @@>`, and `begin`/`sig`/`class`/`struct`/`interface`
+    /// with `end`. A closer of another kind closes nothing. `struct` and
+    /// `interface` open one in FCS only in some contexts, and are counted
+    /// always: this gates a recovery, and reading a bracket as open only
+    /// leaves the recovery to the module loop. O(1) from
+    /// [`Self::raw_bracket_prefix`], which the first call builds: only
+    /// recovery asks.
+    pub(super) fn raw_bracket_left_open(&mut self, from: usize, to: usize) -> bool {
+        let raw_tokens = &self.raw_tokens;
+        let prefix = self.raw_bracket_prefix.get_or_insert_with(|| {
+            let mut prefix = Vec::with_capacity(raw_tokens.len() + 1);
+            let mut balance = [0i32; BRACKET_KINDS];
+            prefix.push(balance);
+            for i in 0..raw_tokens.len() {
+                if let RawKind::Lexed(kind) = raw_tokens.kind(i) {
+                    for &(k, delta) in Self::bracket_moves(kind) {
+                        balance[k] += delta;
+                    }
+                }
+                prefix.push(balance);
+            }
+            prefix
+        });
+        (0..BRACKET_KINDS).any(|k| prefix[to][k] - prefix[from][k] > 0)
+    }
+
+    /// How a token moves the bracket balances: each bracket kind (an index
+    /// below [`BRACKET_KINDS`]) it opens (`1`) or closes (`-1`). A fused
+    /// closer (`@>|}`) closes two.
+    fn bracket_moves(kind: TokenKind) -> &'static [(usize, i32)] {
+        const PAREN: usize = 0;
+        const BRACK: usize = 1;
+        const BRACK_BAR: usize = 2;
+        const BRACE: usize = 3;
+        const BRACE_BAR: usize = 4;
+        const END: usize = 5;
+        const QUOTE: usize = 6;
+        const QUOTE_RAW: usize = 7;
+        match kind {
+            TokenKind::LParen => &[(PAREN, 1)],
+            TokenKind::RParen => &[(PAREN, -1)],
+            TokenKind::LBrack => &[(BRACK, 1)],
+            TokenKind::RBrack => &[(BRACK, -1)],
+            TokenKind::LBrackBar => &[(BRACK_BAR, 1)],
+            TokenKind::BarRBrack => &[(BRACK_BAR, -1)],
+            TokenKind::LBrace => &[(BRACE, 1)],
+            TokenKind::RBrace => &[(BRACE, -1)],
+            TokenKind::LBraceBar => &[(BRACE_BAR, 1)],
+            TokenKind::BarRBrace => &[(BRACE_BAR, -1)],
+            TokenKind::Begin
+            | TokenKind::Sig
+            | TokenKind::Class
+            | TokenKind::Struct
+            | TokenKind::Interface => &[(END, 1)],
+            TokenKind::End => &[(END, -1)],
+            TokenKind::LQuote => &[(QUOTE, 1)],
+            TokenKind::RQuote | TokenKind::RQuoteDot => &[(QUOTE, -1)],
+            TokenKind::RQuoteBarRBrace => &[(QUOTE, -1), (BRACE_BAR, -1)],
+            TokenKind::LQuoteRaw => &[(QUOTE_RAW, 1)],
+            TokenKind::RQuoteRaw | TokenKind::RQuoteRawDot => &[(QUOTE_RAW, -1)],
+            TokenKind::RQuoteRawBarRBrace => &[(QUOTE_RAW, -1), (BRACE_BAR, -1)],
+            _ => &[],
+        }
     }
 
     /// The first significant raw token *after* the `)` that closes a

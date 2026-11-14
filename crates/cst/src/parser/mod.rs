@@ -1112,6 +1112,30 @@ enum InterpStyle {
     Triple,
 }
 
+/// The kinds of bracket [`Parser::raw_bracket_left_open`] balances.
+const BRACKET_KINDS: usize = 8;
+
+/// How a binding's RHS block ended, read off the token stream: which
+/// `OBLOCKEND` the binding owns, and whether FCS's parser met an error
+/// inside the block.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RhsClose {
+    /// No offside block opened after the `=` (or no `=`): the binding owns
+    /// no `OBLOCKEND`.
+    NoBlock,
+    /// The gatherer stopped at the block's own `BlockEnd`, every block opened
+    /// inside it closed, nothing left over: the `BlockEnd` at the cursor is
+    /// the binding's.
+    Clean,
+    /// Tokens the gatherer could not take were left in the block: an error
+    /// FCS's parser met inside the RHS. The drain counts no blocks, so the
+    /// `BlockEnd` it stopped at may be an inner one.
+    Leftovers,
+    /// The block opened but the cursor is not at its close (an inner block
+    /// is still open, or the file ended).
+    Unowned,
+}
+
 struct Parser<'src> {
     source: &'src str,
     /// Raw lexer stream — includes trivia. Advanced in lockstep with
@@ -1125,6 +1149,10 @@ struct Parser<'src> {
     /// `block_depth_prefix[i]`: `OBLOCKBEGIN`s minus `OBLOCKEND`s among the
     /// filtered tokens `0..i` ([`Self::block_balance`]).
     block_depth_prefix: Vec<i32>,
+    /// `raw_bracket_prefix[i][k]`: openers minus closers of bracket kind `k`
+    /// among the raw tokens `0..i` ([`Self::raw_bracket_left_open`], which
+    /// builds it on first use).
+    raw_bracket_prefix: Option<Vec<[i32; BRACKET_KINDS]>>,
     /// High-water mark of source bytes already emitted into the tree.
     /// Used to clamp filtered-token text starts so FCS-faithful *overlapping*
     /// splits — `RQuoteBarRBrace` becomes `RQUOTE=[s,e-2)` + `BAR_RBRACE=
@@ -1133,17 +1161,13 @@ struct Parser<'src> {
     raw_consumed_end: usize,
     builder: TreeBuilder,
     errors: Vec<ParseError>,
-    /// Whether the binding [`Self::parse_binding_with_modifiers`] finished
-    /// last owns the `OBLOCKEND` at the cursor: its RHS opened an offside
-    /// block after the `=` and closed it cleanly ([`Self::rhs_closed_cleanly`]).
-    /// A failed head, no block, or leftovers own none. A binding nested in
-    /// another's RHS finishes first, so after a `let` group this is its last
-    /// binding's.
-    last_binding_owns_close: bool,
-    /// Whether the RHS [`Self::parse_let_equals_rhs`] parsed last opened a
-    /// block and its gatherer stopped exactly at that block's `BlockEnd`,
-    /// with nothing left for the recovery drain.
-    rhs_closed_cleanly: bool,
+    /// How the RHS block of the binding [`Self::parse_binding_with_modifiers`]
+    /// finished last ended; [`RhsClose::NoBlock`] for a failed head. A binding
+    /// nested in another's RHS finishes first, so after a `let` group this is
+    /// its last binding's.
+    last_binding_close: RhsClose,
+    /// How the RHS [`Self::parse_let_equals_rhs`] parsed last ended.
+    rhs_close: RhsClose,
     /// Warning-severity diagnostics (FCS `warning(...)` cases that leave
     /// `hadErrors` false). Kept separate from `errors` — see [`Parse`].
     warnings: Vec<ParseError>,

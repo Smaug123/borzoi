@@ -453,6 +453,10 @@ real F# Compiler Service by *differential* tests living in `crates/cst/tests/all
   `foo.` shape completion runs on) from clean corpus files. Write a recovery
   case as `common::recovery::assert_recovered_trees_agree(src, n)`. See
   `docs/parser-recovery-oracle.md`, which also lists what remains divergent.
+  Recovery is graded more weakly than clean input: losing a declaration FCS
+  keeps, where `main` keeps it, blocks; keeping it in a different module than
+  FCS does is pinned in a grid manifest and allowed, so answer such a review
+  finding with a grid case (that doc's "What recovery must match").
 
 Common commands:
 

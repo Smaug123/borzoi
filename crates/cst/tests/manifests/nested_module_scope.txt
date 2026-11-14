@@ -4303,24 +4303,8 @@ let rec v = 1⏎and w = ;; | double +indented +type | `type V`: FCS in M, ours i
 let rec v = 1⏎and w = ;; | double +type | `let x`: FCS in M, ours in nowhere
 let rec v = 1⏎and w = ;; | single +indented +type | `type V`: FCS in M, ours in nowhere
 let rec v = 1⏎and w = ;; | single +type | `let x`: FCS in M, ours in nowhere
-let rec v = 1⏎and w = <- | double +type | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = <- | double +type | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = <- | double +type | `type V`: FCS in A, ours in O
 let rec v = 1⏎and w = <- | double begin +indented +type | `let y`: FCS in O, ours in M
 let rec v = 1⏎and w = <- | double begin +indented | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = <- | double begin +type | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = <- | double begin +type | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = <- | double begin +type | `type V`: FCS in A, ours in O
-let rec v = 1⏎and w = <- | double begin | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = <- | double begin | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = <- | double | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = <- | double | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = <- | single +type | `let x`: FCS in A, ours in M
-let rec v = 1⏎and w = <- | single +type | `type V`: FCS in A, ours in M
-let rec v = 1⏎and w = <- | single begin +type | `let x`: FCS in A, ours in M
-let rec v = 1⏎and w = <- | single begin +type | `type V`: FCS in A, ours in M
-let rec v = 1⏎and w = <- | single begin | `let x`: FCS in A, ours in M
-let rec v = 1⏎and w = <- | single | `let x`: FCS in A, ours in M
 let rec v = 1⏎and w = = | double begin +indented +type | `let y`: FCS in O, ours in M
 let rec v = 1⏎and w = = | double begin +indented | `let y`: FCS in O, ours in M
 let rec v = 1⏎and w = A. | double +indented +type | `let x`: FCS in A, ours in O
@@ -4435,24 +4419,8 @@ let rec v = 1⏎and w = default | double begin +indented +type | `let y`: FCS in
 let rec v = 1⏎and w = default | double begin +indented | `let y`: FCS in O, ours in M
 let rec v = 1⏎and w = delegate | double begin +indented +type | `let y`: FCS in O, ours in M
 let rec v = 1⏎and w = delegate | double begin +indented | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = else | double +type | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = else | double +type | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = else | double +type | `type V`: FCS in A, ours in O
 let rec v = 1⏎and w = else | double begin +indented +type | `let y`: FCS in O, ours in M
 let rec v = 1⏎and w = else | double begin +indented | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = else | double begin +type | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = else | double begin +type | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = else | double begin +type | `type V`: FCS in A, ours in O
-let rec v = 1⏎and w = else | double begin | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = else | double begin | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = else | double | `let x`: FCS in A, ours in O
-let rec v = 1⏎and w = else | double | `let y`: FCS in O, ours in M
-let rec v = 1⏎and w = else | single +type | `let x`: FCS in A, ours in M
-let rec v = 1⏎and w = else | single +type | `type V`: FCS in A, ours in M
-let rec v = 1⏎and w = else | single begin +type | `let x`: FCS in A, ours in M
-let rec v = 1⏎and w = else | single begin +type | `type V`: FCS in A, ours in M
-let rec v = 1⏎and w = else | single begin | `let x`: FCS in A, ours in M
-let rec v = 1⏎and w = else | single | `let x`: FCS in A, ours in M
 let rec v = 1⏎and w = end | double begin +indented +type | `let x`: FCS in O, ours in nowhere
 let rec v = 1⏎and w = end | double begin +indented +type | `type V`: FCS in O, ours in nowhere
 let rec v = 1⏎and w = end | double begin +indented | `let x`: FCS in O, ours in nowhere
@@ -4706,24 +4674,8 @@ let w = ;; | double +indented +type | `type V`: FCS in M, ours in nowhere
 let w = ;; | double +type | `let x`: FCS in M, ours in nowhere
 let w = ;; | single +indented +type | `type V`: FCS in M, ours in nowhere
 let w = ;; | single +type | `let x`: FCS in M, ours in nowhere
-let w = <- | double +type | `let x`: FCS in A, ours in O
-let w = <- | double +type | `let y`: FCS in O, ours in M
-let w = <- | double +type | `type V`: FCS in A, ours in O
 let w = <- | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = <- | double begin +indented | `let y`: FCS in O, ours in M
-let w = <- | double begin +type | `let x`: FCS in A, ours in O
-let w = <- | double begin +type | `let y`: FCS in O, ours in M
-let w = <- | double begin +type | `type V`: FCS in A, ours in O
-let w = <- | double begin | `let x`: FCS in A, ours in O
-let w = <- | double begin | `let y`: FCS in O, ours in M
-let w = <- | double | `let x`: FCS in A, ours in O
-let w = <- | double | `let y`: FCS in O, ours in M
-let w = <- | single +type | `let x`: FCS in A, ours in M
-let w = <- | single +type | `type V`: FCS in A, ours in M
-let w = <- | single begin +type | `let x`: FCS in A, ours in M
-let w = <- | single begin +type | `type V`: FCS in A, ours in M
-let w = <- | single begin | `let x`: FCS in A, ours in M
-let w = <- | single | `let x`: FCS in A, ours in M
 let w = = | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = = | double begin +indented | `let y`: FCS in O, ours in M
 let w = A. | double +indented +type | `let x`: FCS in A, ours in O
@@ -4820,24 +4772,8 @@ let w = [<A>] ;; | double +indented +type | `type V`: FCS in M, ours in nowhere
 let w = [<A>] ;; | double +type | `let x`: FCS in M, ours in nowhere
 let w = [<A>] ;; | single +indented +type | `type V`: FCS in M, ours in nowhere
 let w = [<A>] ;; | single +type | `let x`: FCS in M, ours in nowhere
-let w = [<A>] <- | double +type | `let x`: FCS in A, ours in O
-let w = [<A>] <- | double +type | `let y`: FCS in O, ours in M
-let w = [<A>] <- | double +type | `type V`: FCS in A, ours in O
 let w = [<A>] <- | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] <- | double begin +indented | `let y`: FCS in O, ours in M
-let w = [<A>] <- | double begin +type | `let x`: FCS in A, ours in O
-let w = [<A>] <- | double begin +type | `let y`: FCS in O, ours in M
-let w = [<A>] <- | double begin +type | `type V`: FCS in A, ours in O
-let w = [<A>] <- | double begin | `let x`: FCS in A, ours in O
-let w = [<A>] <- | double begin | `let y`: FCS in O, ours in M
-let w = [<A>] <- | double | `let x`: FCS in A, ours in O
-let w = [<A>] <- | double | `let y`: FCS in O, ours in M
-let w = [<A>] <- | single +type | `let x`: FCS in A, ours in M
-let w = [<A>] <- | single +type | `type V`: FCS in A, ours in M
-let w = [<A>] <- | single begin +type | `let x`: FCS in A, ours in M
-let w = [<A>] <- | single begin +type | `type V`: FCS in A, ours in M
-let w = [<A>] <- | single begin | `let x`: FCS in A, ours in M
-let w = [<A>] <- | single | `let x`: FCS in A, ours in M
 let w = [<A>] = | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] = | double begin +indented | `let y`: FCS in O, ours in M
 let w = [<A>] A. | double begin +indented +type | `let y`: FCS in O, ours in M
@@ -4926,24 +4862,8 @@ let w = [<A>] default | double begin +indented +type | `let y`: FCS in O, ours i
 let w = [<A>] default | double begin +indented | `let y`: FCS in O, ours in M
 let w = [<A>] delegate | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] delegate | double begin +indented | `let y`: FCS in O, ours in M
-let w = [<A>] else | double +type | `let x`: FCS in A, ours in O
-let w = [<A>] else | double +type | `let y`: FCS in O, ours in M
-let w = [<A>] else | double +type | `type V`: FCS in A, ours in O
 let w = [<A>] else | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] else | double begin +indented | `let y`: FCS in O, ours in M
-let w = [<A>] else | double begin +type | `let x`: FCS in A, ours in O
-let w = [<A>] else | double begin +type | `let y`: FCS in O, ours in M
-let w = [<A>] else | double begin +type | `type V`: FCS in A, ours in O
-let w = [<A>] else | double begin | `let x`: FCS in A, ours in O
-let w = [<A>] else | double begin | `let y`: FCS in O, ours in M
-let w = [<A>] else | double | `let x`: FCS in A, ours in O
-let w = [<A>] else | double | `let y`: FCS in O, ours in M
-let w = [<A>] else | single +type | `let x`: FCS in A, ours in M
-let w = [<A>] else | single +type | `type V`: FCS in A, ours in M
-let w = [<A>] else | single begin +type | `let x`: FCS in A, ours in M
-let w = [<A>] else | single begin +type | `type V`: FCS in A, ours in M
-let w = [<A>] else | single begin | `let x`: FCS in A, ours in M
-let w = [<A>] else | single | `let x`: FCS in A, ours in M
 let w = [<A>] end | double begin +indented +type | `let x`: FCS in O, ours in nowhere
 let w = [<A>] end | double begin +indented +type | `type V`: FCS in O, ours in nowhere
 let w = [<A>] end | double begin +indented | `let x`: FCS in O, ours in nowhere
@@ -4996,24 +4916,8 @@ let w = [<A>] static | double begin +indented +type | `let y`: FCS in O, ours in
 let w = [<A>] static | double begin +indented | `let y`: FCS in O, ours in M
 let w = [<A>] struct | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] struct | double begin +indented | `let y`: FCS in O, ours in M
-let w = [<A>] then | double +type | `let x`: FCS in A, ours in O
-let w = [<A>] then | double +type | `let y`: FCS in O, ours in M
-let w = [<A>] then | double +type | `type V`: FCS in A, ours in O
 let w = [<A>] then | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] then | double begin +indented | `let y`: FCS in O, ours in M
-let w = [<A>] then | double begin +type | `let x`: FCS in A, ours in O
-let w = [<A>] then | double begin +type | `let y`: FCS in O, ours in M
-let w = [<A>] then | double begin +type | `type V`: FCS in A, ours in O
-let w = [<A>] then | double begin | `let x`: FCS in A, ours in O
-let w = [<A>] then | double begin | `let y`: FCS in O, ours in M
-let w = [<A>] then | double | `let x`: FCS in A, ours in O
-let w = [<A>] then | double | `let y`: FCS in O, ours in M
-let w = [<A>] then | single +type | `let x`: FCS in A, ours in M
-let w = [<A>] then | single +type | `type V`: FCS in A, ours in M
-let w = [<A>] then | single begin +type | `let x`: FCS in A, ours in M
-let w = [<A>] then | single begin +type | `type V`: FCS in A, ours in M
-let w = [<A>] then | single begin | `let x`: FCS in A, ours in M
-let w = [<A>] then | single | `let x`: FCS in A, ours in M
 let w = [<A>] type | double +type | `type V`: FCS in A, ours in nowhere
 let w = [<A>] type | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] type | double begin +indented | `let y`: FCS in O, ours in M
@@ -5128,24 +5032,8 @@ let w = default | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = default | double begin +indented | `let y`: FCS in O, ours in M
 let w = delegate | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = delegate | double begin +indented | `let y`: FCS in O, ours in M
-let w = else | double +type | `let x`: FCS in A, ours in O
-let w = else | double +type | `let y`: FCS in O, ours in M
-let w = else | double +type | `type V`: FCS in A, ours in O
 let w = else | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = else | double begin +indented | `let y`: FCS in O, ours in M
-let w = else | double begin +type | `let x`: FCS in A, ours in O
-let w = else | double begin +type | `let y`: FCS in O, ours in M
-let w = else | double begin +type | `type V`: FCS in A, ours in O
-let w = else | double begin | `let x`: FCS in A, ours in O
-let w = else | double begin | `let y`: FCS in O, ours in M
-let w = else | double | `let x`: FCS in A, ours in O
-let w = else | double | `let y`: FCS in O, ours in M
-let w = else | single +type | `let x`: FCS in A, ours in M
-let w = else | single +type | `type V`: FCS in A, ours in M
-let w = else | single begin +type | `let x`: FCS in A, ours in M
-let w = else | single begin +type | `type V`: FCS in A, ours in M
-let w = else | single begin | `let x`: FCS in A, ours in M
-let w = else | single | `let x`: FCS in A, ours in M
 let w = end | double begin +indented +type | `let x`: FCS in O, ours in nowhere
 let w = end | double begin +indented +type | `type V`: FCS in O, ours in nowhere
 let w = end | double begin +indented | `let x`: FCS in O, ours in nowhere
