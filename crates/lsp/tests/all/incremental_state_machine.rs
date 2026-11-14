@@ -327,7 +327,9 @@ enum Content {
     Props(PropsSpec),
     /// A minimal `project.assets.json` naming the `Microsoft.NETCore.App`
     /// framework reference, and the `Lib` package when `lib`.
-    Assets { lib: bool },
+    Assets {
+        lib: bool,
+    },
     /// The real `System.Runtime.dll`.
     Dll,
     /// What the `Lib` package's DLL holds.

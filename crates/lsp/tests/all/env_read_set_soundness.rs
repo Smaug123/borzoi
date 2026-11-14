@@ -31,8 +31,8 @@ use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::SemanticState;
 use borzoi::vfs::Nanos;
 use borzoi::workspace::Workspace;
-use borzoi_msbuild::observed::{Observation, ReadSet};
 use borzoi_msbuild::observed::soundness::{Edit, Perturbation, Tally, Why, sweep_with};
+use borzoi_msbuild::observed::{Observation, ReadSet};
 use proptest::prelude::*;
 use tempfile::TempDir;
 
@@ -502,9 +502,7 @@ fn an_env_trusts_installed_contents_and_confirms_the_rest() {
     let c = confirmed.into_inner();
     eprintln!("{c:?}");
     assert!(
-        c.exempt > c.exempt_packages
-            && c.exempt_packages > 0
-            && c.tally.moved(Why::Delete) > 0,
+        c.exempt > c.exempt_packages && c.exempt_packages > 0 && c.tally.moved(Why::Delete) > 0,
         "{c:?}"
     );
 }
@@ -600,10 +598,13 @@ fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
             .count();
         assert!(racy_stamps > 0, "precondition: the DLLs' stamps are racy");
         assert!(
-            racy.reads.reads().iter().all(|read| match &read.observation {
-                Observation::Stamp(Ok(stamp)) if stamp.racy => stamp.digest.is_some(),
-                _ => true,
-            }),
+            racy.reads
+                .reads()
+                .iter()
+                .all(|read| match &read.observation {
+                    Observation::Stamp(Ok(stamp)) if stamp.racy => stamp.digest.is_some(),
+                    _ => true,
+                }),
             "a racy DLL stamp carries no digest of what was read (cached: {cached})"
         );
         assert_eq!(racy.reads.first_stale(), None, "cached: {cached}");
@@ -612,8 +613,7 @@ fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
         same_size[0] ^= 0xff;
         std::fs::write(&pack_dll, &same_size).unwrap();
         assert!(
-            racy
-                .reads
+            racy.reads
                 .first_stale()
                 .is_some_and(|read| read.path == pack_dll),
             "a same-size rewrite within the racy window left the read set standing (cached: {cached})"

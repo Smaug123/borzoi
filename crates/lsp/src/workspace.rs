@@ -264,6 +264,10 @@ struct CachedEvaluation {
     /// built from this project's references exempts too
     /// ([`Workspace::env_checks`]).
     immutable: ImmutableRoots,
+    /// Every read the evaluation depends on, the immutable contents
+    /// included: what an env whose graph walk consulted this entry depends
+    /// on through it (`project_graph_impl`).
+    reads: ReadSet,
     /// The generation that last confirmed `checks` (or that evaluated it);
     /// `None` when it was evaluated outside a generation.
     validated_in: Option<u64>,
@@ -401,21 +405,10 @@ impl Evaluation {
     /// complete before the evaluation began ([`nuget_committed_before`]).
     fn checks(&self, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
         confirming_reads(self.reads.reads(), &self.immutable, committed)
-            .reads
             .into_iter()
             .map(Check::new)
             .collect()
     }
-}
-
-/// The reads a cached value computed from `reads` must confirm before it is
-/// served again, and the installed versions whose contents it trusts
-/// instead ([`Evaluation::checks`] states the rule).
-struct Confirming {
-    reads: Vec<Read>,
-    /// Each version directory whose contents were trusted, in every
-    /// spelling the reads reached it by.
-    trusted: Vec<PathBuf>,
 }
 
 /// [`Evaluation::checks`]' rule over any read set: every read, except those
@@ -426,7 +419,7 @@ fn confirming_reads(
     reads: &[Read],
     immutable: &ImmutableRoots,
     committed: impl Fn(&Path) -> bool,
-) -> Confirming {
+) -> Vec<Read> {
     let versions = immutable.versions(reads);
     let is_package = |version: &Path| immutable.nuget.iter().any(|root| version.starts_with(root));
     let shown: std::collections::BTreeSet<PathBuf> = reads
@@ -443,40 +436,36 @@ fn confirming_reads(
                 .containing(&read.path)
                 .is_some_and(|version| shown.contains(&version))
     };
-    Confirming {
-        reads: reads
-            .iter()
-            .filter(|read| !trusted(read))
-            .cloned()
-            .chain(shown.iter().map(|version| Read {
-                // A read inside it succeeded, so it resolved to a directory.
-                path: version.clone(),
-                observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
-            }))
-            .collect(),
-        trusted: shown.into_iter().collect(),
-    }
+    reads
+        .iter()
+        .filter(|read| !trusted(read))
+        .cloned()
+        .chain(shown.iter().map(|version| Read {
+            // A read inside it succeeded, so it resolved to a directory.
+            path: version.clone(),
+            observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
+        }))
+        .collect()
 }
 
 /// What a cached assembly env confirms before it is served again
 /// ([`Workspace::env_checks`], [`Workspace::confirm_env`]), and what a
-/// watch event must name to drop it ([`EnvChecks::named_by`]).
+/// watch event must name to drop it at once ([`EnvChecks::named_by`]).
 #[derive(Debug)]
 pub struct EnvChecks {
     /// The [`ReadChecks`] the checks' witnesses belong to.
     checker: u64,
+    /// The reads confirmed in every generation that reads the env.
     checks: Vec<Check>,
+    /// The reads of installed contents the env trusts rather than confirms
+    /// (D3's axiom), confirmed only after a watch event
+    /// ([`Workspace::confirm_env`]'s `after_event`): an event is what covers
+    /// an in-place change to an installed version.
+    exempt: Vec<Check>,
     /// Every path the resolution read, as [`path_key`] spells it.
     read: HashSet<String>,
     /// Every directory the resolution listed, as [`path_key`] spells it.
     listed: HashSet<String>,
-    /// The installed version directories whose contents the env trusts
-    /// rather than confirms, in every spelling the reads reached them by:
-    /// those whose contents its own reads exempt, and those whose existence
-    /// a confirmed evaluation it consulted checks. Each is spelt as
-    /// [`path_key`] spells it, with a trailing separator, so that a path
-    /// strictly inside one starts with it under the platform's case rules.
-    trusted: Vec<String>,
 }
 
 impl EnvChecks {
@@ -485,20 +474,20 @@ impl EnvChecks {
         self.checks.iter().map(Check::read)
     }
 
-    /// Whether a watch event naming `path` names something the env depends
-    /// on: a path it read, an entry of a directory it listed, or anything
-    /// strictly inside an installed version whose contents it trusts. A
-    /// watch event is what covers an in-place change to an installed version
-    /// (`docs/incremental-lsp-plan.md`, D3), and a file system whose stamps
-    /// do not move (D1's "not covered").
+    /// Whether a watch event naming `path`, as spelt, names something the
+    /// env read: a path its resolution read, or an entry of a directory it
+    /// listed. What drops the env at once, inside a generation or out of one;
+    /// it is the cover for a file system whose stamps do not move (D1's "not
+    /// covered"), for which it can only match the spelling the reads used.
+    /// Correctness elsewhere rests on confirmation, which an event widens to
+    /// the installed contents ([`Workspace::confirm_env`]), whatever path it
+    /// names.
     pub fn named_by(&self, path: &Path) -> bool {
         let path = lexically_normalize(path);
-        let key = path_key(&path);
-        self.read.contains(&key)
+        self.read.contains(&path_key(&path))
             || path
                 .parent()
                 .is_some_and(|dir| self.listed.contains(&path_key(dir)))
-            || self.trusted.iter().any(|version| key.starts_with(version))
     }
 }
 
@@ -845,6 +834,14 @@ impl Workspace {
         }
     }
 
+    /// Whether `checks` were made by this workspace's checker, whose
+    /// directories their witnesses name: only then do they hold through
+    /// [`Self::confirm_env`], or does a generation number of this
+    /// workspace's say anything about them.
+    pub fn owns(&self, checks: &EnvChecks) -> bool {
+        checks.checker == self.checker.id()
+    }
+
     /// The open generation's number, or `None` between generations: a
     /// value confirmed in it ([`Self::confirm_env`]) need not be confirmed
     /// again until the next.
@@ -884,7 +881,9 @@ impl Workspace {
             .get(project)
             .map(|cached| cached.immutable.clone())
             .unwrap_or_default();
-        immutable.dotnet.extend(dotnet_root.map(lexically_normalize));
+        immutable
+            .dotnet
+            .extend(dotnet_root.map(lexically_normalize));
         immutable.nuget.extend(
             package_folders
                 .iter()
@@ -903,28 +902,22 @@ impl Workspace {
             let spent = minus(checker.counts_so_far(), before);
             self.env_counts.set(self.env_counts.get() + spent);
         }
-        // A confirmed evaluation the resolution consulted contributes the
-        // existence of each version it trusts, rather than its contents.
-        let consulted = reads.iter().filter_map(|read| {
-            let path = lexically_normalize(&read.path);
-            let (version, below) = immutable.version_of(&path)?;
-            (below == 0 && matches!(read.observation, Observation::Kind(Ok(_)))).then_some(version)
-        });
-        let mut trusted: Vec<PathBuf> = confirming.trusted.into_iter().chain(consulted).collect();
-        trusted.sort();
-        trusted.dedup();
+        let confirmed: HashSet<&Read> = confirming.iter().collect();
+        let exempt: Vec<Check> = reads
+            .iter()
+            .filter(|read| !confirmed.contains(read))
+            .cloned()
+            .map(Check::new)
+            .collect();
         EnvChecks {
             checker: checker.id(),
-            checks: confirming.reads.into_iter().map(Check::new).collect(),
+            exempt,
+            checks: confirming.into_iter().map(Check::new).collect(),
             read: reads.iter().map(|read| path_key(&read.path)).collect(),
             listed: reads
                 .iter()
                 .filter(|read| matches!(read.observation, Observation::Listing(_)))
                 .map(|read| path_key(&read.path))
-                .collect(),
-            trusted: trusted
-                .iter()
-                .map(|version| format!("{}/", path_key(version)))
                 .collect(),
         }
     }
@@ -935,15 +928,23 @@ impl Workspace {
     /// generation nothing is confirmed, and an env is served as it is, as a
     /// cached evaluation is. Inside one, checks this workspace did not make
     /// never hold.
-    pub fn confirm_env(&self, checks: &EnvChecks) -> bool {
+    ///
+    /// `after_event`: a watch event has arrived since the env was last
+    /// confirmed, so the installed contents it trusts are confirmed too. An
+    /// installer never changes an installed version in place (D3), and a
+    /// watch event is what covers one that does; confirming them, rather
+    /// than matching the event's path to them, leaves the spelling the
+    /// event used (another case, a symlink, a separator) out of it.
+    pub fn confirm_env(&self, checks: &EnvChecks, after_event: bool) -> bool {
         if self.checker.generation().is_none() {
             return true;
         }
-        if checks.checker != self.checker.id() {
+        if !self.owns(checks) {
             return false;
         }
         let before = self.checker.counts_so_far();
-        let holds = checks.checks.iter().all(|check| self.checker.holds(check));
+        let holds = checks.checks.iter().all(|check| self.checker.holds(check))
+            && (!after_event || checks.exempt.iter().all(|check| self.checker.holds(check)));
         let spent = minus(self.checker.counts_so_far(), before);
         self.env_counts.set(self.env_counts.get() + spent);
         holds
@@ -1597,6 +1598,7 @@ impl Workspace {
                     checks: evaluation
                         .checks(|version| nuget_committed_before(checker, version, started)),
                     immutable: evaluation.immutable,
+                    reads: evaluation.reads,
                     evaluated: evaluation.evaluated,
                     // Read in this generation, so confirmed for it.
                     validated_in: generation,
@@ -1735,8 +1737,7 @@ impl Workspace {
             .filter(|cached| generation.is_some() && cached.validated_in == generation)
             .filter(|_| entry_id.as_path() == entry)
             .inspect(|cached| {
-                let reads = cached.checks.iter().map(|check| check.read().clone());
-                observer.absorb((reads.collect(), ReadCounts::default()));
+                observer.absorb((cached.reads.clone(), ReadCounts::default()));
             })
             .map(|cached| cached.evaluated.as_ref());
         build_graph(entry, |path| {

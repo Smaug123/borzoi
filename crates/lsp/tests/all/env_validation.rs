@@ -87,7 +87,10 @@ fn fixture() -> Fixture {
         &host_fs::read(&runtime).unwrap(),
     );
     let package = root.join("nuget/foo/1.0.0");
-    write(&package.join(format!("lib/{TFM}/Foo.dll")), b"not an assembly");
+    write(
+        &package.join(format!("lib/{TFM}/Foo.dll")),
+        b"not an assembly",
+    );
     write(&package.join(".nupkg.metadata"), b"{}");
     let foo_doc = package.join(format!("lib/{TFM}/Foo.xml"));
     write(&foo_doc, b"<doc />");
@@ -201,7 +204,10 @@ fn a_watched_rebuild_rebuilds_only_the_env_that_reads_it() {
         "precondition: App's env folds Lib's output: {app_dlls:?}"
     );
 
-    write(&fixture.lib_dll, b"a rebuilt Lib.dll that is not an assembly");
+    write(
+        &fixture.lib_dll,
+        b"a rebuilt Lib.dll that is not an assembly",
+    );
     state.apply_watched_changes(&[changed(&fixture.lib_dll)]);
 
     let other_after = env_of(&mut state, &fixture.other);
@@ -254,7 +260,10 @@ fn an_unwatched_rebuild_rebuilds_only_the_env_that_reads_it() {
         "an unchanged env is confirmed by `stat`s alone: {unchanged:?}"
     );
 
-    write(&fixture.lib_dll, b"a rebuilt Lib.dll that is not an assembly");
+    write(
+        &fixture.lib_dll,
+        b"a rebuilt Lib.dll that is not an assembly",
+    );
     let (app_after, other_after, rebuilt) = generation(&mut state);
     assert!(
         Arc::ptr_eq(&other, &other_after),
@@ -268,39 +277,56 @@ fn an_unwatched_rebuild_rebuilds_only_the_env_that_reads_it() {
     assert_eq!(rebuilt.envs.built, 1, "{rebuilt:?}");
 }
 
-/// What a watch event must name to drop an env: a file inside an installed
-/// package version the env reads from drops it, even one it never read
-/// (the event is what covers an in-place change there); a file in a version
-/// it never read from drops nothing.
+/// What a watch event does to an env: one naming a path the env read drops
+/// it at once; any event at all makes its next confirmation cover the
+/// installed contents it trusts, whatever path the event names (another
+/// case, a symlink, a file it never read), because an event is what covers
+/// an in-place change to an installed version. Without an event, such a
+/// change is the installed-version axiom's boundary, and goes unseen.
 #[test]
-fn a_watch_event_drops_only_the_envs_that_depend_on_its_path() {
+fn an_event_widens_the_next_confirmation_to_installed_contents() {
     let fixture = fixture();
+    let foo_dll = fixture
+        .root
+        .join(format!("nuget/foo/1.0.0/lib/{TFM}/Foo.dll"));
     let mut state = state(&fixture);
     outwait_racy_stamps();
-    state.begin_generation();
-    let app = env_of(&mut state, &fixture.app);
-    let other = env_of(&mut state, &fixture.other);
-    state.end_generation();
+    let generation = |state: &mut State| {
+        state.begin_generation();
+        let app = env_of(state, &fixture.app);
+        let other = env_of(state, &fixture.other);
+        state.end_generation();
+        (app, other)
+    };
+    let (app, other) = generation(&mut state);
 
+    // A file nobody read, inside an installed version or not: nothing moved.
     let elsewhere = fixture
         .root
         .join(format!("nuget/bar/2.0.0/lib/{TFM}/Bar.dll"));
     write(&elsewhere, b"not an assembly");
-    state.apply_watched_changes(&[changed(&elsewhere)]);
-    state.begin_generation();
-    assert!(Arc::ptr_eq(&app, &env_of(&mut state, &fixture.app)));
-    assert!(Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
-    state.end_generation();
+    state.apply_watched_changes(&[changed(&elsewhere), changed(&fixture.foo_doc)]);
+    let (app_again, other_again) = generation(&mut state);
+    assert!(Arc::ptr_eq(&app, &app_again) && Arc::ptr_eq(&other, &other_again));
 
-    state.apply_watched_changes(&[changed(&fixture.foo_doc)]);
-    state.begin_generation();
-    let app_after = env_of(&mut state, &fixture.app);
+    // An in-place change inside the package version App trusts, unwatched:
+    // trusted, so not confirmed (the exemption is live).
+    write(&foo_dll, b"rewritten in place, not an assembly either");
+    outwait_racy_stamps();
+    let (app_again, _) = generation(&mut state);
+    assert!(
+        Arc::ptr_eq(&app, &app_again),
+        "precondition: an unwatched in-place change to an installed version is trusted away"
+    );
+
+    // Then any event, under a spelling that names nothing App read.
+    state.apply_watched_changes(&[changed(&fixture.root.join("Elsewhere/NOTHING.dll"))]);
+    let (app_after, other_after) = generation(&mut state);
     assert!(
         !Arc::ptr_eq(&app, &app_after),
-        "an event inside the package version App trusts left App's env standing"
+        "an event left an in-place change to a trusted version unconfirmed"
     );
-    assert!(Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
-    state.end_generation();
+    assert!(Arc::ptr_eq(&other, &other_after));
 }
 
 /// What an env confirms by `stat` rather than trusts as installed: a
@@ -312,7 +338,9 @@ fn a_watch_event_drops_only_the_envs_that_depend_on_its_path() {
 fn an_env_trusts_a_package_only_once_it_was_committed() {
     for committed in [true, false] {
         let fixture = fixture();
-        let foo_dll = fixture.root.join(format!("nuget/foo/1.0.0/lib/{TFM}/Foo.dll"));
+        let foo_dll = fixture
+            .root
+            .join(format!("nuget/foo/1.0.0/lib/{TFM}/Foo.dll"));
         if !committed {
             std::fs::remove_file(fixture.root.join("nuget/foo/1.0.0/.nupkg.metadata")).unwrap();
         }
@@ -333,12 +361,19 @@ fn an_env_trusts_a_package_only_once_it_was_committed() {
             "a package committed: {committed}, confirmed: {}",
             confirms(&foo_dll)
         );
-        assert!(confirms(&fixture.lib_dll), "a project's output is confirmed");
         assert!(
-            !checks.iter().any(|read| read
-                .path
-                .starts_with(fixture.root.join("dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0"))
-                && read.path != fixture.root.join("dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0")),
+            confirms(&fixture.lib_dll),
+            "a project's output is confirmed"
+        );
+        assert!(
+            !checks.iter().any(|read| read.path.starts_with(
+                fixture
+                    .root
+                    .join("dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0")
+            ) && read.path
+                != fixture
+                    .root
+                    .join("dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0")),
             "the framework pack's contents are trusted: {checks:?}"
         );
     }
@@ -365,28 +400,4 @@ fn an_env_made_under_another_workspace_is_built_again() {
         ..SdkDiscoveryEnv::default()
     });
     assert!(!Arc::ptr_eq(&other, &generation(&mut state)));
-}
-
-/// On a file system that folds case, a watch event naming a file inside a
-/// trusted installed version under another spelling of the version's
-/// directory names it all the same.
-#[cfg(any(target_os = "macos", windows))]
-#[test]
-fn a_watch_event_inside_a_trusted_version_matches_under_the_platform_case_rules() {
-    let fixture = fixture();
-    let mut state = state(&fixture);
-    outwait_racy_stamps();
-    state.begin_generation();
-    let app = env_of(&mut state, &fixture.app);
-    state.end_generation();
-    let respelt = fixture
-        .root
-        .join(format!("nuget/FOO/1.0.0/lib/{TFM}/Foo.xml"));
-    state.apply_watched_changes(&[changed(&respelt)]);
-    state.begin_generation();
-    assert!(
-        !Arc::ptr_eq(&app, &env_of(&mut state, &fixture.app)),
-        "an event naming the trusted version under another case left App's env standing"
-    );
-    state.end_generation();
 }

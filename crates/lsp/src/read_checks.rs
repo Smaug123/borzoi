@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use borzoi_msbuild::observed::EntryKind;
-use borzoi_msbuild::observed::{FileStamp, Failure, Listed, Observation, Read, ReadCounts};
+use borzoi_msbuild::observed::{Failure, FileStamp, Listed, Observation, Read, ReadCounts};
 
 use crate::observed::HostDisk;
 use crate::paths::lexically_normalize;

@@ -1182,9 +1182,7 @@ fn main() {
         .to_path_buf();
     let unrelated = std::env::var_os("EDIT_COUNTS_UNRELATED")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            root.join("WoofWare.Incremental.Test/WoofWare.Incremental.Test.fsproj")
-        });
+        .unwrap_or_else(|| root.join("WoofWare.Incremental.Test/WoofWare.Incremental.Test.fsproj"));
     let unrelated = std::path::absolute(&unrelated).expect("an absolute project path");
     let changes = unrelated_changes(script, &unrelated);
     if script != Script::Keystroke {

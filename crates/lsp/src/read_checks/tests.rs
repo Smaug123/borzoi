@@ -691,7 +691,11 @@ fn a_racy_stamp_holds_while_its_bytes_do_on_the_host() {
     std::thread::sleep(RACY_WINDOW + std::time::Duration::from_millis(200));
     checker.begin_generation(Nanos(i128::MAX / 2 + 1));
     assert!(checker.holds(&check));
-    assert_eq!(checker.end_generation().opens, 1, "the read that takes a settled stamp");
+    assert_eq!(
+        checker.end_generation().opens,
+        1,
+        "the read that takes a settled stamp"
+    );
     checker.begin_generation(Nanos(i128::MAX / 2 + 2));
     assert!(checker.holds(&check));
     let settled = checker.end_generation();
@@ -707,7 +711,10 @@ fn a_racy_stamp_holds_while_its_bytes_do_on_the_host() {
     checker.end_generation();
     std::fs::write(&path, b"abcd").unwrap();
     checker.begin_generation(Nanos(i128::MAX / 2 + 4));
-    assert!(checker.holds(&check), "the same bytes written back are what it saw");
+    assert!(
+        checker.holds(&check),
+        "the same bytes written back are what it saw"
+    );
     checker.end_generation();
 
     // A same-size rewrite within the window, with no settled stamp to lean on.
@@ -717,7 +724,10 @@ fn a_racy_stamp_holds_while_its_bytes_do_on_the_host() {
     borzoi_msbuild::observed::read_stamped(&observer, &fresh).unwrap();
     let check = Check::new(observer.finish().0.reads()[0].clone());
     std::fs::write(&fresh, b"wxyz").unwrap();
-    assert!(!checker.holds(&check), "a same-size rewrite in the window held");
+    assert!(
+        !checker.holds(&check),
+        "a same-size rewrite in the window held"
+    );
 }
 
 /// A racy stamp with no digest of what was read never holds, in a

@@ -715,14 +715,17 @@ impl SemanticState {
         self.wants_refresh = true;
     }
 
-    /// Watch events named `paths`: drop every assembly env that depends on
-    /// one of them ([`EnvChecks::named_by`]: a path its resolution read, an
-    /// entry of a directory it listed, or a file inside an installed version
-    /// whose contents it trusts), with every fold against it. Every other
-    /// env stands: a change it does not depend on cannot move it, and one it
-    /// does is confirmed against the disk anyway in the next generation that
-    /// reads it.
+    /// Watch events named `paths`: drop every assembly env that read one of
+    /// them as spelt ([`EnvChecks::named_by`]: a path its resolution read,
+    /// or an entry of a directory it listed), with every fold against it.
+    /// Every other env stands, and its next confirmation inside a generation
+    /// covers the installed contents it trusts too, whatever the events
+    /// named: an event is what covers an in-place change to an installed
+    /// version (D3).
     pub fn hint_assembly_paths(&mut self, paths: &[PathBuf]) {
+        for entry in self.assembly_envs.values_mut() {
+            entry.event_since = true;
+        }
         let named: Vec<Arc<AssemblyEnv>> = self
             .assembly_envs
             .values()
@@ -1244,6 +1247,7 @@ impl SemanticState {
                     checks,
                     // Read in this generation, so confirmed for it.
                     confirmed_in: workspace.generation(),
+                    event_since: false,
                 },
             );
         }
@@ -1262,8 +1266,14 @@ impl SemanticState {
     ) -> Option<CachedAssemblyEnv> {
         let generation = workspace.generation();
         let entry = self.assembly_envs.get_mut(key)?;
-        if generation.is_none() || entry.confirmed_in != generation {
-            if !workspace.confirm_env(&entry.checks) {
+        // A generation number is this workspace's: one under another
+        // workspace says nothing about these checks.
+        let confirmed = generation.is_some()
+            && entry.confirmed_in == generation
+            && !entry.event_since
+            && workspace.owns(&entry.checks);
+        if !confirmed {
+            if !workspace.confirm_env(&entry.checks, entry.event_since) {
                 let env = Arc::clone(&entry.cached.env);
                 tracing::info!(
                     project = %key.0.as_path().display(),
@@ -1273,6 +1283,9 @@ impl SemanticState {
                 return None;
             }
             entry.confirmed_in = generation;
+            if generation.is_some() {
+                entry.event_since = false;
+            }
         }
         Some(entry.cached.clone())
     }
@@ -2194,6 +2207,10 @@ struct EnvEntry {
     /// The generation that last confirmed `checks` (or that built the env);
     /// `None` when it was built outside a generation.
     confirmed_in: Option<u64>,
+    /// A watch event arrived since the env was last confirmed inside a
+    /// generation, so the next confirmation covers the installed contents
+    /// it trusts too ([`Workspace::confirm_env`]'s `after_event`).
+    event_since: bool,
 }
 
 /// What one resolution of an assembly env read
@@ -3664,7 +3681,14 @@ fn enumerate_dll_type_defs_cached(
     // with its own stamp (and, for a racy one, their digest); the stamp taken
     // here would only add a racy stamp no digest confirms.
     let before = Observer::new();
-    let _ = msbuild_observed::stamp(&before, path);
+    let stamp = msbuild_observed::stamp(&before, path);
+    // A racy stamp speaks for the DLL only when it was taken, so a cache
+    // answer resting on it could never be confirmed again: read the DLL,
+    // whose racy stamp carries a digest of what was read.
+    if stamp.is_ok_and(|stamp| stamp.racy) {
+        observer.absorb((std::iter::empty().collect(), before.finish().1));
+        return enumerate_dll_type_defs(path, observer);
+    }
     let mut cause = None;
     let mut read = false;
     let hit = cache.get_or_populate(path, || {
@@ -5439,7 +5463,10 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &env(&mut sema)));
         sema.set_on_demand_restore_enabled(true);
         let restoring = env(&mut sema);
-        assert!(!Arc::ptr_eq(&first, &restoring), "the restore opt-in kept an env");
+        assert!(
+            !Arc::ptr_eq(&first, &restoring),
+            "the restore opt-in kept an env"
+        );
         sema.set_csharp_project_references_enabled(true);
         assert!(
             !Arc::ptr_eq(&restoring, &env(&mut sema)),
@@ -8416,7 +8443,9 @@ mod tests {
         count(&mut s, &dll, Some(img.clone()));
         assert_eq!(calls.get(), 2, "a racy stamp was cached under");
 
-        std::thread::sleep(msbuild_observed::STAMP_RACY_WINDOW + std::time::Duration::from_millis(200));
+        std::thread::sleep(
+            msbuild_observed::STAMP_RACY_WINDOW + std::time::Duration::from_millis(200),
+        );
         let first = count(&mut s, &dll, Some(img.clone()));
         assert_eq!(first.as_deref(), Some(&[1u8, 2, 3][..]));
         // A second lookup is served from the cache — `compute` must not run.

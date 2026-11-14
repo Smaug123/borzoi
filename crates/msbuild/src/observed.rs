@@ -844,9 +844,15 @@ mod tests {
         };
         assert!(stamp.racy, "precondition: the stamp is racy");
         assert_eq!(stamp.digest, Some(bytes_digest(b"abcd")));
-        assert!(read.still_holds(), "a racy read of unchanged bytes was stale");
+        assert!(
+            read.still_holds(),
+            "a racy read of unchanged bytes was stale"
+        );
         std::fs::write(&path, b"abcd").unwrap();
-        assert!(read.still_holds(), "a rewrite of the same bytes made it stale");
+        assert!(
+            read.still_holds(),
+            "a rewrite of the same bytes made it stale"
+        );
         std::fs::write(&path, b"wxyz").unwrap();
         assert!(!read.still_holds(), "a same-size rewrite left it standing");
         std::fs::remove_file(&path).unwrap();
