@@ -7661,6 +7661,8 @@ mod tests {
                 prefix in prop::sample::select(vec![
                     "", "/d", "/n/d", "/n", "/real", "/d/sdk", "/d/packs/p", "/n/d/packs/p",
                     "/d/sdk-manifests/b/m", "/n/pkg", "/n/d/sdk", "/real/sdk", "/d/sdk/1.0",
+                    // Spellings that start with a root's bytes and are not under it.
+                    "/dd/sdk", "/n/dx/sdk", "/nn/pkg", "/real/sdk/1.00",
                 ]),
                 names in prop::collection::vec(
                     prop::sample::select(vec![
@@ -7755,7 +7757,8 @@ mod tests {
                             "/d/sdk/2/x/", "/d/sdk/x/y", "/d/packs/p/1.0/a", "/d/packs/p",
                             "/d/sdk-manifests/b/m/3/w", "/n/pkg/1.0/lib", "/n/pkg/2.0/lib",
                             "/n/other/1.5/x", "/n/pkg", "/real/sdk/1.0/x", "/real/sdk/1.0",
-                            "/repo/App.fsproj", "/d/sdk/1.0/../2/x",
+                            "/repo/App.fsproj", "/d/sdk/1.0/../2/x", "/dd/sdk/1.0/x",
+                            "/nn/pkg/1.0/x", "/real/sdk/1.00/x",
                         ]),
                         0usize..7,
                     ),

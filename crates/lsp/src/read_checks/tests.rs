@@ -637,8 +637,14 @@ enum Step {
     /// through [`ReadChecks::check`], as a value evaluated again does. With
     /// `retain`, its old checks are released only once the new ones are made,
     /// as the workspace holds a dropped evaluation's
-    /// (`crate::workspace::Workspace::retire`); otherwise first.
-    Record { holder: usize, retain: bool },
+    /// (`crate::workspace::Workspace::retire`); otherwise first. With
+    /// `inside`, the record is made inside a generation of its own, as the
+    /// server evaluates; otherwise between generations.
+    Record {
+        holder: usize,
+        retain: bool,
+        inside: bool,
+    },
     /// Release every check holder `holder` holds.
     Release { holder: usize },
     /// Begin a generation and confirm every holder's checks.
@@ -659,7 +665,8 @@ fn step() -> impl Strategy<Value = Step> {
         10 => op()
             .prop_filter("a generation is its own step", |op| !matches!(op, Op::Generation))
             .prop_map(Step::Op),
-        4 => (0..HOLDERS, any::<bool>()).prop_map(|(holder, retain)| Step::Record { holder, retain }),
+        4 => (0..HOLDERS, any::<bool>(), any::<bool>())
+            .prop_map(|(holder, retain, inside)| Step::Record { holder, retain, inside }),
         1 => (0..HOLDERS).prop_map(|holder| Step::Release { holder }),
         4 => Just(Step::Generation),
     ]
@@ -741,7 +748,14 @@ fn run_recording_again(
                 other.hint(named.iter().map(PathBuf::as_path));
             }
             Step::Op(op) => model.borrow_mut().apply(op),
-            Step::Record { holder, retain } => {
+            Step::Record {
+                holder,
+                retain,
+                inside,
+            } => {
+                if *inside {
+                    checker.begin_generation(Nanos(model.borrow().clock));
+                }
                 let old = if *retain {
                     std::mem::take(&mut holders[*holder])
                 } else {
@@ -757,6 +771,9 @@ fn run_recording_again(
                 holders[*holder] = new;
                 drop(old);
                 fresh[*holder] = true;
+                if *inside {
+                    checker.end_generation();
+                }
             }
             Step::Release { holder } => holders[*holder].clear(),
             Step::Generation => {
