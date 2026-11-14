@@ -1125,6 +1125,9 @@ impl Dispatcher {
                                     document,
                                 });
                                 self.stopped = Some(index);
+                                // A refresh a stale fold's rebuild would owe is
+                                // owed now: the rebuild may never finish.
+                                state.semantic.settle_stale_folds(&state.docs);
                                 state.end_generation();
                                 // The stopped step's last act.
                                 tracing::debug!(

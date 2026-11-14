@@ -3609,10 +3609,12 @@ the re-run pays one unit at most again.
   three-project scenario). The next step reads what arrived and
   only then records the request as a `batch::Restart` with the size of the
   epoch, so the requests that arrived with the notification run before it.
-  A stopped fold records no outcome, and decides at the stop the refresh its
-  rebuild would have decided (`owe_refresh_for_unannounced_now`: each stale
-  item against the text the rebuild would read), since a request stopped by
-  its own cancellation is refused and no rebuild may finish. The step that
+  A stopped fold records no outcome. When it stops a request, the loop
+  decides for every fold found stale and not yet rebuilt the refresh the
+  rebuild would have decided (`SemanticState::settle_stale_folds`: each
+  stale item against the text the rebuild would read), wherever the stop
+  came, since a request stopped by its own cancellation is refused and no
+  rebuild may finish. The step that
   applies a cancellation responds to moved evaluations, as every other step
   that applies a notification does.
 - **The plan** takes the restarts (`batch::plan`'s `restarts`): a restarted
@@ -3684,7 +3686,13 @@ The oracle, as built:
   hands its late change to the inbox between two steps of a `Dispatcher`,
   not from a `tracing` subscriber at the end of the first generation, which
   under parallel tests could miss that event (Codex saw it fail once in
-  three runs).
+  three runs). Every test that installs a `tracing` subscriber does so
+  through `common::with_subscriber`, which holds one lock across the scope:
+  `tracing` recomputes its process-wide interest and maximum level as
+  dispatchers come and go, and two recomputations racing can leave a live
+  subscriber seeing nothing (the reason the observed counts are read from a
+  log, not from events). Five consecutive runs of the three groups that
+  install one pass.
 
 Planted, each caught, then removed (each run against the `inbox` and
 `batch` unit tests, `dispatch_coalescing`, `workspace_diagnostic_sweep`,
@@ -3700,7 +3708,8 @@ and the state machine's warm and stopping properties):
 | a stopped run doing its follow-ups (a moved evaluation's response, the deferral report) before its step ends | the same scenario: re-walking every open buffer's owner evaluates the other two |
 | a stopped fold's partial parses cached as the project's | the latency sweep, the stopping state machine |
 | the stale parses lost on a stop (the rebuild's refresh decision) | `a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change` (added for it: it passed everything else) |
-| the stale parses kept for a rebuild that a cancellation refuses (Codex) | the same test, once it also cancelled the request it stopped |
+| the stale parses kept for a rebuild that a cancellation refuses (Codex, rounds 4 and 6: during the rebuild, then before it) | the same test, once it cancelled the request it stopped, and once it swept the stop over every span of semantic tokens and references |
+| no settling of stale folds at a stop | the same sweep |
 | the cancellation's step not responding to a moved evaluation a stopped request left (Codex) | `a_request_cancelled_mid_evaluation_still_reports_the_moved_evaluation` (added for it) |
 | no checkpoint between the candidates an ownership walk weighs (Codex) | the latency sweep, once it covered a directory of three projects that all evaluate again |
 | an unbounded inbox | `a_full_inbox_holds_the_sender_back` |

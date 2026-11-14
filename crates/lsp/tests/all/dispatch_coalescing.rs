@@ -956,7 +956,7 @@ impl Session {
             client: self.client.receiver.clone(),
             sent_before: None,
         }));
-        tracing::subscriber::with_default(Counter(seen, Some(Arc::clone(&mid_run))), || {
+        crate::common::with_subscriber(Counter(seen, Some(Arc::clone(&mid_run))), || {
             self.dispatcher.admit(messages);
             self.run_out();
             // Fewer checkpoints than the countdown: the rest arrives between
@@ -1158,7 +1158,7 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
             }
             _ => {
                 let answers =
-                    tracing::subscriber::with_default(Counter(Arc::clone(&seen), None), || {
+                    crate::common::with_subscriber(Counter(Arc::clone(&seen), None), || {
                         coalescing.deliver_in(messages(&played), &batch.chunks)
                     });
                 (answers, None)
@@ -1172,7 +1172,7 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
         }
         let seen_coalescing = std::mem::take(&mut *seen.lock().unwrap());
         let mut sequential_answers = BTreeMap::new();
-        tracing::subscriber::with_default(Counter(Arc::clone(&seen), None), || {
+        crate::common::with_subscriber(Counter(Arc::clone(&seen), None), || {
             for message in messages(&played) {
                 sequential_answers.extend(sequential.deliver(vec![message]));
             }
@@ -2128,7 +2128,7 @@ fn run_latency_case(
         input: session.input.clone(),
         trace: Arc::clone(&trace),
     };
-    let mut answers = tracing::subscriber::with_default(subscriber, || {
+    let mut answers = crate::common::with_subscriber(subscriber, || {
         session.deliver(vec![scenario.request.clone()])
     });
     let Message::Request(request) = &scenario.request else {
@@ -2251,7 +2251,7 @@ fn an_edit_that_arrives_mid_request_is_answered_before_it() {
             sent_before: None,
         }));
         let seen = Arc::new(Mutex::new(Seen::default()));
-        tracing::subscriber::with_default(Counter(seen, Some(Arc::clone(&mid_run))), || {
+        crate::common::with_subscriber(Counter(seen, Some(Arc::clone(&mid_run))), || {
             session.dispatcher.admit([hover_c()]);
             session.run_out();
         });
@@ -2335,34 +2335,52 @@ fn the_epoch_holds_at_most_its_bound() {
     });
 }
 
-/// A rebuild that stops still owes what the finished rebuild owes: a closed
-/// Compile item rewritten on disk with no watch event stales the fold, and
-/// the request that finds it stale owes the client a semantic-token refresh,
-/// whether its rebuild finishes in that run or stops at a parse and finishes
-/// in the next (the stale parses that decide the refresh survive the stop).
+/// A request that stops still owes what it would have owed finishing: a
+/// closed Compile item rewritten on disk with no watch event stales the
+/// fold, and the request that finds it stale owes the client a
+/// semantic-token refresh, once, wherever it stops after finding it (before
+/// the rebuild of the parses or during it) and whether it then runs again (a
+/// notification the server ignores) or is refused (its own cancellation,
+/// after which no rebuild finishes). A request refused before it looked at
+/// the fold owes nothing, as one never sent would not. Swept over every span
+/// of the handler, for semantic tokens and references (whose fold is found
+/// stale before its parses are asked for).
 #[test]
 fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
-    /// One session: warm, `B` rewritten on disk, then tokens for `C` with a
-    /// notification at the `stop`th span of the handler. The trace, and how
-    /// many token refreshes the server sent for the request.
-    fn round(stop: Option<usize>, sends: Message) -> (SpanTrace, usize, Option<i32>) {
+    /// The request a round asks, by its id, on `c`.
+    fn asked(id: &str, c: &str) -> Message {
+        match id {
+            "tokens" => request(
+                id,
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": c } }),
+            ),
+            _ => request(
+                id,
+                "textDocument/references",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 4 },
+                    "context": { "includeDeclaration": true },
+                }),
+            ),
+        }
+    }
+    /// One session: `A` and `C` open and both requests warm, `B` rewritten
+    /// on disk, then the request `id` with `sends` at the `stop`th span of
+    /// its handler. The trace, how many token refreshes the server sent for
+    /// the request, and its error code.
+    fn round(id: &str, stop: Option<usize>, sends: Message) -> (SpanTrace, usize, Option<i32>) {
         let mut world = World::new();
         let a = world.uri(Doc::Src(Src::A));
         let c = world.uri(Doc::Src(Src::C));
-        let tokens_c = || {
-            request(
-                "tokens",
-                "textDocument/semanticTokens/full",
-                json!({ "textDocument": { "uri": c } }),
-            )
-        };
         let mut session = Session::start(&world.root, false);
         session.deliver(vec![
             did_open(&a, Src::A.text(0)),
             did_open(&c, Src::C.text(0)),
         ]);
         session.settle();
-        session.deliver(vec![tokens_c()]);
+        session.deliver(vec![asked("warm-references", &c), asked("tokens", &c)]);
         session.settle();
         session.server_requests.clear();
         // `B` is closed: no sync announces this.
@@ -2375,8 +2393,9 @@ fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
             trace: Arc::clone(&trace),
         };
         let answers =
-            tracing::subscriber::with_default(subscriber, || session.deliver(vec![tokens_c()]));
-        let code = error_code(&answers, "tokens");
+            crate::common::with_subscriber(subscriber, || session.deliver(vec![asked(id, &c)]));
+        let code = error_code(&answers, id);
+        session.settle();
         let trace = std::mem::take(&mut *trace.lock().unwrap());
         let refreshes = session
             .server_requests
@@ -2386,35 +2405,50 @@ fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
         (trace, refreshes, code)
     }
     on_server_stack(|| {
-        let (unstopped, refreshes, code) = round(None, ignored());
-        assert_eq!(code, None);
-        assert_eq!(
-            refreshes, 1,
-            "the unannounced change owes one token refresh"
-        );
-        // Stop while the parses are rebuilt: at the first item, so the
-        // checkpoint before the second stops the rebuild.
-        let first_parse = unstopped
-            .points
-            .iter()
-            .position(|p| *p == "parse_compile_item")
-            .expect("the request rebuilds the parses");
-        let (stopped, refreshes, code) = round(Some(first_parse), ignored());
-        assert_eq!(code, None, "it ran again");
-        assert_eq!(stopped.stopped, 1, "the rebuild stopped: {stopped:?}");
-        assert_eq!(
-            refreshes, 1,
-            "a rebuild that stopped still owes the token refresh for the unannounced change"
-        );
-        // Stopped by its own cancellation, the request is refused, and no
-        // rebuild finishes: the refresh is owed all the same (Codex).
-        let (stopped, refreshes, code) = round(Some(first_parse), cancel("tokens"));
-        assert_eq!(code, CANCELLED);
-        assert_eq!(stopped.stopped, 1, "the rebuild stopped: {stopped:?}");
-        assert_eq!(
-            refreshes, 1,
-            "a rebuild stopped for its cancellation still owes the token refresh"
-        );
+        let mut stops_during_rebuild = 0;
+        for id in ["tokens", "references"] {
+            let (unstopped, refreshes, code) = round(id, None, ignored());
+            assert_eq!(code, None);
+            assert_eq!(
+                refreshes, 1,
+                "{id}: the unannounced change owes one token refresh"
+            );
+            assert!(
+                unstopped.points.contains(&"parse_compile_item"),
+                "{id}: the request rebuilds the parses: {unstopped:?}"
+            );
+            // The fold is confirmed (and found stale) as the lookup begins,
+            // or, for tokens, before the parses are built.
+            let found = unstopped
+                .points
+                .iter()
+                .position(|p| matches!(*p, "semantic.project_lookup" | "build_parses"))
+                .expect("the request confirms the fold");
+            for at in 0..unstopped.points.len() {
+                let point = unstopped.points[at];
+                if unstopped.points[..at].contains(&"parse_compile_item") {
+                    stops_during_rebuild += 1;
+                }
+                for (sends, want) in [(ignored(), None), (cancel(id), CANCELLED)] {
+                    let owed = usize::from(want.is_none() || at >= found);
+                    let (stopped, refreshes, code) = round(id, Some(at), sends);
+                    assert_eq!(stopped.stopped, 1, "{id} at {point} ({at}): {stopped:?}");
+                    assert_eq!(code, want, "{id} at {point} ({at})");
+                    assert_eq!(
+                        refreshes,
+                        owed,
+                        "{id}, stopped at {point} ({at}) and then {}: the unannounced change \
+                         owes {owed} token refresh",
+                        if want.is_some() {
+                            "refused"
+                        } else {
+                            "run again"
+                        }
+                    );
+                }
+            }
+        }
+        assert!(stops_during_rebuild > 0, "some stop came during a rebuild");
     });
 }
 
@@ -2462,7 +2496,7 @@ fn a_request_cancelled_mid_evaluation_still_reports_the_moved_evaluation() {
             trace: Arc::clone(&trace),
         };
         let answers =
-            tracing::subscriber::with_default(subscriber, || session.deliver(vec![hover_c()]));
+            crate::common::with_subscriber(subscriber, || session.deliver(vec![hover_c()]));
         let code = error_code(&answers, "hover");
         session.settle();
         let trace = std::mem::take(&mut *trace.lock().unwrap());

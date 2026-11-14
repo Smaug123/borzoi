@@ -1212,13 +1212,20 @@ impl Client {
             });
             state.set_client_capabilities(mode.caps());
             state.set_workspace_roots(vec![root]);
+            // A session that stops nothing installs no subscriber, so the
+            // fresh sessions a comparison starts never wait for the
+            // long-lived one's ([`crate::common::with_subscriber`]).
+            if stops.is_empty() {
+                run_inbox(&server, inbox, state, None).expect("server loop ends cleanly");
+                return;
+            }
             let subscriber = StopAt {
                 at: stops,
                 passed: Default::default(),
                 input,
                 stopped,
             };
-            tracing::subscriber::with_default(subscriber, || {
+            crate::common::with_subscriber(subscriber, || {
                 run_inbox(&server, inbox, state, None).expect("server loop ends cleanly")
             });
         });

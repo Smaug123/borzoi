@@ -1816,12 +1816,10 @@ impl SemanticState {
             let parses = match self.fold(project, workspace, docs, watch) {
                 Ok(Ok(parses)) => parses,
                 Err(Superseded) => {
-                    // The rebuild that would decide the refresh this
-                    // staleness owes may never finish (a request stopped by
-                    // its own cancellation is refused, not run again), so it
-                    // is decided now, against the texts it would read.
-                    if let Some(stale) = &stale {
-                        self.owe_refresh_for_unannounced_now(stale, docs);
+                    // Settled with every other stale fold when the loop
+                    // stops the request ([`Self::settle_stale_folds`]).
+                    if let Some(stale) = stale {
+                        self.superseded.insert(key, stale);
                     }
                     return Err(Superseded);
                 }
@@ -1961,6 +1959,19 @@ impl SemanticState {
                 .any(|(path, (_, now))| !synced_from_a_buffer(path, now));
         if unannounced {
             self.wants_refresh = true;
+        }
+    }
+
+    /// Decide, for every fold found stale whose rebuild has not finished, the
+    /// refresh that rebuild would owe ([`Self::owe_refresh_for_unannounced_now`]),
+    /// and forget them. The loop calls this whenever it stops a request: the
+    /// rebuild may never finish (a request stopped by its own cancellation is
+    /// refused, not run again), wherever the stop came, before the rebuild or
+    /// during it.
+    pub fn settle_stale_folds(&mut self, docs: &Vfs) {
+        let stale: Vec<CachedParses> = self.superseded.drain().map(|(_, stale)| stale).collect();
+        for stale in &stale {
+            self.owe_refresh_for_unannounced_now(stale, docs);
         }
     }
 
