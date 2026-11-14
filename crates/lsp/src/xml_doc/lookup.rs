@@ -354,6 +354,23 @@ mod tests {
         );
     }
 
+    /// Nothing is cached under a stamp taken within the racy window of the
+    /// file's last change: a second write of the same size in the same
+    /// timestamp tick would leave every field of it as it was, so only a
+    /// stamp taken after the window may speak for the bytes.
+    #[test]
+    fn nothing_is_cached_under_a_racy_stamp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("X.xml");
+        std::fs::write(&path, "<doc><members/></doc>").unwrap();
+        let mut cache = DocFileCache::default();
+        assert!(cache.load(&path).is_ok());
+        assert!(
+            !cache.files.contains_key(&path),
+            "a parse was cached under a racy stamp"
+        );
+    }
+
     /// A path that stops being a file — deleted, or replaced by a directory —
     /// drops its cached index, so nothing of the old file can be served later.
     #[test]

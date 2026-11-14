@@ -2649,6 +2649,53 @@ mod tests {
         );
     }
 
+    /// Every text-sync notification of a source owes a semantic-token
+    /// refresh by itself, whether or not anything reads the fold before the
+    /// client next asks: `didOpen`, `didChange` and `didClose` (which puts the
+    /// disk's text back in place of the buffer's). A project file's owes
+    /// nothing.
+    #[test]
+    fn every_source_sync_notification_owes_a_refresh() {
+        let (server, _client) = Connection::memory();
+        let mut state = State::default();
+        let notify = |state: &mut State, method: &str, params: serde_json::Value| {
+            handle_notification(
+                state,
+                &server,
+                Notification {
+                    method: method.to_string(),
+                    params,
+                },
+            );
+        };
+        for uri in ["file:///p/A.fs", "file:///p/App.fsproj"] {
+            let owed = uri.ends_with(".fs");
+            notify(
+                &mut state,
+                DidOpenTextDocument::METHOD,
+                serde_json::json!({ "textDocument": {
+                    "uri": uri, "languageId": "fsharp", "version": 1, "text": "let x = 1\n",
+                }}),
+            );
+            assert_eq!(state.semantic.take_wants_refresh(), owed, "didOpen {uri}");
+            notify(
+                &mut state,
+                DidChangeTextDocument::METHOD,
+                serde_json::json!({
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": "let x = 2\n" }],
+                }),
+            );
+            assert_eq!(state.semantic.take_wants_refresh(), owed, "didChange {uri}");
+            notify(
+                &mut state,
+                DidCloseTextDocument::METHOD,
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            );
+            assert_eq!(state.semantic.take_wants_refresh(), owed, "didClose {uri}");
+        }
+    }
+
     #[test]
     fn fs_sync_reaches_the_owning_projects_fold() {
         // A `.fs` text-sync drops nothing, but the next query confirms the
@@ -2988,18 +3035,39 @@ mod tests {
         );
 
         // NuGet's settings are read by no recorded reader, so a change to any
-        // of them drops every env and every evaluation, wherever it is.
-        let generation = state.workspace.projects_generation();
+        // of them drops every env, wherever it is (and every evaluation:
+        // `a_nuget_settings_event_re_evaluates_every_project`).
         state.apply_watched_changes(&[changed(url("file:///elsewhere/NuGet.Config"))]);
         assert!(
             !Arc::ptr_eq(&second, &env(&mut state)),
             "a NuGet settings change left an env standing"
         );
-        assert_ne!(
-            state.workspace.projects_generation(),
-            generation,
-            "a NuGet settings change left the evaluations standing"
-        );
+    }
+
+    /// NuGet's settings are read by SDK discovery directly, and no
+    /// evaluation records them, so an event naming a `nuget.config`
+    /// re-evaluates every cached project even when everything it recorded
+    /// still holds; an event naming any other project-structure file that
+    /// changed nothing re-evaluates nothing.
+    #[test]
+    fn a_nuget_settings_event_re_evaluates_every_project() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("App.fsproj");
+        let file = tmp.path().join("Lib.fs");
+        fs::write(&proj, fsproj_define_compile("ALPHA", "Lib.fs")).unwrap();
+        fs::write(&file, "let x = 1\n").unwrap();
+        let mut state = State::default();
+        let evaluated_after = |state: &mut State, event: &str| {
+            state.begin_generation();
+            state.apply_watched_changes(&[changed(Uri::from_file_path(tmp.path().join(event)).unwrap())]);
+            assert!(state.workspace.symbols_for(&file).contains("ALPHA"));
+            state.end_generation().evaluations.evaluated
+        };
+        state.begin_generation();
+        assert!(state.workspace.symbols_for(&file).contains("ALPHA"));
+        assert_eq!(state.end_generation().evaluations.evaluated, 1);
+        assert_eq!(evaluated_after(&mut state, "Directory.Build.props"), 0);
+        assert_eq!(evaluated_after(&mut state, "nuget.config"), 1);
     }
 
     /// A `.csproj` *existence* change is structural: an open `.fsproj`'s

@@ -4361,6 +4361,33 @@ mod tests {
         assert_eq!(ws.projects_generation(), projects_generation);
     }
 
+    /// A watch event drops an env at once only for a file whose stamp the
+    /// env's resolution read (a DLL): a stamp is the one read a hint cannot
+    /// ask again, since on a file system whose stamps do not move a `stat`
+    /// answers as before. A file it read whole, or a directory it listed, is
+    /// asked again by the hint instead, so naming one drops nothing.
+    #[test]
+    fn an_event_names_an_env_only_through_a_stamp_it_read() {
+        let tmp = TempDir::new().unwrap();
+        let dll = tmp.path().join("Lib.dll");
+        let props = tmp.path().join("Lib.props");
+        write_file(&dll, "not an assembly");
+        write_file(&props, "<Project />");
+        let observer = Observer::new();
+        msbuild_observed::stamp(&observer, &dll).unwrap();
+        msbuild_observed::read_to_string(&observer, &props).unwrap();
+        msbuild_observed::read_dir(&observer, tmp.path()).unwrap();
+        let (reads, _) = observer.finish();
+        let ws = Workspace::default();
+        let checks = ws.env_checks(&ProjectId::new(&props), None, &[], &reads, None);
+        assert!(checks.named_by(&dll), "a DLL whose stamp the env read");
+        assert!(!checks.named_by(&props), "a file the env read whole");
+        assert!(
+            !checks.named_by(&tmp.path().join("New.dll")),
+            "an entry of a directory the env listed"
+        );
+    }
+
     /// A watch event names a path whose directory's stamp may not have moved
     /// (D1's "not covered"): the next generation asks again what the
     /// ownership walk and the evaluation read there, whatever the stamps say.

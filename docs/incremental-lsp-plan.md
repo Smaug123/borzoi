@@ -1,11 +1,13 @@
 # An incremental LSP: file state, derived values and the edit loop
 
-> **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness),
+> **Status (2026-11-14).** Plan written; Stage 0 (the edit-loop count harness),
 > Stage 1 (the inference cutoff), Stage 2a (counted source reads), Stage 2b
 > (the `Vfs` owns source text), Stage 3a (the MSBuild evaluation records
 > its read set), Stage 3b (evaluations are validated, not trusted),
-> Stage 4a (ownership listings are observed and counted) and Stage 4b
-> (ownership is memoised) implemented. Tracks
+> Stage 4a (ownership listings are observed and counted), Stage 4b
+> (ownership is memoised), Stage 5 (one parse per text), Stages 6a and 6b
+> (env read sets, targeted assembly invalidation) and Stage 7 (the
+> hand-wired invalidation deleted) implemented. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -2785,6 +2787,254 @@ before the stage is written. If the measured instructions matter, the
 remedy to weigh is validating once per revision plus once per bounded time
 window: that is a stated staleness bound, which the guarantee section would
 then have to carry. It is not adopted by default.
+
+**Implemented** (`crates/lsp/src/semantic.rs`, `crates/lsp/src/workspace.rs`,
+`crates/lsp/src/read_checks.rs`, `crates/lsp/src/server.rs`,
+`crates/lsp/src/xml_doc/lookup.rs`):
+
+- **The invalidators are gone.** `SemanticState::invalidate_file`,
+  `invalidate_project` and `invalidate_all`, and
+  `Workspace::invalidate_projects`, delete. What text sync still does is the
+  refresh bookkeeping: a source's `didOpen`, `didChange` or `didClose` owes a
+  semantic-token refresh (`State::note_source_sync`,
+  `SemanticState::owe_token_refresh`), since another open buffer's tokens may
+  read what changed and the client re-asks only for the one it touched. A
+  `.fsproj` buffer's sync owes nothing.
+- **`project_parses` and `resolved_projects` are validated memo lookups.** A
+  cached `ProjectParses` records the evaluation it was built from
+  (`CachedParses::evaluation`, the `EvaluationId` Stage 4b gave every cached
+  evaluation, now public as `Workspace::evaluation_id`). Every read compares
+  it with the evaluation the workspace serves after confirming it
+  (`validate_cached_fold`), and, once per generation, every Compile item's
+  text, as Stage 2b did. A mismatch of either drops the parses and the fold
+  folded over them. The resolved fold is served only through that check and
+  its env's confirmation (Stage 6b's `env_still_served`), so neither table
+  needs to hear about an edit, a write or a moved evaluation. A moved
+  `projects_generation` no longer drops every semantic cache
+  (`sync_with_evaluations`): what it drops is the envs with an unrecorded
+  reader, and nothing else.
+- **A fold refusal records the evaluation it was refused under**, and
+  `fold_outcome` reports `Unknown` under any other
+  (`a_fold_refusal_does_not_outlive_the_project_that_caused_it`). A text
+  change does not clear it (see the departures).
+- **`apply_watched_changes` is hints plus its refresh decisions.** Every
+  event's paths are hints (`Vfs::hint`, `Workspace::hint`,
+  `SemanticState::hint_assembly_paths`), and each class owes what it owed
+  before: a structural event republishes every open buffer to a push client
+  and owes both refreshes, a source event owes both refreshes, and a
+  referenced-assembly event drops the envs with an unrecorded reader. The
+  structural event also ends the `projects_generation`
+  (`Workspace::note_structural_event`), so an in-flight
+  `workspace/diagnostic` sweep restarts on it as before (#385), and drops the
+  envs with an unrecorded reader, as `invalidate_all` did.
+- **What a hint does.** `ReadChecks::hint` forgot whole-file stamps
+  (Stage 2b, 3b); it now also distrusts every witness taken before the hint
+  that names a hinted path or the directory holding it (a per-checker hint
+  count, recorded with each witness and each hinted directory), so the next
+  confirmation asks those reads again: a file's text is read and compared, a
+  path's kind and canonical spelling and its directory's listing are asked.
+  `Workspace::hint` hints the ownership walks' checker as well as the one
+  evaluations and envs share. That is the cover the structural clear gave a
+  file system whose stamps do not move (D1's "not covered"), for the paths an
+  event names, now without dropping what the re-asked reads confirm.
+- **An env is dropped by an event only for a DLL whose stamp it read**
+  (`EnvChecks::named_by`). Stage 6b dropped an env for any path its
+  resolution read or any entry of a directory it listed; every such read is
+  now asked again by the hint, and only a stamp, which a `stat` answers as
+  before on a file system whose stamps do not move, needs the drop. So a
+  save of the project's own `.fsproj` that leaves its bytes as they were no
+  longer rebuilds its env.
+- **A structural event widens the next confirmation of every evaluation**
+  to the installed contents it trusts (`CachedEvaluation::exempt` and
+  `event_since`), as Stage 6b's events do for envs. That is D3's fallback
+  ("a structural watch event still drops everything") restated: an in-place
+  change inside an installed SDK version is seen after an event under any
+  spelling, without dropping the evaluations it did not touch.
+- **NuGet's settings drop every evaluation.** SDK discovery reads them
+  directly (Stage 3b's open gap), so an event naming a `nuget.config` drops
+  every evaluation (`Workspace::drop_every_evaluation`) as well as every env,
+  which is what the structural clear did for them.
+- **The memory-only clears go.** `ParseMemo::clear`, the doc-file, census
+  and ID-index caches' `clear`, and `file_parses`' clear on a structural
+  event were for memory alone; each table is bounded by the files and
+  settings the session meets (and the ID-index cache prunes dead envs).
+- **Counted.** `Generation::folds` (`folded` in the event, `f.new` in
+  `edit_counts`) counts the Compile-order folds a generation computed.
+  `EDIT_COUNTS_SCRIPT=own-save` writes the measured project's `.fsproj` back
+  unchanged, in place, and reports it.
+
+**Decision 1: exactness.** Validation stays exact: every cached value is
+confirmed against its inputs in every generation that reads it, under the
+racy rule, with no staleness window, and the plan's "once per revision plus a
+bounded window" remedy is not adopted. The cost is recovered structurally:
+an event re-asks only what it names instead of dropping what depends on it;
+the parses key on the evaluation's identity, so an evaluation that still
+confirms keeps them; the env and the evaluations share one checker (6b); and
+the widened confirmation after an event pays the installed contents' stamps
+once per event, then their `stat`s from the `DiskCache` the first one
+filled.
+
+**Decision 2: the readers no stage routes** (`observed::Unobserved`):
+
+| reader | cached across generations? | covered by | guarantee |
+|---|---|---|---|
+| `Restore` | not by itself; the env it builds is | event-driven: a structural or referenced-assembly event, or a moved `projects_generation`, drops it (`invalidate_assembly_state`) | as Stage 6b: such an env is current as of the last such event, and its recorded reads are confirmed besides |
+| `GoToDefinition` | the PDB images (`pdb_images`); the DLL and SourceLink reads are per request, and the SourceLink cache on disk is immutable by URL | the DLL's stamp (never cached under a racy one), and event-driven for the sidecar `.pdb` it does not record: the same events clear the map | a PDB image answers for the DLL's current bytes; a sidecar `.pdb` added beside an unchanged DLL is seen after the next such event |
+| `XmlDoc` | the parsed doc files, censuses and ID indices | its own witness: the `.xml`'s full stamp (device, inode, size, mtime, ctime), and nothing cached under a racy one; the others by env identity | exact: a parse is served only for the file's current bytes, with no event (the `(size, mtime)` witness it had accepted a same-size, same-mtime rewrite) |
+| `WorkspaceSweep` | no: each request walks the roots afresh; a sweep in flight spans generations | the sweep restarts when the `projects_generation` moves, which a structural event now moves explicitly | a sweep's report reads one generation of the evaluations, as before |
+
+The other variants are as Stage 6b left them: `FsprojDiagnostics` and
+`EnvKey` are computed per request, `AssemblyCache` answers for a stamp the env
+records, and `CSharpSidecar` feeds envs with an unrecorded reader.
+
+**Decision 3: what the deletion forced** (the departures below).
+
+**Departures.**
+
+- **A structural watch event drops no evaluation.** D3 kept "a structural
+  watch event still drops everything" as the cover for an in-place change to
+  an installed version. For evaluations, as Stage 6b did for envs, the cover
+  is a widened confirmation instead: the next confirmation after the event
+  asks the installed contents too. Its price is once per structural event:
+  306 `stat`s on WoofWare.Incremental, and, the first time, a read of each
+  installed file the evaluation read, which then sits in the checker's
+  `DiskCache`.
+- **The structural event still ends the `projects_generation`**, though it
+  drops nothing, so that an in-flight `workspace/diagnostic` sweep restarts
+  on it (#385's property), as it did when the event dropped every
+  evaluation. A moved generation drops only the envs with an unrecorded
+  reader.
+- **A hint, not a drop, covers a file system whose stamps do not move.** The
+  structural clear covered such a file system for every evaluation; a hint
+  covers it for the paths the event names, and for each directory holding
+  one, under the spelling the event uses or the inode it resolves to now.
+  A change on such a file system that no event names is outside the
+  guarantee, as D1 says.
+- **An env is dropped by an event only for a DLL whose stamp it read**
+  (above). Stage 6b's broader rule rebuilt the env of a project whose own
+  `.fsproj` was saved unchanged.
+- **The parses key on the evaluation's identity, not its value.** An
+  evaluation re-run to the same Compile items and symbols (a comment added
+  to the `.fsproj`) drops the project's parses; the per-file cache keeps the
+  rebuild to a lookup per item. The env, whose read set holds the entry's
+  `.fsproj` text, is rebuilt then too (see the open gaps).
+- **A fold refusal survives a text change.** `invalidate_file` cleared every
+  refusal on every edit, which made `fold_outcome` read `Unknown` until the
+  next fold. A refused project caches no parses, so the next request that
+  needs its fold folds it again and records what it finds; until then the
+  report stands. The messages are the same either way: `Unknown` carried the
+  last fold verdict forward (`project_deferral::reconcile`). A refusal under
+  an evaluation the workspace no longer serves is `Unknown`, which is what
+  `a_fold_refusal_does_not_outlive_the_project_that_caused_it` holds.
+- **Tests that drove the server outside a generation** and relied on the
+  structural clear (`project_defines_change_busts_the_cache`,
+  `watched_fsproj_change_refreshes_stale_defines`,
+  `created_source_refreshes_globbed_compile_set`, the sweep's mid-sweep
+  property) now run each message in a generation, as the dispatch loop does:
+  outside one a cached evaluation is served as it is (Stage 3b). Unit tests
+  that called `invalidate_project` to force a refold now make the edit that
+  forces it, or, where the subject is the rebuild from the per-file caches,
+  call a test-only `forget_fold`.
+
+The oracle:
+
+- `incremental_state_machine`: `unflushed_runs_agree_with_a_fresh_session`
+  generates scripts that make every kind of write the server is meant to
+  notice (sources, project files, projects created and deleted beside the
+  sources, assets files, the package DLL), open only sources and never
+  flush; its non-vacuity check asks for comparisons with a write of each
+  witnessed kind pending. `CSharpSources` is outside the claim by name (no C#
+  project), as are `InstalledVersionContents` and `FsprojBufferInputs` (no
+  script writes the pack's DLL or opens a project file). The world's
+  `Install` of a file inside an installed SDK version that already exists is
+  now `InstalledVersionContents`, and a pinned script rewrites an installed
+  SDK's `Sdk.props` in place with its event
+  ("a watched in-place rewrite of an installed SDK reaches the projects that
+  resolve it"), which the widened confirmation is what passes. The flushed
+  generated test and every pinned script are unchanged: an event is now a
+  hint, and they hold the refresh decisions to what they were.
+- `read_checks::tests`: the model property gains changes on a file system
+  whose stamps do not move, each followed by a hint naming the paths it
+  changed; a check that holds must still be right. Its non-vacuity check
+  counts checks that only the hint can have found moved (`hinted_moved`).
+  Against 6b's hint, which forgot only files, the property fails (`/w/a`
+  held its stale listing); against a hint that matched spellings alone it
+  failed again, through the symlink `/w/c/a`, which is why a hint matches by
+  inode too.
+- `workspace::tests::a_hint_asks_again_what_was_read_at_the_paths_it_names`:
+  after a hint naming an entry of `sub/`, the ownership walk lists `sub/`
+  again and nothing else; after one naming the project file, the evaluation
+  reads it again.
+- `observed_counts::a_save_that_changes_no_input_recomputes_nothing`: over
+  generated projects, after another project's `.fsproj` event, a source
+  created beside it, the project's own `.fsproj` written back unchanged, and
+  a closed Compile item written back unchanged, each with its event, the
+  requests that follow evaluate nothing, parse nothing, build no env and
+  fold nothing. On 6b it fails (`evaluated: 1, parsed: 3` for the unrelated
+  project's event). The control,
+  `a_save_that_changes_the_project_recomputes_it`, gives the project a
+  define and must evaluate it once and fold.
+- `xml_doc::lookup::tests::a_same_size_rewrite_with_its_mtime_put_back_is_seen`.
+- #313's mutations M1–M10, re-planted below.
+
+**Measured** on WoofWare.Incremental, each row the minimum over three runs of
+each binary: Stage 6b's head with this stage's `own-save` script (fcbbc7ed)
+and this stage (merged with `main` at 93abbbc5, whose changes since 6b are
+outside the LSP). The keystroke script ran 20 keystrokes per run; the three
+save scripts 5 rounds per run, each round the save's watch event and then
+the keystroke's requests. The on-disk assembly cache is off.
+
+The headline, per round:
+
+| round of | instructions 6b | 7 | allocs 6b | 7 | evaluations 6b | 7 | parses 6b | 7 | envs built 6b | 7 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| a save of an unrelated project's `.fsproj` | 1,238.6 M | **48.9 M** | 582,997 | 7,431 | 1 | **0** | 82 | **0** | 0 | 0 |
+| a save of the project's own `.fsproj`, unchanged | 3,779.5 M | **58.8 M** | 4,000,900 | 9,770 | 1 | **0** | 82 | **0** | 1 | **0** |
+| a build of an unrelated project | 37.6 M | 38.5 M | 7,128 | 7,378 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+No round folds (`f.new` is 0 on every row after the event). Per message, the
+`stat`s (sources, evaluation confirmation, ownership, env confirmation) and
+anything opened:
+
+| message, per round | unrelated save 6b | 7 | own save 6b | 7 |
+|---|---|---|---|---|
+| `didChangeWatchedFiles` | evaluates (115 opens) | 306 v, 4 o | evaluates (115 opens) | 1 v.open, 472 v, 4 v.canon, 1 o.list, 4 o |
+| `diagnostic E` | 2,461 v, 32 v.list, 31 v.canon, 1 o | 137 v, 1 o | 2,460 v, 32 v.list, 31 v.canon, 1 o | 1 v.open, 136 v, 1 o |
+| `diagnostic L` | 137 v, 2 o | 137 v, 2 o | 1 v.open, 136 v, 2 o | 1 v.open, 136 v, 2 o |
+| `semanticTokens E` | 80 s, 137 v, 1 o, 352 av; parses 82 | 80 s, 137 v, 1 o, 352 av | 80 s, 136 v, 1 o, 175 av; builds the env | 80 s, 136 v, 1 o, 543 av |
+| `semanticTokens L` | 80 s, 137 v, 2 o, 10 av; folds cold | 80 s, 137 v, 2 o, 10 av | 80 s, 136 v, 2 o, 2,378 av; folds cold | 80 s, 136 v, 2 o, 10 av |
+| `hover L` | 80 s, 137 v, 2 o, 10 av; infers cold | 80 s, 137 v, 2 o, 10 av | 80 s, 136 v, 2 o, 10 av; infers cold | 80 s, 136 v, 2 o, 10 av |
+
+A save of an unrelated project now costs the measured project what a build
+of one costs, plus the widened confirmation of its evaluation in the event's
+own message (306 `stat`s, 12.6 M): D3's cover for an in-place change to an
+installed version. A save of the project's own `.fsproj` re-reads that file
+(the hint forgets its stamp; the digest is unchanged, so the evaluation and
+the env stand), lists its directory once (the hint distrusts the witness),
+and, because the write is within the racy window, reads it again in every
+message of the round (`v.open` 1). Its env confirmation in `semanticTokens E`
+is widened by the event (543 `stat`s).
+
+The keystroke:
+
+| message, per keystroke | instructions 6b | 7 | allocs 6b | 7 |
+|---|---:|---:|---:|---:|
+| `didChange E` | 0.17 M | **0.02 M** | 99 | 30 |
+| `diagnostic E` | 3.42 M | 3.44 M | 247 | 248 |
+| `diagnostic L` (`unchanged`) | 2.68 M | 2.70 M | 84 | 84 |
+| `semanticTokens E` | 9.10 M | 9.35 M | 4,932 | 5,011 |
+| `semanticTokens L` | 13.04 M | 13.14 M | 11,447 | 11,447 |
+| `hover L` | 8.41 M | 8.46 M | 3,886 | 3,886 |
+| **keystroke total** | **36.84 M** | **37.15 M** | 20,695 | 20,706 |
+
+Every `stat` column is unchanged: 240 source `stat`s, 680 evaluation, 8
+ownership and 30 env `stat`s per keystroke, no opens. `didChange E` no longer
+walks every cached project's Compile items to invalidate them. The fold the
+edit stales is now found by `semanticTokens E`'s validation, which compares
+items up to the edited one (index 10) before dropping the fold: 79
+allocations and 0.25 M. The cold rows move within their runs' spread.
+
+PLANTS_TABLE
 
 ### Stage 8: coalescing in the dispatch loop
 
