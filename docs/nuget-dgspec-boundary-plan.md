@@ -1993,12 +1993,15 @@ the two differ where it matters:
   evaluator does not model, or reports as failing, declines, as does an
   item reference in a function's arguments (MSBuild expands properties
   first, so the function receives the reference as text).
-- **Conditions** read as the walk reads them. Entities decode alike in
+- **Conditions and target lists** (`DependsOnTargets`, `BeforeTargets`,
+  `AfterTargets`) are expressions, read alike. Entities decode alike in
   MSBuild and the XML reader, and outside a quoted string a line break is
-  whitespace either way. A tab or line break inside a quoted string, which
-  MSBuild keeps and the XML reader normalises, declines, as does a quote or
-  character spelt as an entity (`&apos;`, `&#…;`), which the scan for quotes
-  cannot see.
+  whitespace either way. A tab or line break inside a quoted string (a
+  condition's `'`, or the `'`, `"` or `` ` `` of a property function's
+  argument), which MSBuild keeps and the XML reader normalises, declines, as
+  does a quote or character spelt as an entity (`&apos;`, `&quot;`, `&#…;`),
+  which the scan for quotes cannot see. The walk does not yet read its own
+  conditions this way (#750).
 - **A task whose condition is false** does not run, in MSBuild or here: only
   one that would run declines. But MSBuild looks for batching in a task's
   parameters before its condition, so a task mentioning `%(…)` declines

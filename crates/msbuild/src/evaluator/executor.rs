@@ -212,10 +212,10 @@ impl<'s, 'r> Engine<'s, 'r> {
                 .or_else(|e| decline(format!("target {name} does not parse alone: {e}")))?;
             let root = document.root_element();
             for (attribute, before) in [("BeforeTargets", true), ("AfterTargets", false)] {
-                let Some(raw) = root.attribute(attribute) else {
+                let Some(raw) = expression_attribute(root, attribute)? else {
                     continue;
                 };
-                let expanded = engine.expand(raw)?;
+                let expanded = engine.expand(&raw)?;
                 for named in expanded
                     .as_escaped()
                     .split(';')
@@ -250,7 +250,7 @@ impl<'s, 'r> Engine<'s, 'r> {
             next.extend(self.before.get(key).into_iter().flatten().cloned());
             next.extend(self.after.get(key).into_iter().flatten().cloned());
             let document = target.document()?;
-            if let Some(raw) = document.root_element().attribute("DependsOnTargets")
+            if let Some(raw) = expression_attribute(document.root_element(), "DependsOnTargets")?
                 && !raw.contains('$')
             {
                 next.extend(
@@ -410,10 +410,10 @@ impl<'s, 'r> Engine<'s, 'r> {
             return Ok(Vec::new());
         }
         self.entries[entry].state = EntryState::Execution;
-        let Some(raw) = root.attribute("DependsOnTargets") else {
+        let Some(raw) = expression_attribute(root, "DependsOnTargets")? else {
             return Ok(Vec::new());
         };
-        let expanded = self.expand(raw)?;
+        let expanded = self.expand(&raw)?;
         Ok(expanded
             .as_escaped()
             .split(';')
@@ -743,7 +743,7 @@ impl<'s, 'r> Engine<'s, 'r> {
 
     /// Decide `node`'s `Condition` (true when it has none).
     fn decide(&mut self, node: Node<'_, '_>) -> Result<bool, Decline> {
-        let Some(raw) = condition_text(node)? else {
+        let Some(raw) = expression_attribute(node, "Condition")? else {
             return Ok(true);
         };
         let raw = self.with_items(&raw, true)?;
@@ -1056,13 +1056,20 @@ fn respellable(identity: &str) -> bool {
     identity.trim() == identity && !identity.contains(['%', '*', '?', '@', '$', '(', ')', '\''])
 }
 
-/// `node`'s `Condition`, as a condition reads it. Entities decode alike in
-/// MSBuild and the XML reader, and outside a quoted string a tab or line break
-/// is whitespace between tokens either way; only inside one would the XML
-/// reader's normalisation (to a space) and MSBuild's literal character differ,
-/// so that declines. The walk reads conditions the same way.
-fn condition_text(node: Node<'_, '_>) -> Result<Option<String>, Decline> {
-    let Some(attr) = node.attributes().find(|a| a.name() == "Condition") else {
+/// The quote characters of MSBuild's expressions: a condition's `'`, and the
+/// `'`, `"` and `` ` `` a property function's string arguments may use.
+const QUOTES: [char; 3] = ['\'', '"', '`'];
+
+/// `node`'s attribute `name` holding an expression (a condition, a target
+/// list), as MSBuild reads it. Entities decode alike in MSBuild and the XML
+/// reader, and outside a quoted string a tab or line break is whitespace
+/// either way; only inside one would the XML reader's normalisation (to a
+/// space) and MSBuild's literal character differ, so that declines. So does a
+/// quote or character spelt as an entity (`&apos;`, `&quot;`, `&#…;`), which
+/// the scan for quotes cannot see. (The walk does not yet read its
+/// conditions this way: #750.)
+fn expression_attribute(node: Node<'_, '_>, name: &str) -> Result<Option<String>, Decline> {
+    let Some(attr) = node.attributes().find(|a| a.name() == name) else {
         return Ok(None);
     };
     let raw = node
@@ -1070,44 +1077,53 @@ fn condition_text(node: Node<'_, '_>) -> Result<Option<String>, Decline> {
         .input_text()
         .get(attr.range_value())
         .unwrap_or_default();
-    let mut quoted = false;
+    if raw.contains("&#") || raw.contains("&apos;") || raw.contains("&quot;") {
+        return decline(format!("the {name} {raw} spells a character as an entity"));
+    }
+    let mut quote: Option<char> = None;
     for c in raw.chars() {
-        match c {
-            '\'' => quoted = !quoted,
-            '\t' | '\n' | '\r' if quoted => {
-                return decline(format!("the condition {raw} breaks a line inside a quote"));
+        match quote {
+            None if QUOTES.contains(&c) => quote = Some(c),
+            Some(open) if c == open => quote = None,
+            Some(_) if matches!(c, '\t' | '\n' | '\r') => {
+                return decline(format!("the {name} {raw} breaks a line inside a quote"));
             }
             _ => {}
         }
-    }
-    // A character reference may spell a quote or a line break, and `&apos;`
-    // a quote the scan above cannot see.
-    if raw.contains("&#") || raw.contains("&apos;") {
-        return decline(format!("the condition {raw} holds a character reference"));
     }
     Ok(Some(attr.value().to_owned()))
 }
 
 /// Whether an `@(` in `raw` sits inside a `$(…)` (a property function's
-/// receiver or arguments), counting parentheses from each `$(`.
+/// receiver or arguments). Parentheses count from each `$(`, except inside a
+/// quoted argument, and an `@(` anywhere before the `$(…)` closes counts,
+/// quoted or not.
 fn item_reference_in_property(raw: &str) -> bool {
-    let bytes = raw.as_bytes();
+    let chars: Vec<char> = raw.chars().collect();
     let mut open: Vec<usize> = Vec::new();
+    let mut quote: Option<char> = None;
     let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'$' if bytes.get(i + 1) == Some(&b'(') => {
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if !open.is_empty() && c == '@' && next == Some('(') {
+            return true;
+        }
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if !open.is_empty() && QUOTES.contains(&c) => quote = Some(c),
+            None if c == '$' && next == Some('(') => {
                 open.push(1);
                 i += 2;
                 continue;
             }
-            b'@' if bytes.get(i + 1) == Some(&b'(') && !open.is_empty() => return true,
-            b'(' => {
+            None if c == '(' => {
                 if let Some(depth) = open.last_mut() {
                     *depth += 1;
                 }
             }
-            b')' => {
+            None if c == ')' => {
                 if let Some(depth) = open.last_mut() {
                     *depth -= 1;
                     if *depth == 0 {
@@ -1115,7 +1131,7 @@ fn item_reference_in_property(raw: &str) -> bool {
                     }
                 }
             }
-            _ => {}
+            None => {}
         }
         i += 1;
     }
