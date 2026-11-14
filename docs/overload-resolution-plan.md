@@ -319,7 +319,7 @@ infrastructure, then engine).
   affirmation only at in-window arity.
 - **OV-6** — the instance-call engine slice (2026-07-09).
   [`AssemblyEnv::instance_method_group`] surfaces the deduped group, the
-  presence-based extension-absence gate ([`ExtensionScope`](../crates/sema/src/infer.rs))
+  presence-based extension-absence gate ([`ExtensionScope`](../crates/sema/src/infer/extension_scope.rs))
   must pass, then the single-candidate arity shortcut (§2.2) or `resolve_overload`
   (the keystone) commits. Byref/out declines, interface receivers defer, every arg
   element check-walked for poison, not-yet-ground args retry. **OV-6.1**
@@ -332,7 +332,7 @@ infrastructure, then engine).
 - **OV-7** — statics (2026-07-10).
   [`AssemblyEnv::static_method_group`](../crates/sema/src/assembly_env.rs) is the
   `instance_method_group` sibling over one shared `method_group(want_static)` walk;
-  generation via [`Gen::static_callee`](../crates/sema/src/infer.rs). Four GPT-5.6
+  generation via [`Gen::static_callee`](../crates/sema/src/infer/members.rs). Four GPT-5.6
   review rounds landed: direct-unit-syntax `M()` reading, an inheritance-aware
   kind-agnostic path-ownership predicate
   ([`type_qualified_member_possible`](../crates/sema/src/assembly_env.rs)),

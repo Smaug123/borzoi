@@ -59,7 +59,7 @@ assert_eq "tools/statsfoo not stats" "$(expect)"              "$(classify 'tools
 assert_eq "csharp-sidecar-extra"     "$(expect)"               "$(classify 'tools/csharp-sidecar-extra/x.cs')"
 assert_eq "nuget-oracle-extra"       "$(expect)"               "$(classify 'tools/nuget-oracle-extra/x.fs')"
 # Crates/tools routed after the initial gate set.
-assert_eq "sema crate"               "$(expect sema)"          "$(classify 'crates/sema/src/infer.rs')"
+assert_eq "sema crate"               "$(expect sema)"          "$(classify 'crates/sema/src/infer/mod.rs')"
 assert_eq "spawn is workspace"       "$(expect workspace)"     "$(classify 'crates/spawn/src/lib.rs')"
 assert_eq "oracle-harness is workspace" "$(expect workspace)"  "$(classify 'crates/oracle-harness/src/lib.rs')"
 assert_eq "msbuild-condition-oracle" "$(expect msbuild)"       "$(classify 'tools/msbuild-condition-oracle/Program.fs')"
