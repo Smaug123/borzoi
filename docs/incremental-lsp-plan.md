@@ -4144,6 +4144,207 @@ times.
   open buffer's sync already announced the change: one refresh more than
   the finished request would owe.
 
+### Follow-up: identical requests share one run
+
+**Dependencies**: Stage 9. **Closes**:
+[#720](https://github.com/WoofWare/borzoi/issues/720).
+
+Stage 8's burst left the requests on `L`, whose text never changes, running
+once per keystroke: 16 copies each of `diagnostic L`, `semanticTokens L` and
+`hover L`, identical in method and parameters, about 17 M per keystroke
+after the first.
+
+**Is answering several requests from one run sound?** Each request still
+gets its own answer: one computation, and its result sent to each id. That
+is exact only if nothing any of them reads moved between them. Two candidate
+rules, and why neither is the one:
+
+- *"No notification between them in the planned order."* True of any two
+  requests of one plan, vacuously: every plan applies its notifications
+  before its requests (Stage 8, decision 1). So it decides nothing.
+- *"Every request of one epoch sees one state."* False. The epoch grows while
+  the loop works: a notification read after the first of two identical
+  requests ran is applied before the second runs. And each step is a
+  generation of its own, which sees the disk as it is then, so a file written
+  between two steps, with no notification, is seen by the later one.
+
+The rule that holds: **the requests the plan has share a run are those that
+are identical, not yet handled, and planned to run, when the loop takes the
+first of them; all are answered in that step, from its one run.** A request
+read after the step began is not among them, however identical. The proof
+that each is answered exactly as it would be run alone, straight after the
+first, in the first's generation:
+
+- no notification is applied within a step: one that arrives stops the run
+  (Stage 9), and every member with it;
+- within a generation every read of a path returns the same text (D1);
+- a shareable handler's answer is a function of its parameters and those
+  texts, never of its id;
+- what a run leaves behind is memo entries whose hits equal recomputing them
+  (D2), and what the client is owed (refreshes, a moved evaluation's
+  republish), which no answer reads. So the second run would find the first's
+  entries and return the first's answer.
+
+That position, straight after the first, is a reordering among requests
+only, which the plan already makes (a restart moves a request behind those
+read while it ran), and no notification lies between two requests of one
+plan. A request read later is excluded because the run may have read a file
+before the request was sent: `a_request_read_while_an_identical_one_runs_runs_again`
+rewrites `A` on disk after a hover on `C` has computed its answer, sends the
+identical hover, and requires the second to read the new `A`.
+
+**Implemented** (`crates/lsp/src/batch.rs`, `crates/lsp/src/server.rs`):
+
+- **Identical** is `batch::ShareKey`: the method, one of `batch::SHAREABLE`
+  (hover, completion, document symbols, references, `workspace/symbol`,
+  semantic tokens, document diagnostics: each answers synchronously, from its
+  parameters and the texts it reads), and the parameters, equal as JSON
+  values. Two spellings of one document are two keys, so a path-equal alias is
+  run on its own. `textDocument/definition` is not shareable: its answer can
+  be a SourceLink fetch handed to the pool, which answers one id. Nor is a
+  `workspace/diagnostic` sweep. The key's hash only finds a candidate;
+  equality decides.
+- **The plan** (`batch::plan`, now told which messages are handled) puts each
+  group's first request, in its order, as a `Step::Run`, and the rest
+  straight after it as `Step::Share`s naming it.
+- **The step** that runs it takes the group from the plan as the step began.
+  If the run finishes, it answers the first request and then each member,
+  under its own id, taking each member from the epoch, so none can be
+  answered again. If the run stops, none is answered: the first is put back,
+  the members are untouched, and every one of them is marked restarted with
+  the same epoch size, so all wait behind the requests that arrived with the
+  notification, and the plan groups them again (less any that a cancellation
+  or a change now refuses). The plan takes one restart entry per message
+  (`batch::plan`'s `restarted`), overwritten by each stop, so a group stopped
+  many times weighs on the plan once (Codex found that a history of stops
+  grew with members times stops).
+
+**Near-duplicates** (`semanticTokens/full` and `diagnostic` on one document;
+`hover` and `semanticTokens` on one) are different methods, so they share no
+run; the memo already shares their work (`edit_counts`' keystroke rows,
+before and after this change alike). `diagnostic E` parses `E` (`p.new` 1)
+and `semanticTokens E` reuses that parse (`p.reuse` 1, `p.new` 0).
+`semanticTokens E` folds through `E` and `semanticTokens L` through `L`
+(`f.new` 1 each, as each needs a longer prefix), and `hover L` reuses the
+fold (`f.new` 0). `diagnostic` never folds: diagnostics are syntactic. What
+each still pays on its own is its handler's work and its generation's
+confirmation of the evaluation and the env (137 and 10 `stat`s), which the
+read-check witness work addresses.
+
+**The guarantees**, on top of Stage 9's:
+
+- every request read before `exit` is answered exactly once: a shared run
+  answers all of its requests or none;
+- every request answered from a shared run is answered with what it would
+  answer run alone in that step, straight after the request that ran.
+
+The oracle:
+
+- `batch::tests::the_plan_is_its_specification`: the generated epochs now hold
+  hovers at two positions, semantic tokens, definitions, `workspace/symbol`
+  and `workspace/diagnostic`, with generated handled flags; the
+  specification's grouping (the same kind on the same URI spelling, run-fated,
+  not handled, the first in turn order leading) is stated by scanning.
+- `batch::tests::a_share_key_is_the_method_and_the_parameters`: over generated
+  JSON (integers, floats with `0.0` and `-0.0`, nested objects), two keys are
+  equal exactly when the methods are equal and shareable and the parameters
+  are equal, and equal keys hash equally.
+- `dispatch_coalescing::a_coalesced_batch_agrees_with_its_messages_one_at_a_time`:
+  the scripts can repeat a request of their batch (`Op::Repeat`); in a batch
+  handed over whole the session runs one request per group of identical ones
+  answered with a result, every answer still equals the request's answer asked
+  alone after the batch, and every request is still answered exactly once in
+  every delivery, mid-run included. Its non-vacuity check asks for a shared
+  answer and a shared run that stopped.
+- `identical_requests_in_a_batch_share_one_run`,
+  `a_shared_run_that_stops_answers_its_requests_after_the_notification`,
+  `a_request_cancelled_while_its_shared_run_runs_is_refused_alone` and
+  `a_request_read_while_an_identical_one_runs_runs_again`.
+- `inbox::tests` is unchanged: a shared run is one run, and the inbox protocol
+  is the same.
+
+Planted, each caught, then removed (each run against the `batch` unit tests,
+`dispatch_coalescing` and `incremental_state_machine`):
+
+| plant | caught by |
+|---|---|
+| no sharing | the specification, the coalescing property (its run count), `identical_requests_in_a_batch_share_one_run`, the shared-stop and cancelled-member tests |
+| the key compares the document, not the parameters | the specification, `a_restarted_request_waits_behind_the_requests_read_while_it_ran`, `identical_requests_in_a_batch_share_one_run` |
+| two spellings of one document share a key | the specification, the coalescing property, `identical_requests_in_a_batch_share_one_run` |
+| `textDocument/definition` shareable | the specification, the coalescing property, `identical_requests_in_a_batch_share_one_run` |
+| a refused request shares a run | the specification, the coalescing property, the rendezvous and read-everything loop tests, the cancelled-member and late-request tests |
+| a handled request leads a group | the specification, `a_request_read_while_an_identical_one_runs_runs_again` (once its epoch was kept open for it) |
+| the group taken after the run, with what arrived meanwhile | `a_request_read_while_an_identical_one_runs_runs_again` |
+| a stop restarts only the request that ran | the shared-stop and cancelled-member tests |
+| a stop drops the members | the coalescing property, the shared-stop and cancelled-member tests |
+| a member left in the epoch once answered | the coalescing property, `identical_requests_in_a_batch_share_one_run`, the shared-stop and cancelled-member tests |
+| members answered under the leader's id | the same four |
+| numbers hashed by their text (`0.0` and `-0.0` equal, hashed apart) | `a_share_key_is_the_method_and_the_parameters`, once it paired values spelt differently (it passed the first version) |
+
+Two plants first passed everything. A handled request leading a group
+passed the dispatcher tests because the late-request test's epoch ended
+with the first hover, so the handled one was never beside the late one;
+the test now queues a request behind it. The number hash passed because
+the key property drew equal values with differently signed zeros too
+rarely; it now also pairs a value with its zeros flipped.
+
+**The test harness's subscribers.** Three plant runs and one run of ten
+under load failed a checkpoint-driven test with no plant to explain it: a
+scoped subscriber saw no checkpoint. A callsite's first use registers it
+with an interest computed from the dispatchers live when it looks, and a
+thread that looked just before another test's subscriber was registered
+could store `never` after that scope's rebuild. `common::with_subscriber`
+now installs, before its first scope, a global subscriber that answers
+every callsite `sometimes` and enables nothing, so no computed interest is
+`never`. 24 runs of the group under a load of 30 to 40 then passed.
+
+**Measured** on the build box, under `nix develop`, on WoofWare.Incremental,
+each row the minimum over three runs: before is #726's head (1ba73838, Stage
+9), after is 76522af3 (the runtime code as merged here; the commits after it
+change tests only). The keystroke script ran 20 keystrokes per run, the
+bursts 5 of 4 and 3 of 16, the census summed over every run of one binary.
+
+| message, per keystroke | instructions before | after | allocs before | after |
+|---|---:|---:|---:|---:|
+| `didChange E` | 0.01 M | 0.01 M | 71 | 78 |
+| `diagnostic E` | 3.57 M | 3.56 M | 284 | 298 |
+| `diagnostic L` (`unchanged`) | 2.77 M | 2.72 M | 121 | 135 |
+| `semanticTokens E` | 9.81 M | 9.80 M | 5,126 | 5,138 |
+| `semanticTokens L` | 13.58 M | 13.61 M | 11,485 | 11,497 |
+| `hover L` | 8.90 M | 8.91 M | 3,935 | 3,956 |
+| **keystroke total** | **38.79 M** | **38.72 M** | 21,022 | 21,102 |
+
+A keystroke arrives alone, so nothing is shared: its instructions move by
+less than runs of one binary differ, and each request allocates 12 to 21
+more times (its key: the method, a copy of its parameters, the `Arc`), each
+step a few more (the handled and restart entries the plan reads).
+
+| burst, whole | instructions before | after | allocs before | after | answered with a result | of which ran, before | after | `ContentModified` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 keystrokes | 89.0 M | **37.6 M** | 30,029 | 18,821 | 70 | 70 | **25** | 30 |
+| 16 keystrokes | 299.4 M | **41.6 M** | 77,176 | 20,891 | 150 | 150 | **15** | 90 |
+
+Each burst now runs five requests: `diagnostic L`, `semanticTokens L` and
+`hover L` once each, and the last keystroke's `diagnostic E` and
+`semanticTokens E`; every other request on `L` is answered from those runs,
+and every other on `E` is refused as before. A burst of 16 costs one
+keystroke's requests plus about 0.2 M per further keystroke (its
+`didChange`, the refusals, the shared answers' copies), which is Stage 8's
+expected gain. A burst of 4 costs less than a lone keystroke because it
+folds once (`f.new` 1) where a keystroke folds twice (through `E` for
+`semanticTokens E`, then through `L`). One run of the three at 4 ran 26
+requests rather than 25: one burst's requests were read in two epochs, a
+matter of when the harness's hold released the server.
+
+**Open gaps.**
+
+- A request read while an identical one runs runs again, though in most
+  cases it would get the same answer: the run cannot know it read nothing
+  that moved since the request arrived.
+- Near-duplicates each pay their handler's own work and their generation's
+  confirmations; only the memo is shared.
+- `textDocument/definition` never shares, even when no fetch is involved.
+
 ## Non-goals
 
 - **Semantic diagnostics.** The server publishes syntactic diagnostics only.
