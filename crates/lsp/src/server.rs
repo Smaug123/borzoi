@@ -751,11 +751,12 @@ pub fn run_with_fetcher(
     Ok(())
 }
 
-/// The most messages the loop holds read and unhandled. While it holds this
-/// many it reads no more until it has handled them all, which bounds the
-/// plan's size and its cost (linear in the messages held, paid again each
-/// time more arrive). A client this far ahead is pathological; what the bound
-/// gives up is only coalescing across the boundary.
+/// The most messages one epoch holds, handled or not ([`crate::batch`]).
+/// Once it holds this many the loop reads no more until it has handled them
+/// all and the epoch ends, which bounds the plan's size and its cost (linear
+/// in the messages held, paid again each time more arrive). A client this far
+/// ahead is pathological; what the bound gives up is coalescing across the
+/// boundary, and a request may then run while a newer change waits unread.
 const MAX_PENDING: usize = 4096;
 
 /// What [`Dispatcher::step`] did.
@@ -837,11 +838,6 @@ impl Dispatcher {
             epoch_shutting_down: false,
             plan: Vec::new(),
         }
-    }
-
-    /// The server state.
-    pub fn state(&self) -> &State {
-        &self.state
     }
 
     /// Read `messages` into the epoch, after what it holds, and plan it
@@ -1026,11 +1022,7 @@ impl Dispatcher {
                     }
                     (BatchStep::Run { .. }, Incoming::Request { request, .. }) => {
                         let method = request.method.clone();
-                        let dispatch = {
-                            let _request_span =
-                                tracing::info_span!("lsp.request", method = %method).entered();
-                            handle_request(state, request)
-                        };
+                        let dispatch = handle_request(state, request);
                         respond_to_moved_evaluations(state, connection);
                         // Before the reply, not after: a fold refusal is *why*
                         // this reply is degraded, and an explanation that
@@ -1397,7 +1389,11 @@ pub enum Dispatch {
 /// network the dispatch loop must not block on), `workspace/diagnostic` starts a
 /// sweep (unbounded work the loop must not block on); every other request
 /// replies synchronously.
+///
+/// Every run opens the `lsp.request` span, whoever calls it: a request
+/// answered without running opens none.
 pub fn handle_request(state: &mut State, req: Request) -> Dispatch {
+    let _request_span = tracing::info_span!("lsp.request", method = %req.method).entered();
     if req.method == WorkspaceDiagnosticRequest::METHOD {
         let id = req.id.clone();
         return match extract::<WorkspaceDiagnosticRequest>(req) {
