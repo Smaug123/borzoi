@@ -220,7 +220,9 @@ fn mid_sweep(root: &Path, caps: ClientCapabilities, then: Vec<Message>) -> Vec<M
     let mut state = State::default();
     state.set_client_capabilities(caps);
     state.set_workspace_roots(vec![root.to_path_buf()]);
-    let mut dispatcher = Dispatcher::start(&server, state, None);
+    // Nothing arrives through the inbox: every message is handed over below.
+    let (_input, inbox) = borzoi::inbox::channel(1);
+    let mut dispatcher = Dispatcher::start(&server, inbox, state, None);
     let deliver = |dispatcher: &mut Dispatcher, message: Message| {
         dispatcher.admit([message]);
         while dispatcher.step(&server).unwrap() == Progress::Handled {}

@@ -36,6 +36,7 @@ use borzoi_cst::syntax::{AstNode, ImplFile};
 use lsp_types::{SymbolInformation, Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse};
 
 use crate::handlers::{file_export_symbols, symbol_information};
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::server::State;
 
@@ -52,6 +53,16 @@ struct OpenSource {
 /// nothing matches), so a stale client symbol panel clears rather than sticking
 /// with the previous answer.
 pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<WorkspaceSymbolResponse> {
+    never_superseded(handle_watched(state, params, &Watch::unwatched()))
+}
+
+/// [`handle`], stopping at a checkpoint once `watch` sees a notification
+/// ([`crate::inbox`]).
+pub fn handle_watched(
+    state: &mut State,
+    params: WorkspaceSymbolParams,
+    watch: &Watch,
+) -> Result<Option<WorkspaceSymbolResponse>, Superseded> {
     // Unicode lowercase (not ASCII-only): F# identifiers can be non-ASCII, so a
     // `CAFÉ` query must fold to match `café`.
     let query = params.query.to_lowercase();
@@ -80,8 +91,10 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
     // the *results* correct.
     let mut projects: Vec<PathBuf> = Vec::new();
     for src in &open_sources {
+        // Each ownership walk may evaluate a project: a unit of its own.
+        watch.check()?;
         if let Some(path) = &src.path
-            && let Some(project) = state.workspace.owning_project(path)
+            && let Some(project) = state.workspace.owning_project_watched(path, watch)?
             && !projects
                 .iter()
                 .any(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&project)))
@@ -108,6 +121,8 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
 
     // 1. Whole-project symbols for every project we can fold.
     for project in &projects {
+        // Each project's parses are a unit of their own.
+        watch.check()?;
         // Clone the parses out of `self` inside a tight scope: `parses_for_project`
         // borrows `semantic`/`workspace`/`docs` mutably, and we need `state.docs`
         // again below for `preferred_uri`. Cloning `ProjectParses` is cheap
@@ -119,7 +134,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
                 docs,
                 ..
             } = &mut *state;
-            match semantic.parses_for_project(project, workspace, docs) {
+            match semantic.parses_for_project_watched(project, workspace, docs, watch)? {
                 Some(p) => p.clone(),
                 None => continue,
             }
@@ -176,7 +191,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         );
     }
 
-    Some(WorkspaceSymbolResponse::Flat(out))
+    Ok(Some(WorkspaceSymbolResponse::Flat(out)))
 }
 
 /// A symbol's identity for cross-source dedup: its name, the URI it lives in,

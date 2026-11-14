@@ -34,6 +34,16 @@
 //! steps run between them, as the loop reads messages that arrive while it
 //! works: those batches are held to exactly once and to the final state.
 //!
+//! Others arrive **while a request runs** (Stage 9): a prefix is handed over,
+//! and the rest is sent through the inbox at a generated checkpoint of
+//! whichever request is running then, as the input thread hands over a
+//! message that arrives mid-request. The running request stops at that
+//! checkpoint and is planned again with the rest. Such a batch is held to
+//! exactly once and to the final state, and every request answered after
+//! the rest arrived is held to the whole batch's specification: its fate,
+//! and, answered with a result, the sequential session's answer after the
+//! whole batch.
+//!
 //! The world is one SDK-less project of three sources, each reading the one
 //! before it (`A.x`, `B.y`), so an edit to one changes what requests on the
 //! others answer; `A` is also opened under a second URI, path-equal to the
@@ -49,6 +59,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use borzoi::inbox::CHECKPOINT_EVENT;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::server::{Dispatcher, Progress, SERVER_STACK_BYTES, State};
 use borzoi::uri::UriExt as _;
@@ -263,6 +274,10 @@ struct Batch {
     /// When non-empty, the coalescing session is handed the batch in chunks of
     /// these sizes (the last takes the rest), each followed by this many steps.
     chunks: Vec<(usize, usize)>,
+    /// When set (and `chunks` is empty), the coalescing session is handed the
+    /// first `prefix` messages, and the rest arrives at its `checkpoint`th
+    /// checkpoint from then on, while a request runs.
+    mid_run: Option<(usize, usize)>,
 }
 
 #[derive(Clone)]
@@ -278,6 +293,9 @@ impl fmt::Debug for Case {
             writeln!(f, "batch {i}: writes {:?}", batch.writes)?;
             if !batch.chunks.is_empty() {
                 writeln!(f, "  chunks {:?}", batch.chunks)?;
+            }
+            if let Some(mid_run) = batch.mid_run {
+                writeln!(f, "  mid-run (prefix, checkpoint) {mid_run:?}")?;
             }
             for op in &batch.ops {
                 writeln!(f, "  {op:?}")?;
@@ -348,16 +366,19 @@ fn batch_strategy(last: bool) -> impl Strategy<Value = Batch> {
         proptest::collection::vec(op_strategy(), 1..14),
         tail,
         prop_oneof![
-            3 => Just(vec![]),
-            1 => proptest::collection::vec((1usize..5, 0usize..4), 1..4),
+            3 => Just((vec![], None)),
+            1 => proptest::collection::vec((1usize..5, 0usize..4), 1..4)
+                .prop_map(|chunks| (chunks, None)),
+            3 => (1usize..8, 0usize..4).prop_map(|mid_run| (vec![], Some(mid_run))),
         ],
     )
-        .prop_map(|(writes, mut ops, tail, chunks)| {
+        .prop_map(|(writes, mut ops, tail, (chunks, mid_run))| {
             ops.extend(tail);
             Batch {
                 writes,
                 ops,
                 chunks,
+                mid_run,
             }
         })
 }
@@ -722,7 +743,36 @@ struct Seen {
     publishes: BTreeMap<String, usize>,
 }
 
-struct Counter(Arc<Mutex<Seen>>);
+struct Counter(Arc<Mutex<Seen>>, Option<Arc<Mutex<MidRun>>>);
+
+/// A batch's rest, waiting to be sent through the inbox at a checkpoint.
+struct MidRun {
+    /// Checkpoints to pass before sending.
+    countdown: usize,
+    rest: Option<Vec<Message>>,
+    input: borzoi::inbox::InboxSender,
+    client: crossbeam_channel::Receiver<Message>,
+    /// How many messages the server had sent the client when the rest was
+    /// sent: those were sent before it arrived.
+    sent_before: Option<usize>,
+}
+
+impl MidRun {
+    /// At a checkpoint: send the rest once the countdown runs out.
+    fn checkpoint(&mut self) {
+        if self.rest.is_none() {
+            return;
+        }
+        if self.countdown > 0 {
+            self.countdown -= 1;
+            return;
+        }
+        self.sent_before = Some(self.client.len());
+        for message in self.rest.take().unwrap() {
+            self.input.send(message).expect("the inbox is alive");
+        }
+    }
+}
 
 struct UriField(Option<String>);
 
@@ -747,7 +797,8 @@ impl tracing::Subscriber for Counter {
         }
     }
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.is_span() && matches!(metadata.name(), "lsp.request" | "publish_diagnostics")
+        (metadata.is_span() && matches!(metadata.name(), "lsp.request" | "publish_diagnostics"))
+            || (metadata.is_event() && metadata.name() == CHECKPOINT_EVENT)
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let mut seen = self.0.lock().unwrap();
@@ -765,7 +816,13 @@ impl tracing::Subscriber for Counter {
     }
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, _: &tracing::Event<'_>) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().name() == CHECKPOINT_EVENT
+            && let Some(mid_run) = &self.1
+        {
+            mid_run.lock().unwrap().checkpoint();
+        }
+    }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
 }
@@ -781,6 +838,13 @@ struct Session {
     published: BTreeMap<String, Value>,
     /// The server's requests not yet acknowledged.
     owed_acks: Vec<RequestId>,
+    /// The inbox's sending side: a message sent here reaches a request that
+    /// is running, as one the input thread hands over does.
+    input: borzoi::inbox::InboxSender,
+    /// Requests whose runs stopped at a checkpoint.
+    stops: usize,
+    /// The methods of every request the server sent the client.
+    server_requests: Vec<String>,
 }
 
 impl Session {
@@ -808,15 +872,19 @@ impl Session {
         let caps: ClientCapabilities = serde_json::from_value(caps).unwrap();
         state.set_client_capabilities(caps);
         state.set_workspace_roots(vec![root.to_path_buf()]);
-        let dispatcher = Dispatcher::start(&server, state, None);
+        let (input, inbox) = borzoi::inbox::channel(borzoi::server::INPUT_BUFFER);
+        let dispatcher = Dispatcher::start(&server, inbox, state, None);
         Session {
             dispatcher,
+            input,
             server,
             client,
             exited: false,
             next_probe: 0,
             published: BTreeMap::new(),
             owed_acks: Vec::new(),
+            stops: 0,
+            server_requests: Vec::new(),
         }
     }
 
@@ -839,7 +907,7 @@ impl Session {
             for &(size, steps) in chunks {
                 self.dispatcher.admit(rest.by_ref().take(size));
                 for _ in 0..steps {
-                    if self.step() != Progress::Handled {
+                    if !matches!(self.step(), Progress::Handled | Progress::Stopped) {
                         break;
                     }
                 }
@@ -849,7 +917,7 @@ impl Session {
             }
             if !self.exited {
                 self.dispatcher.admit(rest);
-                while self.step() == Progress::Handled {}
+                self.run_out();
             }
             while !self.exited && self.dispatcher.sweep_in_flight() {
                 self.dispatcher.step_sweep(&self.server).unwrap();
@@ -858,10 +926,79 @@ impl Session {
         self.absorb()
     }
 
+    /// Step until nothing read is left to handle, or `exit`.
+    fn run_out(&mut self) {
+        while matches!(self.step(), Progress::Handled | Progress::Stopped) {}
+    }
+
+    /// Hand over the first `prefix` of `messages`, and send the rest through
+    /// the inbox at the `checkpoint`th checkpoint from then on (see
+    /// [`MidRun`]), then run until nothing is left, as [`Self::deliver`]
+    /// does. `seen` counts as [`Counter`] does. Returns the answers, and,
+    /// when the rest arrived mid-request, the requests answered before it.
+    fn deliver_mid_run(
+        &mut self,
+        mut messages: Vec<Message>,
+        (prefix, checkpoint): (usize, usize),
+        seen: Arc<Mutex<Seen>>,
+    ) -> (
+        BTreeMap<RequestId, Vec<Response>>,
+        Option<BTreeSet<RequestId>>,
+    ) {
+        if self.exited {
+            return (self.absorb(), None);
+        }
+        let rest = messages.split_off(prefix.min(messages.len()));
+        let mid_run = Arc::new(Mutex::new(MidRun {
+            countdown: checkpoint,
+            rest: Some(rest),
+            input: self.input.clone(),
+            client: self.client.receiver.clone(),
+            sent_before: None,
+        }));
+        crate::common::with_subscriber(Counter(seen, Some(Arc::clone(&mid_run))), || {
+            self.dispatcher.admit(messages);
+            self.run_out();
+            // Fewer checkpoints than the countdown: the rest arrives between
+            // steps instead.
+            let late = mid_run.lock().unwrap().rest.take();
+            if let Some(late) = late
+                && !self.exited
+            {
+                self.dispatcher.admit(late);
+                self.run_out();
+            }
+            while !self.exited && self.dispatcher.sweep_in_flight() {
+                self.dispatcher.step_sweep(&self.server).unwrap();
+            }
+        });
+        let sent_before = mid_run.lock().unwrap().sent_before;
+        let mut before = BTreeSet::new();
+        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
+        for (position, message) in self
+            .client
+            .receiver
+            .try_iter()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+        {
+            if let (Message::Response(response), Some(sent_before)) = (&message, sent_before)
+                && position < sent_before
+            {
+                before.insert(response.id.clone());
+            }
+            self.absorb_one(message, &mut answers);
+        }
+        (answers, sent_before.map(|_| before))
+    }
+
     fn step(&mut self) -> Progress {
         let progress = self.dispatcher.step(&self.server).unwrap();
-        if progress == Progress::Exit {
-            self.exited = true;
+        match progress {
+            Progress::Exit => self.exited = true,
+            Progress::Stopped => self.stops += 1,
+            Progress::Handled | Progress::Idle => {}
         }
         progress
     }
@@ -871,24 +1008,31 @@ impl Session {
     fn absorb(&mut self) -> BTreeMap<RequestId, Vec<Response>> {
         let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
         for message in self.client.receiver.try_iter().collect::<Vec<_>>() {
-            match message {
-                Message::Response(response) => {
-                    answers
-                        .entry(response.id.clone())
-                        .or_default()
-                        .push(response);
-                }
-                Message::Request(request) => self.owed_acks.push(request.id),
-                Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
-                    let uri = n.params["uri"].as_str().unwrap().to_string();
-                    let mut view = n.params.clone();
-                    view.as_object_mut().unwrap().remove("version");
-                    self.published.insert(uri, view);
-                }
-                Message::Notification(_) => {}
-            }
+            self.absorb_one(message, &mut answers);
         }
         answers
+    }
+
+    fn absorb_one(&mut self, message: Message, answers: &mut BTreeMap<RequestId, Vec<Response>>) {
+        match message {
+            Message::Response(response) => {
+                answers
+                    .entry(response.id.clone())
+                    .or_default()
+                    .push(response);
+            }
+            Message::Request(request) => {
+                self.server_requests.push(request.method);
+                self.owed_acks.push(request.id);
+            }
+            Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                let uri = n.params["uri"].as_str().unwrap().to_string();
+                let mut view = n.params.clone();
+                view.as_object_mut().unwrap().remove("version");
+                self.published.insert(uri, view);
+            }
+            Message::Notification(_) => {}
+        }
     }
 
     /// Acknowledge every request the server sent, one per batch, until it
@@ -959,6 +1103,14 @@ struct Coverage {
     spared_publishes: usize,
     superseded_sweeps: usize,
     chunked_batches: usize,
+    /// Batches whose rest arrived while a request ran, and of those, the
+    /// ones in which a run stopped.
+    mid_run_batches: usize,
+    mid_run_stops: usize,
+    /// Requests answered after a mid-run arrival and held to the whole
+    /// batch's specification, and those answered with a result.
+    after_arrival: usize,
+    after_arrival_with_a_result: usize,
 }
 
 fn fail(message: String) -> TestCaseError {
@@ -995,16 +1147,32 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
         let messages = |played: &[Played]| -> Vec<Message> {
             played.iter().map(|p| p.message.clone()).collect()
         };
-        let whole = batch.chunks.is_empty();
+        let whole = batch.chunks.is_empty() && batch.mid_run.is_none();
         let expected = fates(&played, shut_down);
 
         let seen = Arc::new(Mutex::new(Seen::default()));
-        let answers = tracing::subscriber::with_default(Counter(Arc::clone(&seen)), || {
-            coalescing.deliver_in(messages(&played), &batch.chunks)
-        });
+        let stops_before = coalescing.stops;
+        let (answers, answered_before_arrival) = match batch.mid_run {
+            Some(mid_run) if batch.chunks.is_empty() => {
+                coalescing.deliver_mid_run(messages(&played), mid_run, Arc::clone(&seen))
+            }
+            _ => {
+                let answers =
+                    crate::common::with_subscriber(Counter(Arc::clone(&seen), None), || {
+                        coalescing.deliver_in(messages(&played), &batch.chunks)
+                    });
+                (answers, None)
+            }
+        };
+        let stopped = coalescing.stops - stops_before;
+        if whole && stopped > 0 {
+            return Err(fail(format!(
+                "batch {b}: a batch handed over whole stopped {stopped} runs, with nothing arriving"
+            )));
+        }
         let seen_coalescing = std::mem::take(&mut *seen.lock().unwrap());
         let mut sequential_answers = BTreeMap::new();
-        tracing::subscriber::with_default(Counter(Arc::clone(&seen)), || {
+        crate::common::with_subscriber(Counter(Arc::clone(&seen), None), || {
             for message in messages(&played) {
                 sequential_answers.extend(sequential.deliver(vec![message]));
             }
@@ -1150,6 +1318,62 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
                     coverage.borrow_mut().moved_by_a_later_sync += 1;
                 }
             }
+        } else if let Some(before) = &answered_before_arrival {
+            // The rest arrived while a request ran: every request answered
+            // after it is answered as if the batch had been handed over
+            // whole, and against the newest texts.
+            let mut c = coverage.borrow_mut();
+            c.mid_run_batches += 1;
+            if stopped > 0 {
+                c.mid_run_stops += 1;
+            }
+            drop(c);
+            for played in &played {
+                let (Message::Request(request), Some(Req { id, sweep, .. })) =
+                    (&played.message, &played.request)
+                else {
+                    continue;
+                };
+                // A sweep's answer depends on which sweeps had started when
+                // the rest arrived.
+                if *sweep || before.contains(id) {
+                    continue;
+                }
+                let Some(answer) = answers.get(id).map(|a| &a[0]) else {
+                    continue;
+                };
+                let fate = expected[id];
+                let code = answer.response_result.as_ref().err().map(|e| e.code);
+                let want = match fate {
+                    Fate::Answered | Fate::Shutdown => None,
+                    Fate::Cancelled => Some(lsp_server::ErrorCode::RequestCanceled as i32),
+                    Fate::ContentModified => Some(lsp_server::ErrorCode::ContentModified as i32),
+                    Fate::AfterShutdown => Some(lsp_server::ErrorCode::InvalidRequest as i32),
+                    Fate::Superseded | Fate::Abandoned | Fate::Unread => continue,
+                };
+                if code != want {
+                    return Err(fail(format!(
+                        "batch {b}: {id}, answered after the rest arrived mid-request, should be \
+                         {fate:?}, but was answered {answer:?}"
+                    )));
+                }
+                coverage.borrow_mut().after_arrival += 1;
+                let Ok(result) = &answer.response_result else {
+                    continue;
+                };
+                if fate == Fate::Shutdown {
+                    continue;
+                }
+                let now = sequential.ask(&request.method, request.params.clone());
+                if now != json!({ "Ok": result }) {
+                    return Err(fail(format!(
+                        "batch {b}: {id} ({}), answered after the rest arrived mid-request, was \
+                         answered {result} against superseded text; after the batch it is {now}",
+                        request.method
+                    )));
+                }
+                coverage.borrow_mut().after_arrival_with_a_result += 1;
+            }
         } else {
             coverage.borrow_mut().chunked_batches += 1;
         }
@@ -1261,6 +1485,7 @@ fn pinned_cases() -> Vec<Case> {
                     Op::Exit,
                 ],
                 chunks: vec![(2, 2)],
+                mid_run: None,
             }],
         },
     ]
@@ -1301,7 +1526,9 @@ fn a_coalesced_batch_agrees_with_its_messages_one_at_a_time() {
                 && coverage.after_shutdown > 0
                 && coverage.moved_by_a_later_sync > 0
                 && coverage.spared_publishes > 0
-                && coverage.chunked_batches > 0,
+                && coverage.chunked_batches > 0
+                && coverage.mid_run_stops > 0
+                && coverage.after_arrival_with_a_result > 0,
             "the generated cases left a property unexercised: {coverage:#?}"
         );
     });
@@ -1377,6 +1604,9 @@ fn the_loop_reads_every_waiting_message_before_it_handles_one() {
         let world = World::new();
         let b = world.uri(Doc::Src(Src::B));
         let (server, client) = Connection::memory();
+        // Into the inbox itself, as the input thread hands messages over, so
+        // all of it is waiting when the loop starts.
+        let (input, inbox) = borzoi::inbox::channel(borzoi::server::INPUT_BUFFER);
         for message in [
             did_open(&b, Src::B.text(0)),
             hover_b(&world, "h1"),
@@ -1387,14 +1617,14 @@ fn the_loop_reads_every_waiting_message_before_it_handles_one() {
             request("s", "shutdown", Value::Null),
             notification("exit", Value::Null),
         ] {
-            client.sender.send(message).unwrap();
+            input.send(message).unwrap();
         }
         let mut state = State::new();
         state.workspace = Workspace::with_env(SdkDiscoveryEnv {
             dotnet_root: Some(world.root.join("no-dotnet")),
             ..SdkDiscoveryEnv::default()
         });
-        borzoi::server::run_with_fetcher(server, state, None).expect("the loop ends cleanly");
+        borzoi::server::run_inbox(&server, inbox, state, None).expect("the loop ends cleanly");
         let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
         for message in client.receiver.try_iter() {
             if let Message::Response(response) = message {
@@ -1518,82 +1748,25 @@ fn a_superseded_change_publishes_nothing() {
     });
 }
 
-/// Sends messages on the connection (the closure it holds) when the server
-/// ends its first generation: as a client's messages arrive while the loop is
-/// handling one.
-type Sending = Box<dyn FnOnce() + Send>;
-
-struct SendAtFirstGeneration(Mutex<Option<Sending>>);
-
-impl tracing::Subscriber for SendAtFirstGeneration {
-    fn register_callsite(
-        &self,
-        metadata: &'static tracing::Metadata<'static>,
-    ) -> tracing::subscriber::Interest {
-        if self.enabled(metadata) {
-            tracing::subscriber::Interest::always()
-        } else {
-            tracing::subscriber::Interest::sometimes()
-        }
-    }
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.is_event() && metadata.name() == borzoi::observed::GENERATION_EVENT
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, _: &tracing::Event<'_>) {
-        if let Some(send) = self.0.lock().unwrap().take() {
-            send();
-        }
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
-
-/// The loop reads the connection again before each message it handles: a
+/// The loop reads its inbox again before each message it handles: a
 /// change that arrives while it handles an earlier message refuses a request
-/// it had read before the change arrived.
+/// it had read before the change arrived. The change is sent through the
+/// inbox once the first step is done, as the input thread hands over a
+/// message that arrives then.
 #[test]
 fn the_loop_reads_again_before_each_message_it_handles() {
     on_server_stack(|| {
         let world = World::new();
         let b = world.uri(Doc::Src(Src::B));
-        let (server, client) = Connection::memory();
-        client.sender.send(did_open(&b, Src::B.text(0))).unwrap();
-        client.sender.send(hover_b(&world, "h1")).unwrap();
-        let late = vec![
-            did_change(&b, Src::B.text(1)),
-            request("s", "shutdown", Value::Null),
-            notification("exit", Value::Null),
-        ];
-        let sender = client.sender.clone();
-        let subscriber = SendAtFirstGeneration(Mutex::new(Some(Box::new(move || {
-            for message in late {
-                sender.send(message).unwrap();
-            }
-        }))));
-        let mut state = State::new();
-        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
-            dotnet_root: Some(world.root.join("no-dotnet")),
-            ..SdkDiscoveryEnv::default()
-        });
-        tracing::subscriber::with_default(subscriber, || {
-            borzoi::server::run_with_fetcher(server, state, None).expect("the loop ends cleanly")
-        });
-        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
-        for message in client.receiver.try_iter() {
-            if let Message::Response(response) = message {
-                answers
-                    .entry(response.id.clone())
-                    .or_default()
-                    .push(response);
-            }
-        }
+        let mut session = Session::start(&world.root, false);
+        session
+            .dispatcher
+            .admit([did_open(&b, Src::B.text(0)), hover_b(&world, "h1")]);
+        assert_eq!(session.step(), Progress::Handled, "the open");
+        session.input.send(did_change(&b, Src::B.text(1))).unwrap();
+        session.run_out();
+        let answers = session.absorb();
         assert_eq!(error_code(&answers, "h1"), CONTENT_MODIFIED);
-        assert_eq!(error_code(&answers, "s"), None);
     });
 }
 
@@ -1609,7 +1782,7 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
         let b = world.uri(Doc::Src(Src::B));
         let (upstream, from_client) = crossbeam_channel::bounded::<Message>(0);
         let (to_client, client) = crossbeam_channel::unbounded::<Message>();
-        let buffered = borzoi::server::buffer_input(from_client);
+        let inbox = borzoi::inbox::forward(from_client, borzoi::server::INPUT_BUFFER);
         const PAIRS: usize = 32;
         let mut burst = vec![did_open(&b, Src::B.text(0))];
         for i in 0..PAIRS {
@@ -1642,9 +1815,9 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
         });
         let connection = Connection {
             sender: to_client,
-            receiver: buffered,
+            receiver: crossbeam_channel::never(),
         };
-        borzoi::server::run_with_fetcher(connection, state, None).expect("the loop ends cleanly");
+        borzoi::server::run_inbox(&connection, inbox, state, None).expect("the loop ends cleanly");
         let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
         for message in client.try_iter() {
             if let Message::Response(response) = message {
@@ -1658,5 +1831,773 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
             assert_eq!(error_code(&answers, &format!("h{i}")), CANCELLED, "h{i}");
         }
         assert_eq!(error_code(&answers, "s"), None);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Requests that stop (Stage 9).
+// ---------------------------------------------------------------------------
+
+/// The spans that begin a unit of work whose result is cached, after which a
+/// running request passes a checkpoint (`docs/incremental-lsp-plan.md`,
+/// Stage 9). An env is two: resolving its references, and building it from
+/// them (reading their DLLs, `build_env_from_dll_paths`, inside it).
+const UNIT_SPANS: [&str; 6] = [
+    "evaluate_project",
+    "parse_compile_item",
+    "resolve_references",
+    "build_assembly_env",
+    "resolve_project",
+    "infer_project",
+];
+
+/// What [`StopAtSpan`] saw.
+#[derive(Default, Debug)]
+struct SpanTrace {
+    /// Every span the first run began, by name, while it ran its handler
+    /// (inside its `lsp.request` span).
+    points: Vec<&'static str>,
+    /// The index, among `points`, at which the notification was sent.
+    sent_at: Option<usize>,
+    /// Units begun after the notification was sent and before the loop
+    /// finished the run it stopped ([`borzoi::inbox::STOPPED_EVENT`], the
+    /// stopped step's last act).
+    begun_after: Vec<&'static str>,
+    /// `lsp.request` spans begun: one per run.
+    runs: usize,
+    /// The unit spans open now, by id: a unit begun inside another is part
+    /// of it.
+    open_units: Vec<u64>,
+    next_id: u64,
+    in_first_run: bool,
+    stopped: usize,
+}
+
+/// The id [`StopAtSpan`] gives the `lsp.request` span, so that it can tell
+/// when the handler has returned; every other span gets 1.
+const REQUEST_SPAN_ID: u64 = 2;
+
+/// A subscriber that sends a notification the server ignores as the `at`th
+/// span the request's first run begins inside its handler does, and records
+/// which units begin before the stopped step ends.
+struct StopAtSpan {
+    at: Option<usize>,
+    /// What is sent: a notification the server ignores, unless a test asks
+    /// for another (a cancellation of the request).
+    sends: Message,
+    input: borzoi::inbox::InboxSender,
+    trace: Arc<Mutex<SpanTrace>>,
+}
+
+impl tracing::Subscriber for StopAtSpan {
+    fn register_callsite(
+        &self,
+        metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        if self.enabled(metadata) {
+            tracing::subscriber::Interest::always()
+        } else {
+            tracing::subscriber::Interest::sometimes()
+        }
+    }
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.is_span()
+            || (metadata.is_event() && metadata.name() == borzoi::inbox::STOPPED_EVENT)
+    }
+    fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        let mut trace = self.trace.lock().unwrap();
+        let name = span.metadata().name();
+        if name == "lsp.request" {
+            trace.runs += 1;
+            trace.in_first_run = trace.runs == 1;
+            return tracing::span::Id::from_u64(REQUEST_SPAN_ID);
+        }
+        let unit = UNIT_SPANS.contains(&name);
+        if trace.sent_at.is_some() && trace.stopped == 0 && unit && trace.open_units.is_empty() {
+            trace.begun_after.push(name);
+        }
+        if trace.in_first_run {
+            let index = trace.points.len();
+            trace.points.push(name);
+            if self.at == Some(index) {
+                trace.sent_at = Some(index);
+                self.input.send(self.sends.clone()).unwrap();
+            }
+        }
+        if unit {
+            // Ids above the request's, one per unit span, so closing one is
+            // seen.
+            trace.next_id += 1;
+            let id = REQUEST_SPAN_ID + trace.next_id;
+            trace.open_units.push(id);
+            return tracing::span::Id::from_u64(id);
+        }
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        self.trace.lock().unwrap().stopped += 1;
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn try_close(&self, id: tracing::span::Id) -> bool {
+        let id = id.into_u64();
+        let mut trace = self.trace.lock().unwrap();
+        if id == REQUEST_SPAN_ID {
+            trace.in_first_run = false;
+        }
+        trace.open_units.retain(|open| *open != id);
+        true
+    }
+}
+
+/// A notification the server ignores.
+fn ignored() -> Message {
+    notification("$/borzoi-test/ignored", Value::Null)
+}
+
+/// A cancellation of the request `id`.
+fn cancel(id: &str) -> Message {
+    notification("$/cancelRequest", json!({ "id": id }))
+}
+
+/// A scenario for [`a_request_stops_for_a_notification_wherever_it_arrives`]:
+/// what a fresh session is sent first, unstopped, and the request it is then
+/// asked.
+struct LatencyScenario {
+    name: &'static str,
+    setup: Vec<Message>,
+    /// Project files rewritten after the setup, with no watch event, so the
+    /// request evaluates each again.
+    rewrite: Vec<PathBuf>,
+    /// Files given new contents after the setup, with no watch event.
+    replace: Vec<(PathBuf, String)>,
+    request: Message,
+}
+
+fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
+    let a = world.uri(Doc::Src(Src::A));
+    let c = world.uri(Doc::Src(Src::C));
+    let opens: Vec<Message> = SOURCES
+        .iter()
+        .map(|&src| did_open(&world.uri(Doc::Src(src)), src.text(0)))
+        .collect();
+    let hover_c = request(
+        "hover",
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": c },
+            "position": { "line": 2, "character": 10 },
+        }),
+    );
+    let tokens_c = |id: &str| {
+        request(
+            id,
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": c } }),
+        )
+    };
+    // A second project beside `P`, opened, so `workspace/symbol` parses two.
+    let q = world.root.join("Q");
+    std::fs::create_dir_all(&q).unwrap();
+    std::fs::write(
+        q.join("Q.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"D.fs\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    std::fs::write(q.join("D.fs"), "module D\n\nlet d = 1\n").unwrap();
+    let d = Uri::from_file_path(q.join("D.fs"))
+        .unwrap()
+        .as_str()
+        .to_string();
+    // And a third, `R`, for the scenario whose projects all evaluate again.
+    let r = world.root.join("R");
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::write(
+        r.join("R.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"F.fs\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    std::fs::write(r.join("F.fs"), "module F\n\nlet f = 1\n").unwrap();
+    let f = Uri::from_file_path(r.join("F.fs"))
+        .unwrap()
+        .as_str()
+        .to_string();
+    // A directory of three projects that compile nothing, beside a source
+    // they all fail to claim: its ownership walk weighs (evaluates) each.
+    let s_dir = world.root.join("S");
+    std::fs::create_dir_all(&s_dir).unwrap();
+    for name in ["S1", "S2", "S3"] {
+        std::fs::write(
+            s_dir.join(format!("{name}.fsproj")),
+            "<Project>\n  <ItemGroup>\n  </ItemGroup>\n</Project>\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(s_dir.join("X.fs"), "module X\n\nlet x = 1\n").unwrap();
+    let x = Uri::from_file_path(s_dir.join("X.fs"))
+        .unwrap()
+        .as_str()
+        .to_string();
+    vec![
+        LatencyScenario {
+            name: "a hover whose ownership walk evaluates three projects again",
+            setup: vec![did_open(&x, "module X\n\nlet x = 1\n")],
+            rewrite: ["S1", "S2", "S3"]
+                .iter()
+                .map(|name| s_dir.join(format!("{name}.fsproj")))
+                .collect(),
+            replace: Vec::new(),
+            request: request(
+                "hover",
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": x },
+                    "position": { "line": 2, "character": 4 },
+                }),
+            ),
+        },
+        LatencyScenario {
+            name: "a hover over a cached fold whose project file gained a comment \
+                   (the env's references resolved again, alike)",
+            setup: opens.iter().cloned().chain([hover_c.clone()]).collect(),
+            rewrite: vec![world.root.join("P").join("P.fsproj")],
+            replace: Vec::new(),
+            request: hover_c.clone(),
+        },
+        LatencyScenario {
+            name: "a hover over a cached fold whose project gained a reference to a project \
+                   with no output (the env's references resolved again, evaluating it)",
+            setup: opens.iter().cloned().chain([hover_c.clone()]).collect(),
+            rewrite: Vec::new(),
+            replace: vec![(
+                world.root.join("P").join("P.fsproj"),
+                format!(
+                    "<Project>\n  <ItemGroup>\n{}  </ItemGroup>\n  <ItemGroup>\n    \
+                     <ProjectReference Include=\"../Q/Q.fsproj\" />\n  </ItemGroup>\n</Project>\n",
+                    SOURCES
+                        .iter()
+                        .map(|s| format!("    <Compile Include=\"{}\" />\n", s.file()))
+                        .collect::<String>()
+                ),
+            )],
+            request: hover_c.clone(),
+        },
+        LatencyScenario {
+            name: "a cold hover (parses, env, fold, inference)",
+            setup: opens.clone(),
+            rewrite: Vec::new(),
+            replace: Vec::new(),
+            request: hover_c.clone(),
+        },
+        LatencyScenario {
+            name: "cold references (the whole project, then its scan)",
+            setup: opens.clone(),
+            rewrite: Vec::new(),
+            replace: Vec::new(),
+            request: request(
+                "references",
+                "textDocument/references",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 4 },
+                    "context": { "includeDeclaration": true },
+                }),
+            ),
+        },
+        LatencyScenario {
+            name: "cold semantic tokens",
+            setup: opens.clone(),
+            rewrite: Vec::new(),
+            replace: Vec::new(),
+            request: tokens_c("tokens"),
+        },
+        LatencyScenario {
+            name: "a hover over a cached fold (inference only)",
+            setup: opens.iter().cloned().chain([tokens_c("warm")]).collect(),
+            rewrite: Vec::new(),
+            replace: Vec::new(),
+            request: hover_c,
+        },
+        LatencyScenario {
+            name: "workspace symbols over three projects that all evaluate again",
+            setup: opens
+                .iter()
+                .cloned()
+                .chain([
+                    did_open(&d, "module D\n\nlet d = 1\n"),
+                    did_open(&f, "module F\n\nlet f = 1\n"),
+                ])
+                .collect(),
+            rewrite: vec![
+                world.root.join("P").join("P.fsproj"),
+                q.join("Q.fsproj"),
+                r.join("R.fsproj"),
+            ],
+            replace: Vec::new(),
+            request: request("symbols", "workspace/symbol", json!({ "query": "" })),
+        },
+        LatencyScenario {
+            name: "workspace symbols over two projects",
+            setup: opens
+                .iter()
+                .cloned()
+                .chain([
+                    did_open(&d, "module D\n\nlet d = 1\n"),
+                    did_open(&a, Src::A.text(0)),
+                ])
+                .collect(),
+            rewrite: Vec::new(),
+            replace: Vec::new(),
+            request: request("symbols", "workspace/symbol", json!({ "query": "" })),
+        },
+    ]
+}
+
+/// One fresh session: `scenario`'s setup, then its request, with a
+/// notification sent as the `at`th span of its handler begins.
+fn run_latency_case(
+    world: &World,
+    scenario: &LatencyScenario,
+    at: Option<usize>,
+) -> (SpanTrace, Value) {
+    // Put back after the case, so each case starts from the same disk.
+    let originals: Vec<(PathBuf, String)> = scenario
+        .replace
+        .iter()
+        .map(|(path, _)| path)
+        .chain(&scenario.rewrite)
+        .map(|path| {
+            (
+                path.clone(),
+                crate::common::host_fs::read_to_string(path).unwrap(),
+            )
+        })
+        .collect();
+    let mut session = Session::start(&world.root, false);
+    session.deliver(scenario.setup.clone());
+    session.settle();
+    for (path, text) in &scenario.replace {
+        std::fs::write(path, text).unwrap();
+    }
+    for project in &scenario.rewrite {
+        // A text this session has not evaluated.
+        static REWRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = REWRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let text = crate::common::host_fs::read_to_string(project).unwrap();
+        let text = text.split("<!--").next().unwrap().trim_end().to_string();
+        std::fs::write(project, format!("{text}\n<!-- {n} -->\n")).unwrap();
+    }
+    let trace = Arc::new(Mutex::new(SpanTrace::default()));
+    let subscriber = StopAtSpan {
+        at,
+        sends: ignored(),
+        input: session.input.clone(),
+        trace: Arc::clone(&trace),
+    };
+    let mut answers = crate::common::with_subscriber(subscriber, || {
+        session.deliver(vec![scenario.request.clone()])
+    });
+    let Message::Request(request) = &scenario.request else {
+        unreachable!()
+    };
+    let mut answer = answers
+        .remove(&request.id)
+        .expect("the request is answered");
+    assert_eq!(answer.len(), 1, "answered once: {answer:?}");
+    let answer =
+        serde_json::to_value(answer.remove(0).response_result.map_err(|e| e.code)).unwrap();
+    let trace = std::mem::take(&mut *trace.lock().unwrap());
+    for (path, text) in originals {
+        std::fs::write(path, text).unwrap();
+    }
+    (trace, answer)
+}
+
+/// The cancellation latency, over every point a request's handler passes: a
+/// notification that arrives as any span of the handler begins (the
+/// handler's own, each unit's, and every span inside them) stops the request
+/// once, no unit of work begins before the stopped step ends (the
+/// notification is handled next), and the request then answers as it does
+/// unstopped. Swept over every such span of each [`latency_scenarios`]
+/// scenario: cold requests, cached folds whose inference, ownership, project
+/// files or env references moved, and `workspace/symbol` over several
+/// projects.
+#[test]
+fn a_request_stops_for_a_notification_wherever_it_arrives() {
+    on_server_stack(|| {
+        let world = World::new();
+        for scenario in latency_scenarios(&world) {
+            let (unstopped, want) = run_latency_case(&world, &scenario, None);
+            assert!(
+                unstopped.points.iter().any(|p| UNIT_SPANS.contains(p)),
+                "{}: the request begins a unit: {unstopped:?}",
+                scenario.name
+            );
+            assert_eq!(unstopped.stopped, 0);
+            assert!(
+                unstopped
+                    .points
+                    .iter()
+                    .filter(|p| **p == "evaluate_project")
+                    .count()
+                    >= scenario.rewrite.len(),
+                "{}: the request evaluates each rewritten project again: {unstopped:?}",
+                scenario.name
+            );
+            for at in 0..unstopped.points.len() {
+                let (trace, got) = run_latency_case(&world, &scenario, Some(at));
+                let point = unstopped.points[at];
+                assert_eq!(
+                    trace.sent_at,
+                    Some(at),
+                    "{}: the notification was sent at {point} ({at}): {trace:?}",
+                    scenario.name
+                );
+                assert_eq!(
+                    trace.stopped, 1,
+                    "{}: the request stopped once, for the notification at {point} ({at}): \
+                     {trace:?}",
+                    scenario.name
+                );
+                assert!(
+                    trace.begun_after.is_empty(),
+                    "{}: after the notification at {point} ({at}), {:?} began before the \
+                     stopped step ended (its spans unstopped: {:?})",
+                    scenario.name,
+                    trace.begun_after,
+                    unstopped.points
+                );
+                assert_eq!(
+                    got, want,
+                    "{}: stopped at {point} ({at}), the request answers as it does unstopped",
+                    scenario.name
+                );
+            }
+        }
+    });
+}
+
+/// Stage 9's gate, in small: a change and a pull of its document arrive while
+/// a request on another document runs. The request stops, the change is
+/// applied, the pull is answered first, and the request is answered after,
+/// against the new text.
+#[test]
+fn an_edit_that_arrives_mid_request_is_answered_before_it() {
+    on_server_stack(|| {
+        let world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let c = world.uri(Doc::Src(Src::C));
+        // `C` reads `A.x` at line 2, column 16.
+        let hover_c = || {
+            request(
+                "hover",
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 16 },
+                }),
+            )
+        };
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        session.settle();
+        let rest = vec![
+            did_change(&a, Src::A.text(1)),
+            request(
+                "pull",
+                "textDocument/diagnostic",
+                json!({ "textDocument": { "uri": a } }),
+            ),
+        ];
+        // The rest arrives at the hover's first checkpoint.
+        let mid_run = Arc::new(Mutex::new(MidRun {
+            countdown: 0,
+            rest: Some(rest),
+            input: session.input.clone(),
+            client: session.client.receiver.clone(),
+            sent_before: None,
+        }));
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        crate::common::with_subscriber(Counter(seen, Some(Arc::clone(&mid_run))), || {
+            session.dispatcher.admit([hover_c()]);
+            session.run_out();
+        });
+        assert_eq!(mid_run.lock().unwrap().sent_before, Some(0));
+        assert_eq!(session.stops, 1, "the hover stopped");
+        let answered: Vec<Response> = session
+            .client
+            .receiver
+            .try_iter()
+            .filter_map(|message| match message {
+                Message::Response(response) => Some(response),
+                _ => None,
+            })
+            .collect();
+        let ids: Vec<String> = answered.iter().map(|r| r.id.to_string()).collect();
+        assert_eq!(
+            ids,
+            ["\"pull\"", "\"hover\""],
+            "the pull is answered before the hover it interrupted, each once"
+        );
+        let mut fresh = Session::start(&world.root, false);
+        fresh.deliver(vec![
+            did_open(&a, Src::A.text(1)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        let Message::Request(hover) = hover_c() else {
+            unreachable!()
+        };
+        let want = fresh.ask(&hover.method, hover.params);
+        let got = serde_json::to_value(
+            answered[1]
+                .response_result
+                .clone()
+                .map_err(|e| (e.code, e.message)),
+        )
+        .unwrap();
+        assert_eq!(got, want, "the hover reads the text the change brought");
+    });
+}
+
+/// What the loop holds is bounded: however far ahead the client is, the
+/// epoch takes at most [`borzoi::server::MAX_PENDING`] messages, and the rest
+/// wait in the inbox until it ends.
+#[test]
+fn the_epoch_holds_at_most_its_bound() {
+    on_server_stack(|| {
+        let world = World::new();
+        let (server, _client) = Connection::memory();
+        let (input, inbox) = borzoi::inbox::channel(2 * borzoi::server::MAX_PENDING);
+        let mut state = State::new();
+        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(world.root.join("no-dotnet")),
+            ..SdkDiscoveryEnv::default()
+        });
+        let mut dispatcher = Dispatcher::start(&server, inbox, state, None);
+        let ahead = borzoi::server::MAX_PENDING + 100;
+        for i in 0..ahead {
+            input
+                .send(request(
+                    &format!("r{i}"),
+                    "borzoi-test/unknown",
+                    Value::Null,
+                ))
+                .unwrap();
+        }
+        assert_eq!(dispatcher.step(&server).unwrap(), Progress::Handled);
+        assert_eq!(dispatcher.pending_len(), borzoi::server::MAX_PENDING);
+        let mut handled = 1;
+        let mut epochs_ended = 0;
+        while handled < ahead {
+            match dispatcher.step(&server).unwrap() {
+                Progress::Handled => handled += 1,
+                // The epoch ended; the next step reads the rest.
+                Progress::Idle => epochs_ended += 1,
+                other => panic!("an unknown request answers MethodNotFound: {other:?}"),
+            }
+            assert!(dispatcher.pending_len() <= borzoi::server::MAX_PENDING);
+            assert!(epochs_ended <= 1, "the rest fits in one more epoch");
+        }
+        assert_eq!(epochs_ended, 1, "the epoch ended once at its bound");
+    });
+}
+
+/// A request that stops still owes what it would have owed finishing: a
+/// closed Compile item rewritten on disk with no watch event stales the
+/// fold, and the request that finds it stale owes the client a
+/// semantic-token refresh, once, wherever it stops after finding it (before
+/// the rebuild of the parses or during it) and whether it then runs again (a
+/// notification the server ignores) or is refused (its own cancellation,
+/// after which no rebuild finishes). A request refused before it looked at
+/// the fold owes nothing, as one never sent would not. Swept over every span
+/// of the handler, for semantic tokens and references (whose fold is found
+/// stale before its parses are asked for).
+#[test]
+fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
+    /// The request a round asks, by its id, on `c`.
+    fn asked(id: &str, c: &str) -> Message {
+        match id {
+            "tokens" => request(
+                id,
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": c } }),
+            ),
+            _ => request(
+                id,
+                "textDocument/references",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 4 },
+                    "context": { "includeDeclaration": true },
+                }),
+            ),
+        }
+    }
+    /// One session: `A` and `C` open and both requests warm, `B` rewritten
+    /// on disk, then the request `id` with `sends` at the `stop`th span of
+    /// its handler. The trace, how many token refreshes the server sent for
+    /// the request, and its error code.
+    fn round(id: &str, stop: Option<usize>, sends: Message) -> (SpanTrace, usize, Option<i32>) {
+        let mut world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let c = world.uri(Doc::Src(Src::C));
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&c, Src::C.text(0)),
+        ]);
+        session.settle();
+        session.deliver(vec![asked("warm-references", &c), asked("tokens", &c)]);
+        session.settle();
+        session.server_requests.clear();
+        // `B` is closed: no sync announces this.
+        world.write(Src::B, 1);
+        let trace = Arc::new(Mutex::new(SpanTrace::default()));
+        let subscriber = StopAtSpan {
+            at: stop,
+            sends,
+            input: session.input.clone(),
+            trace: Arc::clone(&trace),
+        };
+        let answers =
+            crate::common::with_subscriber(subscriber, || session.deliver(vec![asked(id, &c)]));
+        let code = error_code(&answers, id);
+        session.settle();
+        let trace = std::mem::take(&mut *trace.lock().unwrap());
+        let refreshes = session
+            .server_requests
+            .iter()
+            .filter(|method| *method == "workspace/semanticTokens/refresh")
+            .count();
+        (trace, refreshes, code)
+    }
+    on_server_stack(|| {
+        let mut stops_during_rebuild = 0;
+        for id in ["tokens", "references"] {
+            let (unstopped, refreshes, code) = round(id, None, ignored());
+            assert_eq!(code, None);
+            assert_eq!(
+                refreshes, 1,
+                "{id}: the unannounced change owes one token refresh"
+            );
+            assert!(
+                unstopped.points.contains(&"parse_compile_item"),
+                "{id}: the request rebuilds the parses: {unstopped:?}"
+            );
+            // The fold is confirmed (and found stale) as the lookup begins,
+            // or, for tokens, before the parses are built.
+            let found = unstopped
+                .points
+                .iter()
+                .position(|p| matches!(*p, "semantic.project_lookup" | "build_parses"))
+                .expect("the request confirms the fold");
+            for at in 0..unstopped.points.len() {
+                let point = unstopped.points[at];
+                if unstopped.points[..at].contains(&"parse_compile_item") {
+                    stops_during_rebuild += 1;
+                }
+                for (sends, want) in [(ignored(), None), (cancel(id), CANCELLED)] {
+                    let owed = usize::from(want.is_none() || at >= found);
+                    let (stopped, refreshes, code) = round(id, Some(at), sends);
+                    assert_eq!(stopped.stopped, 1, "{id} at {point} ({at}): {stopped:?}");
+                    assert_eq!(code, want, "{id} at {point} ({at})");
+                    assert_eq!(
+                        refreshes,
+                        owed,
+                        "{id}, stopped at {point} ({at}) and then {}: the unannounced change \
+                         owes {owed} token refresh",
+                        if want.is_some() {
+                            "refused"
+                        } else {
+                            "run again"
+                        }
+                    );
+                }
+            }
+        }
+        assert!(stops_during_rebuild > 0, "some stop came during a rebuild");
+    });
+}
+
+/// A request that re-evaluated a project, stopped and refused for its own
+/// cancellation, still leaves the client told what the moved evaluation may
+/// have staled: a pull client is sent the diagnostic refresh it would have
+/// been sent had the request finished (Codex).
+#[test]
+fn a_request_cancelled_mid_evaluation_still_reports_the_moved_evaluation() {
+    fn round(stop: Option<usize>) -> (SpanTrace, usize, Option<i32>) {
+        let world = World::new();
+        let c = world.uri(Doc::Src(Src::C));
+        let hover_c = || {
+            request(
+                "hover",
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 10 },
+                }),
+            )
+        };
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![did_open(&c, Src::C.text(0))]);
+        session.settle();
+        session.deliver(vec![hover_c()]);
+        session.settle();
+        session.server_requests.clear();
+        // The project gains a define, with no watch event.
+        let project = world.root.join("P").join("P.fsproj");
+        let text = crate::common::host_fs::read_to_string(&project).unwrap();
+        std::fs::write(
+            &project,
+            text.replace(
+                "<Project>",
+                "<Project>\n  <PropertyGroup><DefineConstants>MOVED</DefineConstants></PropertyGroup>",
+            ),
+        )
+        .unwrap();
+        let trace = Arc::new(Mutex::new(SpanTrace::default()));
+        let subscriber = StopAtSpan {
+            at: stop,
+            sends: cancel("hover"),
+            input: session.input.clone(),
+            trace: Arc::clone(&trace),
+        };
+        let answers =
+            crate::common::with_subscriber(subscriber, || session.deliver(vec![hover_c()]));
+        let code = error_code(&answers, "hover");
+        session.settle();
+        let trace = std::mem::take(&mut *trace.lock().unwrap());
+        let refreshes = session
+            .server_requests
+            .iter()
+            .filter(|method| *method == "workspace/diagnostic/refresh")
+            .count();
+        (trace, refreshes, code)
+    }
+    on_server_stack(|| {
+        let (unstopped, refreshes, code) = round(None);
+        assert_eq!(code, None);
+        assert_eq!(
+            refreshes, 1,
+            "the moved evaluation owes a diagnostic refresh"
+        );
+        let evaluation = unstopped
+            .points
+            .iter()
+            .position(|p| *p == "evaluate_project")
+            .expect("the hover evaluates the project again");
+        let (stopped, refreshes, code) = round(Some(evaluation));
+        assert_eq!(stopped.stopped, 1, "the hover stopped: {stopped:?}");
+        assert_eq!(code, CANCELLED);
+        assert_eq!(
+            refreshes, 1,
+            "the hover stopped for its cancellation, and the moved evaluation still owes a \
+             diagnostic refresh"
+        );
     });
 }

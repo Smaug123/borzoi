@@ -27,6 +27,29 @@ use borzoi_spawn::BoundedCommand;
 use host_fs::HostPath as _;
 use serde::Deserialize;
 
+/// `f` with `subscriber` as this thread's default, alone among this binary's
+/// scoped subscribers.
+///
+/// `tracing` keeps, for the whole process, each callsite's interest and a
+/// maximum level, and recomputes both from the live dispatchers whenever one
+/// is registered or dropped. Two of those recomputations racing (one test's
+/// subscriber dropped while another's is registered) can leave the result of
+/// the stale one in place, with the maximum level `OFF` while a subscriber is
+/// live: it then sees nothing. Holding every scope that installs a subscriber
+/// under one lock keeps registrations and drops from overlapping, and the
+/// rebuild inside makes this scope's interest current.
+pub fn with_subscriber<S, T>(subscriber: S, f: impl FnOnce() -> T) -> T
+where
+    S: tracing::Subscriber + Send + Sync + 'static,
+{
+    static SUBSCRIBERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _alone = SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        f()
+    })
+}
+
 pub mod diagnostics_reference;
 pub mod host_fs;
 pub mod inheritdoc_diff;

@@ -90,13 +90,10 @@ fn serve() -> Result<(), Box<dyn Error + Send + Sync>> {
         .set_csharp_project_references_enabled(enable_csharp_project_references);
     state.set_client_capabilities(client_capabilities);
 
-    // `lsp-server` hands each message over a rendezvous channel, decoding the
-    // next only once the loop takes it, so without a buffer nothing would be
-    // waiting for the loop to coalesce.
-    let connection = Connection {
-        sender: connection.sender,
-        receiver: borzoi::server::buffer_input(connection.receiver),
-    };
+    // The loop reads the connection through a thread of its own
+    // (`borzoi::inbox::forward`), which takes each message as `lsp-server`
+    // decodes it, so a burst is waiting for the loop to coalesce and a
+    // notification sent while a request runs is counted at once.
     borzoi::server::run(connection, state)?;
     io_threads.join()?;
 

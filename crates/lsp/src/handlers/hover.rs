@@ -46,9 +46,9 @@ use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
-    AssemblyEnv, DefKind, EntityHandle, InferredFile, MemberIndex, ProjectItems, Resolution,
-    ResolvedFile, ResolvedProject, SemanticClass, SyntaxRecovery, Ty, UnionCaseIndex, infer_file,
-    resolve_file,
+    AssemblyEnv, DefKind, EntityHandle, InferredFile, InferredProject, MemberIndex, ProjectItems,
+    Resolution, ResolvedFile, ResolvedProject, SemanticClass, SyntaxRecovery, Ty, UnionCaseIndex,
+    infer_file, resolve_file,
 };
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 
@@ -61,9 +61,10 @@ use crate::handlers::{
     innermost_inferred_type_with_range, range_to_lsp, smallest_member_resolution_with_range,
     smallest_resolution_with_range,
 };
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
-use crate::semantic::SemanticState;
+use crate::semantic::{ProjectParses, SemanticState};
 use crate::server::{State, path_extension};
 use crate::xml_doc::inherit::Outcome;
 use crate::xml_doc::key::DocTarget;
@@ -79,24 +80,113 @@ use crate::xml_doc::source::{self, ProjectDocs, SourceDoc};
 /// finds nothing there (via [`definition_availability`](crate::handlers::definition_availability)),
 /// rather than the previous silent `None`.
 pub fn handle(state: &mut State, params: HoverParams) -> Option<Hover> {
+    never_superseded(handle_watched(state, params, &Watch::unwatched()))
+}
+
+/// [`handle`], stopping at a checkpoint once `watch` sees a notification
+/// ([`crate::inbox`]).
+pub fn handle_watched(
+    state: &mut State,
+    params: HoverParams,
+    watch: &Watch,
+) -> Result<Option<Hover>, Superseded> {
     let pos = params.text_document_position_params.position;
     let uri = params
         .text_document_position_params
         .text_document
         .uri
         .clone();
-    let text = state.docs.get(&uri).cloned()?;
+    let Some(text) = state.docs.get(&uri).cloned() else {
+        return Ok(None);
+    };
     let byte = position_to_offset(&text, pos);
 
-    if let Some(hover) = project_hover(state, &uri, &text, byte) {
-        return Some(hover);
+    let prefix = file_prefix(state, &uri, watch)?;
+    if let Some(prefix) = &prefix
+        && let Some(hover) = project_hover(state, prefix, &text, byte)
+    {
+        return Ok(Some(hover));
     }
     if let Some(hover) = single_file_hover(state, &uri, &text, byte) {
-        return Some(hover);
+        return Ok(Some(hover));
     }
     // Neither path could *describe* the cursor. If it sits on a name we declined
     // to resolve, explain why instead of staying silent.
-    definition_unavailable_hover(state, &uri, &text, byte)
+    Ok(definition_unavailable_hover(
+        state,
+        &uri,
+        &text,
+        byte,
+        prefix.as_ref(),
+    ))
+}
+
+/// What a project hover reads: the cursor file's project parses, its
+/// Compile-order index, and the prefix up to it resolved and inferred, with
+/// the env both ran against.
+struct FilePrefix {
+    parses: ProjectParses,
+    idx: usize,
+    resolved: Arc<ResolvedProject>,
+    env: Arc<AssemblyEnv>,
+    inferred: Arc<InferredProject>,
+}
+
+/// The [`FilePrefix`] of the file at `uri`, or `None` when the file can't be
+/// located in an evaluated project (the callers then fall back to
+/// single-file analysis).
+fn file_prefix(
+    state: &mut State,
+    uri: &lsp_types::Uri,
+    watch: &Watch,
+) -> Result<Option<FilePrefix>, Superseded> {
+    let Ok(path) = uri.to_file_path() else {
+        return Ok(None);
+    };
+    let Some(project) = state.workspace.owning_project_watched(&path, watch)? else {
+        return Ok(None);
+    };
+    watch.check()?;
+    let State {
+        semantic,
+        workspace,
+        docs,
+        ..
+    } = state;
+    // This file's Compile-order index, computed *before* resolving so we fold
+    // only the prefix up to it: F# is order-sensitive, so the hovered name (and
+    // any cross-file `Item` / earlier binder it resolves to) lives at an index
+    // `<= idx` — the suffix fold can't change this file's answer.
+    let Some(parses) = semantic.parses_for_project_watched(&project, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
+    let parses = parses.clone();
+    let Some(idx) = parses
+        .paths
+        .iter()
+        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))
+    else {
+        return Ok(None);
+    };
+    // The project's `AssemblyEnv` is an input to inference (Stage 3.3a: a member
+    // access `recv.Name` resolves the member against it) and to rendering an
+    // `Entity` / `Member` resolution. It must be the *exact* env the fold
+    // resolved against — a re-fetched env can shift the handles the resolution
+    // recorded (see `resolved_prefix_and_env_for`) — so take both from one
+    // paired call.
+    let Some((resolved, env, inferred)) =
+        semantic.inferred_prefix_watched(&project, idx, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(FilePrefix {
+        parses,
+        idx,
+        resolved,
+        env,
+        inferred,
+    }))
 }
 
 /// Whether a position was classified against a real evaluated project. Lets
@@ -123,8 +213,9 @@ fn definition_unavailable_hover(
     uri: &lsp_types::Uri,
     text: &Arc<str>,
     byte: usize,
+    prefix: Option<&FilePrefix>,
 ) -> Option<Hover> {
-    match project_unavailable(state, uri, text, byte) {
+    match project_unavailable(prefix, text, byte) {
         ProjectClassify::InProject(hover) => hover,
         ProjectClassify::NotInProject => {
             single_file_unavailable(state, uri, text, byte, Analysis::SingleFile)
@@ -138,44 +229,21 @@ fn definition_unavailable_hover(
 /// Classify the cursor against the project's resolution (non-degraded). Returns
 /// [`ProjectClassify::NotInProject`] whenever the file can't be located in an
 /// evaluated project, so the caller falls back to single-file mode.
-fn project_unavailable(
-    state: &mut State,
-    uri: &lsp_types::Uri,
-    text: &str,
-    byte: usize,
-) -> ProjectClassify {
-    let Ok(path) = uri.to_file_path() else {
-        return ProjectClassify::NotInProject;
-    };
-    let Some(project) = state.workspace.owning_project(&path) else {
-        return ProjectClassify::NotInProject;
-    };
-    let State {
-        semantic,
-        workspace,
-        docs,
+fn project_unavailable(prefix: Option<&FilePrefix>, text: &str, byte: usize) -> ProjectClassify {
+    // Only this file's own resolution is inspected (`resolved.file(idx)`), from
+    // the prefix up to it — the same slice as `project_hover`, folded against
+    // the same env.
+    let Some(FilePrefix {
+        parses,
+        idx,
+        resolved,
+        inferred: inferred_project,
         ..
-    } = state;
-    let Some(parses) = semantic.parses_for_project(&project, workspace, docs) else {
-        return ProjectClassify::NotInProject;
-    };
-    let parses = parses.clone();
-    let Some(idx) = parses
-        .paths
-        .iter()
-        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))
+    }) = prefix
     else {
         return ProjectClassify::NotInProject;
     };
-    // Only this file's own resolution is inspected (`resolved.file(idx)`), so fold
-    // just the prefix up to it — the same slice as `project_hover`. The env comes
-    // from the same paired call for the same reason it does there: inference must
-    // run against the exact env the fold resolved against.
-    let Some((resolved, _env, inferred_project)) =
-        semantic.inferred_prefix_for(&project, idx, workspace, docs)
-    else {
-        return ProjectClassify::NotInProject;
-    };
+    let idx = *idx;
     let file = resolved.file(idx);
     // A `.fsi` Compile slot is inert in Stage 1 (no resolutions, no impl
     // tree); the caller classifies a signature buffer single-file.
@@ -257,39 +325,16 @@ fn unavailable_hover(
 
 /// Project-level hover: the cursor's file is in a fully-evaluated project,
 /// so we can resolve cross-file `Item`s and assembly entities too.
-fn project_hover(
-    state: &mut State,
-    uri: &lsp_types::Uri,
-    text: &str,
-    byte: usize,
-) -> Option<Hover> {
-    let path = uri.to_file_path().ok()?;
-    let project = state.workspace.owning_project(&path)?;
-    let State {
-        semantic,
-        workspace,
-        docs,
-        ..
-    } = state;
-    // This file's Compile-order index, computed *before* resolving so we fold
-    // only the prefix up to it: F# is order-sensitive, so the hovered name (and
-    // any cross-file `Item` / earlier binder it resolves to) lives at an index
-    // `<= target_file_idx` — the suffix fold can't change this file's answer.
-    let parses = semantic
-        .parses_for_project(&project, workspace, docs)?
-        .clone();
-    let target_file_idx = parses
-        .paths
-        .iter()
-        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
-    // The project's `AssemblyEnv` is an input to inference (Stage 3.3a: a member
-    // access `recv.Name` resolves the member against it) and to rendering an
-    // `Entity` / `Member` resolution. It must be the *exact* env the fold
-    // resolved against — a re-fetched env can shift the handles the resolution
-    // recorded (see `resolved_prefix_and_env_for`) — so take both from one
-    // paired call.
-    let (resolved, env, inferred_project) =
-        semantic.inferred_prefix_for(&project, target_file_idx, workspace, docs)?;
+fn project_hover(state: &mut State, prefix: &FilePrefix, text: &str, byte: usize) -> Option<Hover> {
+    let FilePrefix {
+        parses,
+        idx: target_file_idx,
+        resolved,
+        env,
+        inferred: inferred_project,
+    } = prefix;
+    let target_file_idx = *target_file_idx;
+    let semantic = &mut state.semantic;
     let file = resolved.file(target_file_idx);
     // A `.fsi` Compile slot is inert in Stage 1 (no resolutions, no impl tree
     // to infer over) — decline so the caller's single-file fallback answers
@@ -313,7 +358,7 @@ fn project_hover(
             res,
             Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. }
         ) {
-            hover_body(semantic, &resolved, file, res, &env, None)
+            hover_body(semantic, resolved, file, res, env, None)
         } else {
             // An in-file binder's type is this file's; a preceding file's
             // top-level value's is what that file published for it.
@@ -326,15 +371,9 @@ fn project_hover(
                     }
                     _ => None,
                 });
-            hover_body(semantic, &resolved, file, res, &env, ty).map(|mut body| {
-                body.documentation = source_documentation(
-                    &parses.files,
-                    &resolved,
-                    &env,
-                    target_file_idx,
-                    range,
-                    res,
-                );
+            hover_body(semantic, resolved, file, res, env, ty).map(|mut body| {
+                body.documentation =
+                    source_documentation(&parses.files, resolved, env, target_file_idx, range, res);
                 body
             })
         };
@@ -350,7 +389,7 @@ fn project_hover(
     // assembly-path member (`System.Console.WriteLine`) takes, so hover on
     // `Length` in `s.Length` shows the member, not just the whole access's type.
     if let Some((range, res)) = smallest_member_resolution_with_range(inferred, byte)
-        && let Some(body) = hover_body(semantic, &resolved, file, res, &env, None)
+        && let Some(body) = hover_body(semantic, resolved, file, res, env, None)
     {
         return Some(make_hover(body, text, range));
     }
@@ -360,7 +399,7 @@ fn project_hover(
     let root = impl_file.syntax();
     let (range, ty) = innermost_inferred_type_with_range(inferred, root, byte)?;
     Some(make_hover(
-        literal_hover_body(&env, text, root, range, ty),
+        literal_hover_body(env, text, root, range, ty),
         text,
         range,
     ))

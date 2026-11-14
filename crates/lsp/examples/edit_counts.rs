@@ -3,8 +3,12 @@
 //! it, on a real restored project. `docs/incremental-lsp-plan.md` states each of
 //! its stages' gains in these units.
 //!
-//! The real dispatch loop ([`borzoi::server::run_with_fetcher`]) runs on its own
-//! thread, as `main` runs it, over an in-memory connection. This thread is the
+//! The real dispatch loop ([`borzoi::server::run_inbox`]) runs on its own
+//! thread, as `main` runs it, answering over an in-memory connection. This
+//! thread is the client, and it hands each message straight to the loop's
+//! inbox ([`borzoi::inbox::InboxSender`]), as the server's input thread does
+//! with what it decodes: so a message is in the inbox, and a notification
+//! counted, by the time the client's send returns. This thread is the
 //! client: it opens an early Compile item `E` and the last one `L`, makes one
 //! cold pass of requests, then types into a trailing line comment of `E`, one
 //! character per keystroke, and after each keystroke sends what a pull client
@@ -20,8 +24,9 @@
 //!
 //! Each row counts **every thread but this client thread**: the server thread,
 //! and the workers it starts to read DLLs in parallel when it builds an env.
-//! Nothing else runs: the SourceLink fetch pool is not built (no fetcher), and
-//! an in-memory connection has no IO threads.
+//! Nothing else runs: the SourceLink fetch pool is not built (no fetcher), an
+//! in-memory connection has no IO threads, and the client hands its messages
+//! to the inbox itself, so there is no input thread.
 //!
 //! - **instructions**: the process's retired instructions
 //!   (`proc_pid_rusage`, which keeps the counts of threads that have exited)
@@ -124,19 +129,27 @@
 //!   the project and re-parses every item, sends `semanticTokens L`, and,
 //!   while the server is in that request (held at its re-evaluation), queues
 //!   `didChange E` and `diagnostic E`. It reports the instructions from
-//!   `semanticTokens L` to the answer to `diagnostic E`, the instructions of
-//!   `didChange E` and `diagnostic E` on their own, and the difference: what
-//!   the edit waited for. Each round adds the symbol or takes it away again,
-//!   and the run puts the file back as it found it; it still writes the
-//!   project file, so point it at a copy of the project, not the shared
-//!   corpus cache.
+//!   before `semanticTokens L` is sent to the moment the answer to
+//!   `diagnostic E` arrives (counted on every server thread then, so a
+//!   thread still working on `semanticTokens L` counts too), split at the
+//!   moment the edit was sent; the instructions of `didChange E` and
+//!   `diagnostic E` on their own; and the difference: what the edit waited
+//!   for. It also reports how many requests stopped at a checkpoint
+//!   (`borzoi::inbox::STOPPED_EVENT`). Each round adds the symbol or takes it
+//!   away again, and the run puts the file back as it found it; it still
+//!   writes the project file, so point it at a copy of the project, not the
+//!   shared corpus cache.
 //! * `EDIT_COUNTS_UNRELATED`: the other project for those scripts. Default:
 //!   `WoofWare.Incremental.Test` beside the default project, which references
 //!   it rather than the other way round.
+//! * `EDIT_COUNTS_GENERATIONS`: when set, print to stderr, as each generation
+//!   ends, an evaluation finishes or a request stops, the instructions the
+//!   process retired since the last such point and the generation's counts:
+//!   the attribution of a row to the steps inside it.
 //! * `EDIT_COUNTS_BURST` (keystroke script only): each round queues this many
 //!   keystrokes, each with the requests a pull client sends after it, while
 //!   the server is held between two messages, then lets it go: the whole
-//!   burst is waiting when the server next reads the connection. A round's
+//!   burst is waiting when the server next reads its inbox. A round's
 //!   row is the whole burst, and the run prints how its requests were
 //!   answered (with a result, `ContentModified`, `RequestCancelled`).
 //!
@@ -160,9 +173,11 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
+use borzoi::inbox::InboxSender;
+use borzoi::inbox::STOPPED_EVENT;
 use borzoi::observed::{ENV_RESOLUTION_EVENT, EVALUATION_EVENT, GENERATION_EVENT};
 use borzoi::semantic::{ENV_RESOLVED_AGAIN_SPAN, ProjectId};
-use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
+use borzoi::server::{INPUT_BUFFER, SERVER_STACK_BYTES, State, run_inbox};
 use borzoi::uri::UriExt as _;
 use borzoi::workspace::Workspace;
 use borzoi_msbuild::ItemKind;
@@ -294,6 +309,28 @@ const ENV_BUILD_SPAN: &str = "build_env_from_dll_paths";
 /// Envs built, and of those, envs built from no DLLs.
 static ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 static EMPTY_ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
+
+/// Requests whose runs stopped at a checkpoint ([`STOPPED_EVENT`]).
+static STOPS: AtomicU64 = AtomicU64::new(0);
+
+/// Whether to print every generation's instructions as it ends
+/// (`EDIT_COUNTS_GENERATIONS`), and the process's count at the last one.
+static TRACE_GENERATIONS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static LAST_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// With `EDIT_COUNTS_GENERATIONS` set, print what the process retired since
+/// the last generation ended (or a request stopped), on whichever server
+/// thread ends one: the attribution of a window to the steps inside it. The
+/// client is waiting meanwhile, so the process's count is the server's.
+fn trace_generation(what: &str, fields: &str) {
+    if !*TRACE_GENERATIONS.get_or_init(|| std::env::var_os("EDIT_COUNTS_GENERATIONS").is_some()) {
+        return;
+    }
+    if let Some((process, _)) = instructions() {
+        let last = LAST_GENERATION.swap(process, Relaxed);
+        eprintln!("{what:<10} {:>14} {fields}", process.saturating_sub(last));
+    }
+}
 
 /// Cached envs whose references were resolved again to confirm them
 /// ([`borzoi::semantic::ENV_RESOLVED_AGAIN_SPAN`]), kept or not.
@@ -471,7 +508,7 @@ impl tracing::Subscriber for FoldObserver {
             || (metadata.is_event()
                 && matches!(
                     metadata.name(),
-                    GENERATION_EVENT | EVALUATION_EVENT | ENV_RESOLUTION_EVENT
+                    GENERATION_EVENT | EVALUATION_EVENT | ENV_RESOLUTION_EVENT | STOPPED_EVENT
                 ))
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
@@ -499,6 +536,11 @@ impl tracing::Subscriber for FoldObserver {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().name() == STOPPED_EVENT {
+            STOPS.fetch_add(1, Relaxed);
+            trace_generation("stopped", "");
+            return;
+        }
         if counted() && event.metadata().name() == EVALUATION_EVENT {
             let mut fields = EventFields::new(EVALUATION_FIELDS);
             event.record(&mut fields);
@@ -508,6 +550,7 @@ impl tracing::Subscriber for FoldObserver {
                     Relaxed,
                 );
             }
+            trace_generation("evaluated", "");
             hold_if_armed(Gate::AtEvaluation);
         } else if counted() && event.metadata().name() == ENV_RESOLUTION_EVENT {
             let mut fields = EventFields::new(ENV_RESOLUTION_FIELDS);
@@ -535,6 +578,13 @@ impl tracing::Subscriber for FoldObserver {
                     Relaxed,
                 );
             }
+            trace_generation(
+                "generation",
+                &format!(
+                    "opens {:?} stats {:?} validation {:?}",
+                    fields.opens, fields.stats, fields.validation
+                ),
+            );
             hold_if_armed(Gate::AtGeneration);
         }
     }
@@ -754,7 +804,10 @@ impl Mode {
 }
 
 struct Client {
+    /// The server's answers and requests arrive on its receiver.
     conn: Connection,
+    /// Where the client's messages go: the loop's inbox.
+    input: InboxSender,
     server: Option<std::thread::JoinHandle<()>>,
     next_id: u64,
     /// Every `window/showMessage` the server has sent. Its only toast is the
@@ -767,6 +820,7 @@ struct Client {
 impl Client {
     fn start(mode: Mode, root: PathBuf) -> Client {
         let (server_side, conn) = Connection::memory();
+        let (input, inbox) = borzoi::inbox::channel(INPUT_BUFFER);
         let server = std::thread::Builder::new()
             .name("borzoi".into())
             .stack_size(SERVER_STACK_BYTES)
@@ -774,11 +828,12 @@ impl Client {
                 let mut state = State::new();
                 state.set_client_capabilities(mode.caps());
                 state.set_workspace_roots(vec![root]);
-                run_with_fetcher(server_side, state, None).expect("the server loop ends cleanly");
+                run_inbox(&server_side, inbox, state, None).expect("the server loop ends cleanly");
             })
             .expect("spawn the server thread");
         Client {
             conn,
+            input,
             server: Some(server),
             next_id: 0,
             toasts: Vec::new(),
@@ -786,7 +841,7 @@ impl Client {
     }
 
     fn send(&self, msg: Message) {
-        self.conn.sender.send(msg).expect("the server is listening");
+        self.input.send(msg).expect("the server is listening");
     }
 
     /// Send a request and wait for its response, answering any request the
@@ -961,6 +1016,15 @@ impl Client {
     /// cost when all of them were waiting at once, and the answers to the
     /// requests among them, in order.
     fn burst(&mut self, steps: &[Step]) -> (Cost, Vec<Response>) {
+        // The client hands the burst to the inbox while the server is held,
+        // so a burst the inbox cannot hold would wait for a server waiting
+        // for it.
+        assert!(
+            steps.len() < INPUT_BUFFER,
+            "a burst of {} messages does not fit the server's inbox of {INPUT_BUFFER}: \
+             lower EDIT_COUNTS_BURST",
+            steps.len()
+        );
         arm(Gate::AtGeneration);
         let barrier = self
             .send_step(&Step::Request {
@@ -985,26 +1049,86 @@ impl Client {
 
     /// Stage 9's measurement: send `tokens`, and once the server is held at
     /// the MSBuild evaluation it makes for it, queue `edit` and `pull`, let
-    /// it go, and wait for both answers and a settle. What that cost, from
-    /// before `tokens` was sent, and the two answers.
-    fn blocked(&mut self, tokens: &Step, edit: &Step, pull: &Step) -> (Cost, Response, Response) {
+    /// it go, and wait for both answers and a settle. Returns what it cost
+    /// from before `tokens` was sent to the moment `pull`'s answer arrived,
+    /// and of that, what was spent before `edit` was sent; the two answers;
+    /// and whether `pull` was answered first.
+    fn blocked(&mut self, tokens: &Step, edit: &Step, pull: &Step) -> Blocked {
         let before = Reading::now();
         arm(Gate::AtEvaluation);
         let tokens_id = self.send_step(tokens).expect("a request");
         await_held("the evaluation semanticTokens L makes");
+        let at_edit = Reading::now();
         assert!(self.send_step(edit).is_none(), "the edit is a notification");
         let pull_id = self.send_step(pull).expect("a request");
         release();
-        let mut answers = self.collect(&[tokens_id, pull_id]);
+        let (mut answers, at_pull, first) =
+            self.collect_marking(&[tokens_id, pull_id.clone()], &pull_id);
+        let window = before.since(&at_pull);
+        let before_edit = before.since(&at_edit);
         self.settle();
-        let cost = before.since(&Reading::now());
+        let whole = before.since(&Reading::now());
         assert!(
-            cost.lookups.0 > 0,
+            whole.lookups.0 > 0,
             "semanticTokens L never reached the project fold"
         );
-        self.check(&cost);
+        self.check(&whole);
         let pulled = answers.pop().expect("two answers");
-        (cost, answers.pop().expect("two answers"), pulled)
+        Blocked {
+            window,
+            before_edit,
+            tokens: answers.pop().expect("two answers"),
+            pulled,
+            pull_first: first == pull_id,
+        }
+    }
+
+    /// [`Self::collect`], reading every counter the moment `mark`'s answer
+    /// arrives; also the id answered first.
+    fn collect_marking(
+        &mut self,
+        ids: &[RequestId],
+        mark: &RequestId,
+    ) -> (Vec<Response>, Reading, RequestId) {
+        let mut answers: Vec<Option<Response>> = vec![None; ids.len()];
+        let mut at_mark = None;
+        let mut first = None;
+        while answers.iter().any(Option::is_none) {
+            let msg = self
+                .conn
+                .receiver
+                .recv_timeout(RECV_TIMEOUT)
+                .unwrap_or_else(|e| panic!("no answer to {ids:?}: {e}"));
+            match msg {
+                Message::Response(resp) => {
+                    if &resp.id == mark {
+                        at_mark = Some(Reading::now());
+                    }
+                    first.get_or_insert_with(|| resp.id.clone());
+                    let i = ids
+                        .iter()
+                        .position(|id| *id == resp.id)
+                        .unwrap_or_else(|| panic!("unsolicited response {resp:?}"));
+                    assert!(answers[i].is_none(), "{} answered twice", resp.id);
+                    answers[i] = Some(resp);
+                }
+                Message::Request(req) => {
+                    self.send(Message::Response(Response {
+                        id: req.id,
+                        response_result: Ok(Value::Null),
+                    }));
+                }
+                Message::Notification(not) if not.method == "window/showMessage" => {
+                    self.toasts.push(not.params["message"].to_string());
+                }
+                Message::Notification(_) => {}
+            }
+        }
+        (
+            answers.into_iter().map(Option::unwrap).collect(),
+            at_mark.expect("the marked request is among those collected"),
+            first.expect("something was answered"),
+        )
     }
 
     fn shut_down(mut self) {
@@ -1019,6 +1143,20 @@ impl Client {
             .join()
             .expect("the server thread exits");
     }
+}
+
+/// What one round of [`Client::blocked`] measured.
+struct Blocked {
+    /// From before `semanticTokens L` was sent to the arrival of
+    /// `diagnostic E`'s answer.
+    window: Cost,
+    /// Of `window`, what was spent before the edit was sent: the request's
+    /// work up to and including the evaluation it was held at.
+    before_edit: Cost,
+    tokens: Response,
+    pulled: Response,
+    /// Whether `diagnostic E` was answered before `semanticTokens L`.
+    pull_first: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1409,7 +1547,11 @@ fn blocked_edit(
         &text[end..]
     );
     let mut blocked = Vec::new();
+    let mut before_edit = Vec::new();
+    let mut after_edit = Vec::new();
     let mut alone = Vec::new();
+    let mut stops = Vec::new();
+    let mut pull_first = 0;
     let mut version = 1;
     e.text.push_str("\n// edit_counts ");
     for k in 0..rounds {
@@ -1420,11 +1562,23 @@ fn blocked_edit(
         };
         client_fs::write(project, bytes).expect("rewrite the project file");
         e.text.push('x');
-        let (cost, tokens, report) = client.blocked(
+        let stops_before = STOPS.load(Relaxed);
+        let round = client.blocked(
             &semantic_tokens(l),
             &did_change(e, version),
             &diagnostic(e, result_ids),
         );
+        stops.push(STOPS.load(Relaxed) - stops_before);
+        pull_first += usize::from(round.pull_first);
+        let (cost, tokens, report) = (round.window, round.tokens, round.pulled);
+        before_edit.push(round.before_edit);
+        after_edit.push(Cost {
+            instructions: cost
+                .instructions
+                .zip(round.before_edit.instructions)
+                .map(|(w, b)| w - b),
+            ..cost
+        });
         version += 1;
         let tokens = tokens.response_result.expect("semanticTokens L answers");
         assert!(
@@ -1454,6 +1608,7 @@ fn blocked_edit(
     println!("per round of BlockedEdit (min, then max, over {rounds}):");
     for (label, costs) in [
         ("semanticTokens L .. diagnostic E", &blocked),
+        ("  of which before the edit", &before_edit),
         ("didChange E + diagnostic E alone", &alone),
     ] {
         let (min, max) = min_max(costs);
@@ -1474,6 +1629,25 @@ fn blocked_edit(
         show(min),
         "the edit waited (difference) max",
         show(max)
+    );
+    // The instructions alone: the other columns of the part after the edit
+    // are the window's, which the split cannot apportion.
+    let after: Vec<Option<i128>> = after_edit
+        .iter()
+        .zip(&alone)
+        .map(|(b, a)| Some(i128::from(b.instructions?) - i128::from(a.instructions?)))
+        .collect();
+    println!(
+        "{:<34} {:>14}\n{:<34} {:>14}",
+        "  of which after the edit, less alone, min",
+        show(after.iter().copied().min().flatten()),
+        "  of which after the edit, less alone, max",
+        show(after.iter().copied().max().flatten()),
+    );
+    println!(
+        "requests stopped per round: min {}, max {}; diagnostic E answered first in {pull_first} of {rounds} rounds",
+        stops.iter().min().copied().unwrap_or(0),
+        stops.iter().max().copied().unwrap_or(0),
     );
 }
 
