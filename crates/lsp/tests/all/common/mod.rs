@@ -38,16 +38,57 @@ use serde::Deserialize;
 /// live: it then sees nothing. Holding every scope that installs a subscriber
 /// under one lock keeps registrations and drops from overlapping, and the
 /// rebuild inside makes this scope's interest current.
+///
+/// A callsite's first use registers it, from whatever thread hits it, with
+/// an interest computed from the dispatchers live when it looks; one that
+/// looks before this scope's subscriber is registered and stores its result
+/// after the rebuild leaves the callsite `never` for the whole scope (seen as
+/// a checkpoint no subscriber was told of, under load). So before the first
+/// scope a global [`Abstain`] is installed, which answers every callsite
+/// `sometimes`: no interest computed from any snapshot is then `never`, and
+/// each event asks the thread's own subscriber.
 pub fn with_subscriber<S, T>(subscriber: S, f: impl FnOnce() -> T) -> T
 where
     S: tracing::Subscriber + Send + Sync + 'static,
 {
     static SUBSCRIBERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ABSTAIN: std::sync::Once = std::sync::Once::new();
     let _alone = SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());
+    ABSTAIN.call_once(|| {
+        tracing::subscriber::set_global_default(Abstain)
+            .expect("no global subscriber is installed in the test binary");
+    });
     tracing::subscriber::with_default(subscriber, || {
         tracing::callsite::rebuild_interest_cache();
         f()
     })
+}
+
+/// The global subscriber of the test binary ([`with_subscriber`]): enables
+/// nothing itself, and leaves every callsite to be asked per event.
+struct Abstain;
+
+impl tracing::Subscriber for Abstain {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
 }
 
 pub mod diagnostics_reference;
