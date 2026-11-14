@@ -1,9 +1,6 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_decl_sequence_grid::
-" [<AutoOpen>]\nmodule N = let y = 2\n    #nowarn \"44\"\n"
-" [<AutoOpen>]\nmodule N = let y = 2\n #nowarn \"44\"\n"
-" [<AutoOpen>]\nmodule N = let y = 2\n#nowarn \"44\"\n"
 " [<Literal>]\nlet L = 1\n     [<Literal>]\n    let L = 1\n"
 " [<Literal>]\nlet L = 1\n    [<Literal>] let L = 1\n"
 " [<Literal>]\nlet L = 1\n    [<Literal>]\n    let L = 1\n"
@@ -15,7 +12,6 @@
 " [<Literal>]\nlet L = 1\n    module N = begin let y = 1 end\n"
 " [<Literal>]\nlet L = 1\n    open System\n"
 " [<Literal>]\nlet L = 1\n    open type System.String\n"
-" [<Literal>]\nlet L = 1\n    printfn \"x\"\n"
 " [<Literal>]\nlet L = 1\n    type T = class end\n"
 " [<Literal>]\nlet L = 1\n    type T = int\n"
 " [<Literal>]\nlet L = 1\n    type T with\n        member x.M = 1\n"
@@ -32,7 +28,6 @@
 " [<Literal>]\nlet L = 1\n module N = begin let y = 1 end\n"
 " [<Literal>]\nlet L = 1\n open System\n"
 " [<Literal>]\nlet L = 1\n open type System.String\n"
-" [<Literal>]\nlet L = 1\n printfn \"x\"\n"
 " [<Literal>]\nlet L = 1\n type T = class end\n"
 " [<Literal>]\nlet L = 1\n type T = int\n"
 " [<Literal>]\nlet L = 1\n type T with\n     member x.M = 1\n"
@@ -47,7 +42,6 @@
 " [<Literal>]\nlet L = 1\nmodule N = begin let y = 1 end\n"
 " [<Literal>]\nlet L = 1\nopen System\n"
 " [<Literal>]\nlet L = 1\nopen type System.String\n"
-" [<Literal>]\nlet L = 1\nprintfn \"x\"\n"
 " [<Literal>]\nlet L = 1\ntype T = class end\n"
 " [<Literal>]\nlet L = 1\ntype T = int\n"
 " [<Literal>]\nlet L = 1\ntype T with\n    member x.M = 1\n"
@@ -73,9 +67,6 @@
 "#nowarn \"44\" printfn \"x\"\n"
 "#nowarn \"44\" type T = class end\n"
 "#nowarn \"44\" type T = int\n"
-"#nowarn \"44\"\n     [<AutoOpen>]\n    module N = let y = 2\n"
-"#nowarn \"44\"\n  [<AutoOpen>]\n module N = let y = 2\n"
-"#nowarn \"44\"\n [<AutoOpen>]\nmodule N = let y = 2\n"
 "[<AutoOpen>]\n module N = let y = 2\n     [<AutoOpen>]\n    module N = let y = 2\n"
 "[<AutoOpen>]\n module N = let y = 2\n     [<Literal>]\n    let L = 1\n"
 "[<AutoOpen>]\n module N = let y = 2\n    [<AutoOpen>]\n     module N = let y = 2\n"

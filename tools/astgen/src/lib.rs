@@ -1,5 +1,5 @@
 //! `borzoi-astgen` — the typed-AST facade generator for `borzoi-cst`
-//! (`docs/ast-versioning-plan.md` D4, D5).
+//! (`docs/ast-versioning-plan.md` D4, D5, D6).
 //!
 //! The facade in `crates/cst/src/syntax/` is a large, mostly-mechanical layer:
 //! newtype-over-`SyntaxNode` structs, `AstNode` impls, and closed dispatch enums
@@ -7,22 +7,26 @@
 //! projected from the union, `docs/ast-versioning-plan.md` D2/D4) multiplies that
 //! boilerplate across versions, which is exactly the case for codegen.
 //!
-//! This generator is a **pure-Rust descriptor table** — a [`Node`]/[`Enum`] model
-//! grouped into [`Category`] units, from which we emit the facade boilerplate. It
-//! takes no external dependency (an earlier ungrammar-based plan was dropped:
-//! ungrammar is unmaintained, and our curated short enum-variant names —
-//! `Type::Hash` ← `HashConstraintType` — plus multi-kind nodes — `AppExpr` ←
-//! `APP_EXPR | INFIX_APP_EXPR` — would need sidecars regardless). The descriptor
-//! expresses all of that directly.
+//! This generator is a **pure-Rust descriptor table** — a
+//! [`Node`]/[`Enum`]/[`ValueEnum`] model grouped into [`Category`] units, from
+//! which we emit the facade boilerplate. (An ungrammar-based plan was
+//! rejected: ungrammar is unmaintained, and our curated short enum-variant
+//! names — `Type::Hash` ← `HashConstraintType` — plus multi-kind nodes —
+//! `AppExpr` ← `APP_EXPR | INFIX_APP_EXPR` — would need sidecars regardless.)
+//! The tables declare **every** type of the union: each node newtype, dispatch
+//! enum and value enum, with the value enums' docs.
 //!
-//! Bespoke accessors (positional / token-based / custom-enum-returning, ~half of
-//! the facade) are **not** generated — they stay hand-written alongside the
-//! generated code (rust-analyzer's `nodes.rs` + `node_ext.rs` split). The
-//! generator owns only the boilerplate + the per-version cascade to come.
+//! The accessors (positional / token-based / custom-enum-returning) are **not**
+//! generated — their bodies stay hand-written in `crates/cst/src/syntax/union.rs`
+//! (rust-analyzer's `nodes.rs` + `node_ext.rs` split). astgen reads their
+//! signatures back with `syn` ([`accessors`]) and classifies each return type
+//! into a closed set of shapes ([`shape`]), failing on one outside it. Those
+//! signatures and the tables make up the union's lock, `crates/cst/facades/
+//! union.lock` ([`lock`]): the surface one fact per line.
 //!
 //! Output is checked in (one file per [`Category`], under
-//! `crates/cst/src/syntax/generated/`) and kept honest by a staleness test
-//! (`tests/up_to_date.rs`): regenerate with
+//! `crates/cst/src/syntax/generated/`, and the lock) and kept honest by a
+//! staleness test (`tests/up_to_date.rs`): regenerate with
 //! `cargo run -p borzoi-astgen --example generate`. (The generator is an *example*, not
 //! a binary, so it does not make root `cargo run` ambiguous with the LSP.)
 //!
@@ -31,13 +35,19 @@
 //! cst's `LanguageFeature` module as well, so the facades and the parser's
 //! gates read one source.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use borzoi_spawn::BoundedCommand;
 
+pub mod accessors;
 pub mod features;
+pub mod lock;
+pub mod shape;
 
 use features::FeatureRow;
+use lock::{Line, Lock, Payload};
+use shape::{Elem, Names};
 
 /// A typed-AST node: a newtype over `SyntaxNode`.
 pub struct Node {
@@ -61,8 +71,42 @@ pub struct Enum {
     pub variants: &'static [(&'static str, &'static str)],
 }
 
-/// One generated file: a group of [`Node`]s and the [`Enum`]s over them, swapped
-/// in as a unit (plan PR D, by category).
+/// A value enum: a plain Rust enum an accessor computes (rather than a sum
+/// over nodes), e.g. `TyparDeclsForm` or `TupleSegment`.
+pub struct ValueEnum {
+    /// The enum's Rust name.
+    pub name: &'static str,
+    /// Its doc comment, one entry per line.
+    pub doc: &'static [&'static str],
+    /// The traits it derives, in `#[derive]` order.
+    pub derives: &'static [&'static str],
+    /// Its variants, in declaration order.
+    pub variants: &'static [ValueVariant],
+}
+
+/// One variant of a [`ValueEnum`].
+pub struct ValueVariant {
+    /// The variant's name.
+    pub name: &'static str,
+    /// Its doc comment, one entry per line (empty for none).
+    pub doc: &'static [&'static str],
+    /// What it carries.
+    pub fields: Fields,
+}
+
+/// What a [`ValueVariant`] carries. Field types are Rust source, each of which
+/// must be in astgen's shape set ([`shape::classify`]).
+pub enum Fields {
+    /// Nothing.
+    Unit,
+    /// Positional fields.
+    Tuple(&'static [&'static str]),
+    /// Named fields, `(name, type)`.
+    Named(&'static [(&'static str, &'static str)]),
+}
+
+/// One generated file: a group of [`Node`]s, the [`Enum`]s over them and the
+/// [`ValueEnum`]s beside them.
 pub struct Category {
     /// Repo-root-relative output path.
     pub path: &'static str,
@@ -72,6 +116,13 @@ pub struct Category {
     pub nodes: &'static [Node],
     /// Dispatch enums over `nodes`.
     pub enums: &'static [Enum],
+    /// Value enums: plain Rust enums the hand-written accessors compute
+    /// (`TyparDeclsForm`, `TupleSegment`, …), declared here with their docs.
+    pub value_enums: &'static [ValueEnum],
+    /// Whether the per-version facades ([`SURFACES`]) re-export this category.
+    /// They re-export the dispatch-enum categories only, so the standalone
+    /// nodes and value enums are reachable through the union alone.
+    pub in_facades: bool,
 }
 
 /// Every category, in swap order (types → patterns → …). Each entry is one
@@ -82,18 +133,24 @@ pub const CATEGORIES: &[Category] = &[
         summary: "The **types** category: the `Type` dispatch enum and its member newtypes.",
         nodes: TYPE_NODES,
         enums: TYPE_ENUMS,
+        value_enums: &[],
+        in_facades: true,
     },
     Category {
         path: "crates/cst/src/syntax/generated/union_pats.rs",
         summary: "The **patterns** category: the `Pat` dispatch enum and its member newtypes.",
         nodes: PAT_NODES,
         enums: PAT_ENUMS,
+        value_enums: &[],
+        in_facades: true,
     },
     Category {
         path: "crates/cst/src/syntax/generated/union_exprs.rs",
         summary: "The **expressions** category: the `Expr` dispatch enum and its member newtypes.",
         nodes: EXPR_NODES,
         enums: EXPR_ENUMS,
+        value_enums: &[],
+        in_facades: true,
     },
     Category {
         path: "crates/cst/src/syntax/generated/union_decls.rs",
@@ -102,6 +159,17 @@ pub const CATEGORIES: &[Category] = &[
                   enums and their member newtypes (`ModuleDecl`/`SigDecl` share several).",
         nodes: DECL_NODES,
         enums: DECL_ENUMS,
+        value_enums: &[],
+        in_facades: true,
+    },
+    Category {
+        path: "crates/cst/src/syntax/generated/union_standalone.rs",
+        summary: "The **standalone** nodes, which no dispatch enum holds (`ImplFile`, \
+                  `Binding`, `LongIdent`, …), and the value enums the accessors return.",
+        nodes: STANDALONE_NODES,
+        enums: &[],
+        value_enums: VALUE_ENUMS,
+        in_facades: false,
     },
 ];
 
@@ -894,6 +962,493 @@ pub const DECL_ENUMS: &[Enum] = &[
     },
 ];
 
+/// The *standalone* nodes: newtypes no dispatch enum holds, which accessors
+/// return directly. Grouped by the part of the tree they sit in.
+pub const STANDALONE_NODES: &[Node] = &[
+    // Files and their modules.
+    Node {
+        name: "ImplFile",
+        kinds: &[],
+    },
+    Node {
+        name: "SigFile",
+        kinds: &[],
+    },
+    Node {
+        name: "ModuleOrNamespace",
+        kinds: &[],
+    },
+    // Type definitions and their parts.
+    Node {
+        name: "TypeDefn",
+        kinds: &[],
+    },
+    Node {
+        name: "TyparDecls",
+        kinds: &[],
+    },
+    Node {
+        name: "TyparDecl",
+        kinds: &[],
+    },
+    Node {
+        name: "TyparConstraints",
+        kinds: &[],
+    },
+    Node {
+        name: "TyparConstraint",
+        kinds: &[],
+    },
+    Node {
+        name: "RecordFieldDecl",
+        kinds: &[],
+    },
+    Node {
+        name: "UnionCase",
+        kinds: &[],
+    },
+    Node {
+        name: "UnionCaseField",
+        kinds: &[],
+    },
+    Node {
+        name: "EnumCase",
+        kinds: &[],
+    },
+    Node {
+        name: "ImplicitCtor",
+        kinds: &[],
+    },
+    Node {
+        name: "GetSetAccessor",
+        kinds: &[],
+    },
+    Node {
+        name: "ValSig",
+        kinds: &[],
+    },
+    Node {
+        name: "Binding",
+        kinds: &[],
+    },
+    Node {
+        name: "BindingReturnInfo",
+        kinds: &[],
+    },
+    // Parts of patterns.
+    Node {
+        name: "ActivePatName",
+        kinds: &[],
+    },
+    Node {
+        name: "NamePatPairs",
+        kinds: &[],
+    },
+    Node {
+        name: "NamePatPair",
+        kinds: &[],
+    },
+    Node {
+        name: "RecordPatField",
+        kinds: &[],
+    },
+    // Parts of expressions, types and attributes.
+    Node {
+        name: "LongIdent",
+        kinds: &[],
+    },
+    Node {
+        name: "AttributeList",
+        kinds: &[],
+    },
+    Node {
+        name: "Attribute",
+        kinds: &[],
+    },
+    Node {
+        name: "AnonRecdTypeField",
+        kinds: &[],
+    },
+    Node {
+        name: "RecordField",
+        kinds: &[],
+    },
+    Node {
+        name: "MatchClause",
+        kinds: &[],
+    },
+    // The two child nodes of a `STATIC_OPTIMIZATION_EXPR`.
+    Node {
+        name: "StaticOptWhenClause",
+        kinds: &[],
+    },
+    Node {
+        name: "StaticOptCondition",
+        kinds: &[],
+    },
+];
+
+/// Derives of a fieldless value enum that is also hashed.
+const COPY_HASH: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "Hash"];
+/// Derives of a fieldless value enum.
+const COPY: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq"];
+/// Derives of a value enum whose variants carry tree handles.
+const HANDLES: &[&str] = &["Debug", "Clone", "PartialEq", "Eq", "Hash"];
+
+/// A variant that carries nothing and has no doc.
+const fn unit(name: &'static str) -> ValueVariant {
+    ValueVariant {
+        name,
+        doc: &[],
+        fields: Fields::Unit,
+    }
+}
+
+/// The value enums the hand-written accessors return, in the order their
+/// accessors appear in `crates/cst/src/syntax/union.rs`.
+pub const VALUE_ENUMS: &[ValueEnum] = &[
+    ValueEnum {
+        name: "ModuleOrNamespaceKind",
+        doc: &[
+            "`SynModuleOrNamespaceKind` — the four shapes a top-level",
+            "[`ModuleOrNamespace`] can take. [`Anon`](ModuleOrNamespaceKind::Anon) is",
+            "the implicit module wrapping a script-style body (no header keyword);",
+            "the other three carry a source-derived `longId` and are introduced by a",
+            "`module`/`namespace` header (phase 8.2).",
+        ],
+        derives: COPY_HASH,
+        variants: &[
+            ValueVariant {
+                name: "Anon",
+                doc: &["No header keyword — `SynModuleOrNamespaceKind.AnonModule`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "NamedModule",
+                doc: &["`module Foo` — `SynModuleOrNamespaceKind.NamedModule`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "DeclaredNamespace",
+                doc: &["`namespace Foo.Bar` — `SynModuleOrNamespaceKind.DeclaredNamespace`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "GlobalNamespace",
+                doc: &[
+                    "`namespace global` — `SynModuleOrNamespaceKind.GlobalNamespace`",
+                    "(empty `longId`).",
+                ],
+                fields: Fields::Unit,
+            },
+        ],
+    },
+    ValueEnum {
+        name: "TyparDeclsForm",
+        doc: &[
+            "The source shape of a [`TyparDecls`] — FCS's `SynTyparDecls` case. The",
+            "three declare the same parameters; they differ in where the list sits and",
+            "what it may carry (only the postfix list holds a `when` clause).",
+        ],
+        derives: COPY,
+        variants: &[
+            ValueVariant {
+                name: "Postfix",
+                doc: &["`T<'a, 'b>` — `SynTyparDecls.PostfixList`, after the name."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "PrefixList",
+                doc: &[
+                    "`('a, 'b) T` — `SynTyparDecls.PrefixList`, parenthesised before the",
+                    "name (one or more parameters).",
+                ],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "SinglePrefix",
+                doc: &[
+                    "`'a T` — `SynTyparDecls.SinglePrefix`, one bare parameter before the",
+                    "name.",
+                ],
+                fields: Fields::Unit,
+            },
+        ],
+    },
+    ValueEnum {
+        name: "TyparConstraintKind",
+        doc: &[
+            "The kind of a [`TyparConstraint`] (phase 9.3b) — the supported",
+            "`SynTypeConstraint` variants, read from the constraint's operator/keyword",
+            "tokens. The deferred variants (`default`, `enum`/`delegate`, member, and the",
+            "self-constrained bare type) have no parser surface, so they are absent.",
+        ],
+        derives: COPY,
+        variants: &[
+            ValueVariant {
+                name: "SubtypeOf",
+                doc: &["`'a :> T` — `WhereTyparSubtypeOfType` (carries [`TyparConstraint::ty`])."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "ValueType",
+                doc: &["`'a : struct` — `WhereTyparIsValueType`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "ReferenceType",
+                doc: &["`'a : not struct` — `WhereTyparIsReferenceType`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "SupportsNull",
+                doc: &["`'a : null` — `WhereTyparSupportsNull`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "NotSupportsNull",
+                doc: &["`'a : not null` — `WhereTyparNotSupportsNull`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Comparable",
+                doc: &["`'a : comparison` — `WhereTyparIsComparable`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Equatable",
+                doc: &["`'a : equality` — `WhereTyparIsEquatable`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Unmanaged",
+                doc: &["`'a : unmanaged` — `WhereTyparIsUnmanaged`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Enum",
+                doc: &[
+                    "`'a : enum<'b>` — `WhereTyparIsEnum` (carries [`TyparConstraint::type_args`]).",
+                ],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Delegate",
+                doc: &[
+                    "`'a : delegate<args, ret>` — `WhereTyparIsDelegate` (carries",
+                    "[`TyparConstraint::type_args`]).",
+                ],
+                fields: Fields::Unit,
+            },
+        ],
+    },
+    ValueEnum {
+        name: "MemberLeading",
+        doc: &[
+            "Which keyword introduced a [`MemberMethod`](crate::syntax::MemberMethod) —",
+            "drives the binding's `SynLeadingKeyword` (and the elided `SynMemberFlags`).",
+            "`member` (9.7), `static member` (9.9a), `override` / `default` (9.10a), or",
+            "`new` (9.10b, an explicit constructor whose head is the `new` keyword).",
+        ],
+        derives: COPY,
+        variants: &[
+            unit("Member"),
+            unit("StaticMember"),
+            unit("Override"),
+            unit("Default"),
+            unit("New"),
+        ],
+    },
+    ValueEnum {
+        name: "MemberSigLeading",
+        doc: &[
+            "Which leading keyword introduces a [`MemberSig`](crate::syntax::MemberSig) —",
+            "FCS's `SynValSig.trivia.LeadingKeyword` for a `SynMemberSig.Member`.",
+        ],
+        derives: COPY,
+        variants: &[
+            ValueVariant {
+                name: "Member",
+                doc: &["`member M : T`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Static",
+                doc: &[
+                    "`static M : T` — a `static`-only member sig (no `member`), FCS's",
+                    "`SynLeadingKeyword.Static`. Valid in an SRTP member constraint",
+                    "(`^T : (static Zero : ^T)`).",
+                ],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "StaticMember",
+                doc: &["`static member M : T`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Abstract",
+                doc: &["`abstract M : T`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "AbstractMember",
+                doc: &["`abstract member M : T`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "StaticAbstract",
+                doc: &["`static abstract M : T`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "StaticAbstractMember",
+                doc: &["`static abstract member M : T`."],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Override",
+                doc: &[
+                    "`override M : T` — an override member sig, FCS's `SynLeadingKeyword.Override`.",
+                ],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "Default",
+                doc: &[
+                    "`default M : T` — a default member sig, FCS's `SynLeadingKeyword.Default`.",
+                ],
+                fields: Fields::Unit,
+            },
+            ValueVariant {
+                name: "New",
+                doc: &["`new : … -> T` — an explicit constructor sig (name \"new\")."],
+                fields: Fields::Unit,
+            },
+        ],
+    },
+    ValueEnum {
+        name: "AutoPropertyKind",
+        doc: &[
+            "`SynMemberKind` for an auto-property's `propKind` (phase 9.9c), derived from",
+            "the `with get[, set]` clause: a plain `member val X = e`",
+            "([`Member`](AutoPropertyKind::Member)), `with get`",
+            "([`PropertyGet`](AutoPropertyKind::PropertyGet)), `with set`",
+            "([`PropertySet`](AutoPropertyKind::PropertySet) — grammar-accepted, rejected",
+            "only later by the checker), or `with get, set`",
+            "([`PropertyGetSet`](AutoPropertyKind::PropertyGetSet)).",
+        ],
+        derives: COPY_HASH,
+        variants: &[
+            unit("Member"),
+            unit("PropertyGet"),
+            unit("PropertySet"),
+            unit("PropertyGetSet"),
+        ],
+    },
+    ValueEnum {
+        name: "ExternCTypeBase",
+        doc: &["The base of an extern C type before any C-style suffixes (`&`, `*`, `[]`)."],
+        derives: HANDLES,
+        variants: &[
+            ValueVariant {
+                name: "Void",
+                doc: &["The C `void` keyword."],
+                fields: Fields::Tuple(&["SyntaxToken"]),
+            },
+            ValueVariant {
+                name: "Path",
+                doc: &["A path-like C type (`int`, `System.IntPtr`, `byref`, ...)."],
+                fields: Fields::Tuple(&["LongIdent"]),
+            },
+        ],
+    },
+    ValueEnum {
+        name: "ExternCTypeSuffix",
+        doc: &["A C-style suffix on an extern C type."],
+        derives: HANDLES,
+        variants: &[
+            ValueVariant {
+                name: "Byref",
+                doc: &["The managed-byref suffix (`T&`)."],
+                fields: Fields::Tuple(&["SyntaxToken"]),
+            },
+            ValueVariant {
+                name: "Pointer",
+                doc: &["The native-pointer suffix (`T*` / `void*`)."],
+                fields: Fields::Tuple(&["SyntaxToken"]),
+            },
+            ValueVariant {
+                name: "Array",
+                doc: &["The array suffix (`T[]`), represented by the opening `[` token."],
+                fields: Fields::Tuple(&["SyntaxToken"]),
+            },
+        ],
+    },
+    ValueEnum {
+        name: "InterpStringPart",
+        doc: &[
+            "One member of an [`InterpStringExpr`](crate::syntax::InterpStringExpr)'s",
+            "body, in source order. Mirrors FCS's `SynInterpolatedStringPart`: a",
+            "[`Fragment`] is a literal text stretch with the surrounding `$\"` / `{` /",
+            "`}` / `\"` delimiters (`SynInterpolatedStringPart.String`), a [`Fill`] is a",
+            "parsed `SynExpr` whose value is spliced in at runtime, plus its optional",
+            "`: ident` format qualifier (`SynInterpolatedStringPart.FillExpr`).",
+            "",
+            "[`Fragment`]: InterpStringPart::Fragment",
+            "[`Fill`]: InterpStringPart::Fill",
+        ],
+        derives: &["Debug", "Clone"],
+        variants: &[
+            ValueVariant {
+                name: "Fragment",
+                doc: &[],
+                fields: Fields::Tuple(&["SyntaxToken"]),
+            },
+            ValueVariant {
+                name: "Fill",
+                doc: &[
+                    "A `{ expr }` fill. `expr` is the spliced expression; `qualifier` is the",
+                    "trailing `: ident` format specifier (`{x:N2}` → `Some(\"N2\")` token),",
+                    "or `None` for a bare `{x}`. Mirrors `FillExpr of fillExpr * qualifiers:",
+                    "Ident option`. The token is lossless, so a backtick-quoted qualifier",
+                    "keeps the backticks that FCS's `idText` drops.",
+                ],
+                fields: Fields::Named(&[("expr", "Expr"), ("qualifier", "Option<SyntaxToken>")]),
+            },
+        ],
+    },
+    ValueEnum {
+        name: "TupleSegment",
+        doc: &[
+            "One element of a [`TupleType`](crate::syntax::TupleType)'s flat segment",
+            "path. Mirrors FCS's `SynTupleTypeSegment` (`SyntaxTree.fsi:459`)",
+            "one-for-one: a type child or a separator. Phase 7.4 models `Type` and",
+            "`Star`; phase 10.9 adds `Slash` (the `/` unit-of-measure tuple form,",
+            "`float<1/s>`). The projection is flat — `int * string * bool` produces five",
+            "segments `[Type; Star; Type; Star; Type]`, not nested pairs.",
+        ],
+        derives: HANDLES,
+        variants: &[
+            ValueVariant {
+                name: "Type",
+                doc: &[],
+                fields: Fields::Tuple(&["Type"]),
+            },
+            ValueVariant {
+                name: "Star",
+                doc: &[],
+                fields: Fields::Tuple(&["SyntaxToken"]),
+            },
+            ValueVariant {
+                name: "Slash",
+                doc: &[],
+                fields: Fields::Tuple(&["SyntaxToken"]),
+            },
+        ],
+    },
+];
+
 /// `CamelCase` → `SCREAMING_SNAKE_CASE`: an underscore before every uppercase
 /// letter except the first, then upper-case throughout. Faithful for the facade
 /// node names (no acronyms / consecutive capitals); `LongIdentType` →
@@ -997,6 +1552,107 @@ fn gen_enum_impl(name: &str, variants: &[(&str, &str)], nodes: &[Node], out: &mu
     ));
 }
 
+/// Push `doc` as `///` lines indented by `indent`.
+fn push_doc(doc: &[&str], indent: &str, out: &mut String) {
+    for line in doc {
+        if line.is_empty() {
+            out.push_str(&format!("{indent}///\n"));
+        } else {
+            out.push_str(&format!("{indent}/// {line}\n"));
+        }
+    }
+}
+
+/// Every field type of a value enum's variants, as written in the table.
+fn field_types(v: &ValueEnum) -> impl Iterator<Item = &'static str> + '_ {
+    v.variants.iter().flat_map(|variant| match variant.fields {
+        Fields::Unit => Vec::new(),
+        Fields::Tuple(types) => types.to_vec(),
+        Fields::Named(fields) => fields.iter().map(|(_, ty)| *ty).collect(),
+    })
+}
+
+/// Emit a value enum with its docs.
+fn gen_value_enum(v: &ValueEnum, out: &mut String) {
+    push_doc(v.doc, "", out);
+    out.push_str(&format!(
+        "#[derive({})]\npub enum {} {{\n",
+        v.derives.join(", "),
+        v.name
+    ));
+    for variant in v.variants {
+        push_doc(variant.doc, "    ", out);
+        match variant.fields {
+            Fields::Unit => out.push_str(&format!("    {},\n", variant.name)),
+            Fields::Tuple(types) => {
+                out.push_str(&format!("    {}({}),\n", variant.name, types.join(", ")));
+            }
+            Fields::Named(fields) => {
+                let fields: Vec<String> = fields
+                    .iter()
+                    .map(|(name, ty)| format!("{name}: {ty}"))
+                    .collect();
+                out.push_str(&format!(
+                    "    {} {{ {} }},\n",
+                    variant.name,
+                    fields.join(", ")
+                ));
+            }
+        }
+    }
+    out.push_str("}\n\n");
+}
+
+/// The category declaring the node, dispatch enum or value enum `name`.
+fn home_of(name: &str) -> &'static Category {
+    CATEGORIES
+        .iter()
+        .find(|c| {
+            c.nodes.iter().any(|n| n.name == name)
+                || c.enums.iter().any(|e| e.name == name)
+                || c.value_enums.iter().any(|v| v.name == name)
+        })
+        .unwrap_or_else(|| panic!("`{name}` is in no category"))
+}
+
+/// The `use` lines a category's file needs: the substrate, and the types its
+/// value enums carry that other categories declare.
+fn category_imports(category: &Category) -> String {
+    let names = table_names();
+    let mut substrate = vec!["AstNode", "SyntaxKind", "SyntaxNode"];
+    let mut foreign: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for v in category.value_enums {
+        for ty in field_types(v) {
+            let shape = shape::classify_str(ty, &names)
+                .unwrap_or_else(|e| panic!("a field of value enum `{}`: {e}", v.name));
+            for elem in shape.elem().leaves() {
+                match elem {
+                    Elem::Token if !substrate.contains(&"SyntaxToken") => {
+                        substrate.push("SyntaxToken");
+                    }
+                    Elem::Node(n) | Elem::Enum(n) | Elem::Value(n) => {
+                        let home = home_of(n);
+                        if home.path != category.path {
+                            foreign
+                                .entry(module_of(home.path))
+                                .or_default()
+                                .insert(n.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut out = format!("use crate::syntax::{{{}}};\n", substrate.join(", "));
+    for (module, names) in foreign {
+        let names: Vec<String> = names.into_iter().collect();
+        out.push_str(&format!("use super::{module}::{{{}}};\n", names.join(", ")));
+    }
+    out.push('\n');
+    out
+}
+
 /// Generate one [`Category`]'s union facade file, `rustfmt`-stable.
 pub fn generate(category: &Category) -> String {
     let mut out = format!(
@@ -1008,8 +1664,9 @@ pub fn generate(category: &Category) -> String {
          //!\n\
          //! Boilerplate only — bespoke accessors stay hand-written in\n\
          //! `crate::syntax`, re-exported from there as the real facade (plan PR D).\n\n\
-         use crate::syntax::{{AstNode, SyntaxKind, SyntaxNode}};\n\n",
+         {imports}",
         summary = category.summary,
+        imports = category_imports(category),
     );
     for node in category.nodes {
         gen_node(node, &mut out);
@@ -1017,7 +1674,118 @@ pub fn generate(category: &Category) -> String {
     for e in category.enums {
         gen_enum(e, category.nodes, &mut out);
     }
+    for v in category.value_enums {
+        gen_value_enum(v, &mut out);
+    }
     reformat(&out)
+}
+
+/// The type names astgen's tables declare, by what each one is.
+pub fn table_names() -> Names {
+    let mut names = Names::default();
+    for category in CATEGORIES {
+        names
+            .nodes
+            .extend(category.nodes.iter().map(|n| n.name.to_string()));
+        names
+            .enums
+            .extend(category.enums.iter().map(|e| e.name.to_string()));
+        names
+            .values
+            .extend(category.value_enums.iter().map(|v| v.name.to_string()));
+    }
+    names
+}
+
+/// The repo-relative path of the union's lock.
+pub const UNION_LOCK_PATH: &str = "crates/cst/facades/union.lock";
+
+/// The union's surface: every node, dispatch enum and value enum in astgen's
+/// tables, and every accessor in `crates/cst/src/syntax/union.rs`. Panics,
+/// listing them, on any reason the accessors cannot be read
+/// ([`accessors::read_accessors`]) or the result is incoherent
+/// ([`lock::Lock::check`]).
+pub fn union_lock() -> Lock {
+    lock_from(accessors::UNION_SOURCE)
+}
+
+/// [`union_lock`] over the given text of `union.rs`.
+pub fn lock_from(union_source: &str) -> Lock {
+    let names = table_names();
+    let mut lines = BTreeSet::new();
+    for category in CATEGORIES {
+        for node in category.nodes {
+            for kind in node_kinds(node) {
+                lines.insert(Line::Node {
+                    node: node.name.to_string(),
+                    kind,
+                });
+            }
+        }
+        for e in category.enums {
+            for (variant, node) in e.variants {
+                lines.insert(Line::Enum {
+                    name: e.name.to_string(),
+                    variant: variant.to_string(),
+                    node: node.to_string(),
+                });
+            }
+        }
+        for v in category.value_enums {
+            for derive in v.derives {
+                lines.insert(Line::Derive {
+                    name: v.name.to_string(),
+                    trait_: derive.to_string(),
+                });
+            }
+            for variant in v.variants {
+                let field = |ty: &str| {
+                    shape::classify_str(ty, &names).unwrap_or_else(|e| {
+                        panic!("a field of `{}::{}`: {e}", v.name, variant.name)
+                    })
+                };
+                let payload = match variant.fields {
+                    Fields::Unit => Payload::Unit,
+                    Fields::Tuple(types) => {
+                        Payload::Tuple(types.iter().map(|t| field(t)).collect())
+                    }
+                    Fields::Named(fields) => Payload::Named(
+                        fields
+                            .iter()
+                            .map(|(name, ty)| (name.to_string(), field(ty)))
+                            .collect(),
+                    ),
+                };
+                lines.insert(Line::Value {
+                    name: v.name.to_string(),
+                    variant: variant.name.to_string(),
+                    payload,
+                });
+            }
+        }
+    }
+    let read = accessors::read_accessors(union_source, &names).unwrap_or_else(|errors| {
+        panic!(
+            "{} cannot be read for the lock:\n  {}",
+            accessors::UNION_PATH,
+            errors.join("\n  ")
+        )
+    });
+    for accessor in read {
+        lines.insert(Line::Accessor {
+            owner: accessor.owner,
+            name: accessor.name,
+            shape: accessor.shape,
+        });
+    }
+    let lock = Lock { lines };
+    let errors = lock.check();
+    assert!(
+        errors.is_empty(),
+        "the union's surface is incoherent:\n  {}",
+        errors.join("\n  ")
+    );
+    lock
 }
 
 /// A frozen, published per-version typed surface (`docs/ast-versioning-plan.md`
@@ -1095,6 +1863,9 @@ pub fn generate_facade(rows: &[FeatureRow], surface: &Surface) -> String {
     let mut out = String::new();
     let mut emitted_enum = false;
     for category in CATEGORIES {
+        if !category.in_facades {
+            continue;
+        }
         let module = module_of(category.path);
         let nodes_in: Vec<&str> = category
             .nodes
@@ -1148,7 +1919,8 @@ pub fn generate_facade(rows: &[FeatureRow], surface: &Surface) -> String {
 }
 
 /// Every generated file as `(repo-relative path, contents)` — the union
-/// categories, the feature module, and the per-version surface facades. The
+/// categories, the feature module, the per-version surface facades, and the
+/// union's lock. The
 /// single source the generator binary writes and the staleness test checks.
 pub fn all_outputs() -> Vec<(&'static str, String)> {
     let rows = features::feature_table();
@@ -1156,6 +1928,7 @@ pub fn all_outputs() -> Vec<(&'static str, String)> {
         CATEGORIES.iter().map(|c| (c.path, generate(c))).collect();
     out.push((features::OUTPUT_PATH, features::generate_features(&rows)));
     out.extend(SURFACES.iter().map(|s| (s.path, generate_facade(&rows, s))));
+    out.push((UNION_LOCK_PATH, lock::render("union", &union_lock())));
     out
 }
 
@@ -1202,5 +1975,125 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use std::collections::BTreeMap;
+
+    use syn::visit::Visit;
+
+    use super::*;
+
+    /// Counts every `pub fn` anywhere in a file, however deeply nested.
+    #[derive(Default)]
+    struct PubFns(usize);
+
+    impl<'ast> Visit<'ast> for PubFns {
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            self.0 += usize::from(matches!(f.vis, syn::Visibility::Public(_)));
+            syn::visit::visit_item_fn(self, f);
+        }
+
+        fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+            self.0 += usize::from(matches!(f.vis, syn::Visibility::Public(_)));
+            syn::visit::visit_impl_item_fn(self, f);
+        }
+    }
+
+    /// No public fn in `union.rs` escapes the lock: the accessors it lists
+    /// number exactly the file's `pub fn`s, counted both by a walk of the whole
+    /// syntax tree and by a line scan (which also sees inside macro bodies,
+    /// where the walk cannot).
+    #[test]
+    fn every_pub_fn_in_union_is_a_locked_accessor() {
+        let locked = union_lock()
+            .lines
+            .iter()
+            .filter(|l| matches!(l, Line::Accessor { .. }))
+            .count();
+        let mut walk = PubFns::default();
+        walk.visit_file(&syn::parse_file(accessors::UNION_SOURCE).unwrap());
+        let scanned = accessors::UNION_SOURCE
+            .lines()
+            .filter(|l| l.trim_start().starts_with("pub fn "))
+            .count();
+        assert!(locked > 300, "only {locked} accessors were read");
+        assert_eq!(walk.0, locked, "pub fns in the syntax tree vs the lock");
+        assert_eq!(scanned, locked, "`pub fn` lines vs the lock");
+    }
+
+    /// Every kind a node casts from is a `SyntaxKind` variant, and no kind is
+    /// cast by two nodes (so a kind's typed node, where it has one, is
+    /// unique).
+    #[test]
+    fn every_kind_is_a_syntax_kind_cast_by_one_node() {
+        let kinds_rs = include_str!("../../../crates/cst/src/syntax/kinds.rs");
+        let file = syn::parse_file(kinds_rs).unwrap();
+        let variants: BTreeSet<String> = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Enum(e) if e.ident == "SyntaxKind" => {
+                    Some(e.variants.iter().map(|v| v.ident.to_string()).collect())
+                }
+                _ => None,
+            })
+            .expect("kinds.rs declares `SyntaxKind`");
+        let mut owner: BTreeMap<String, String> = BTreeMap::new();
+        for line in &union_lock().lines {
+            if let Line::Node { node, kind } = line {
+                assert!(
+                    variants.contains(kind),
+                    "`{node}` casts from `{kind}`, no SyntaxKind"
+                );
+                if let Some(other) = owner.insert(kind.clone(), node.clone()) {
+                    panic!("`{kind}` is cast by both `{other}` and `{node}`");
+                }
+            }
+        }
+    }
+
+    /// Each type name is declared once across every category's tables.
+    #[test]
+    fn every_type_name_is_declared_once() {
+        let mut seen = BTreeSet::new();
+        for category in CATEGORIES {
+            let names = category
+                .nodes
+                .iter()
+                .map(|n| n.name)
+                .chain(category.enums.iter().map(|e| e.name))
+                .chain(category.value_enums.iter().map(|v| v.name));
+            for name in names {
+                assert!(seen.insert(name), "`{name}` is declared twice");
+            }
+        }
+    }
+
+    /// The union's lock reads back as the same surface, and the checked-in
+    /// lock parses (the staleness test holds it equal to a fresh render).
+    #[test]
+    fn the_union_lock_round_trips() {
+        let lock = union_lock();
+        let text = lock::render("union", &lock);
+        assert_eq!(lock::parse(&text).unwrap(), lock);
+        let on_disk = include_str!("../../../crates/cst/facades/union.lock");
+        let parsed = lock::parse(on_disk).unwrap_or_else(|e| panic!("{UNION_LOCK_PATH}: {e}"));
+        assert!(parsed.check().is_empty(), "{:#?}", parsed.check());
+    }
+
+    /// An accessor whose return type is outside the shape set fails the lock,
+    /// naming it.
+    #[test]
+    fn an_unknown_shape_fails_the_lock_naming_the_accessor() {
+        let source = format!(
+            "{}\nimpl ParenExpr {{ pub fn label(&self) -> String {{ todo!() }} }}\n",
+            accessors::UNION_SOURCE
+        );
+        let panic = std::panic::catch_unwind(|| lock_from(&source)).expect_err("the lock built");
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(message.contains("ParenExpr::label"), "{message}");
     }
 }

@@ -122,12 +122,16 @@ The version has two parser roles:
 For each language version, `syntax::vN` owns **every** node type and enum: a
 node is a newtype over the union node, and each accessor is a generated one-line
 delegate that calls the union accessor and re-casts the result into `vN`'s
-types (`v8::ParenType::inner() -> Option<v8::Type>`). `tools/astgen` learns the
-accessor signatures by reading `syntax/mod.rs` with `syn`; the return shapes
-are a small closed set (`Option<Enum>`, `bool`, `impl Iterator<Item = Node |
-Enum>`, `Option<SyntaxToken>`, `Option<Node>`, `Vec<_>`, small value enums), and
-astgen **fails** on a shape outside it. The hand-written standalone
-`ast_node!`s move into astgen's tables.
+types (`v8::ParenType::inner() -> Option<v8::Type>`). astgen's tables declare
+every node newtype, dispatch enum and value enum of the union; the accessors
+are hand-written in `syntax/union.rs`, and `tools/astgen` reads their
+signatures back with `syn`. Each return type is a container (`T`,
+`Option<T>`, `impl Iterator<Item = T>`, `Vec<T>`) around an element (a node,
+a dispatch enum, a value enum, `SyntaxToken`, or one of `bool`, `usize`,
+`i32`, `TextRange`, `&'static str`, or a tuple of those), and astgen
+**fails**, naming the accessor, on a return type outside that set
+(`tools/astgen/src/shape.rs`). `union.rs` may declare no public type, module or
+item-level macro, so no accessor can hide from the reading.
 
 There is no `Deref` or `From` to the union. The escapes are `.syntax()` (the
 substrate, D7) and `to_union()`, the latter only under `unstable-union`. A union
@@ -146,13 +150,25 @@ is not the main path; exact match sidesteps removal entirely.
 One hand-edited table,
 [`crates/cst/language-features.tsv`](../crates/cst/language-features.tsv),
 keyed by FCS feature, drives both the parser's version gates and the facades'
-kind intervals; `tools/astgen` (dependency-free) generates everything else from
-it. See [The feature table](#the-feature-table).
+kind intervals; `tools/astgen` (never a dependency of `borzoi-cst`) generates
+everything else from it. See [The feature table](#the-feature-table).
 
 ### D6. Freezing: a lock file that is the generator's input
 
 `crates/cst/facades/vN.lock` lists a facade's enums (variants and their kind
 sets), node types, and accessors (signature and union delegate).
+
+The format is one fact per tab-separated line, tagged `node` (a node newtype
+and one kind it casts from), `enum` (a dispatch-enum variant and its node),
+`value` (a value-enum variant and its payload), `derive` (a trait a value enum
+derives) or `accessor` (owner, method and return shape), sorted with no
+duplicates, so a lock has one spelling (`tools/astgen/src/lock.rs`). A kind
+set is the `node` lines of the variant's node. Because every fact is its own
+line, what a frozen surface may take — a new accessor, a new kind for an
+existing node — is an added line, and anything else removes or rewrites one.
+The union's own lock, `crates/cst/facades/union.lock`, exists today and is
+always regenerated; an accessor's delegate is the union accessor of the same
+name until a facade needs a compat shim.
 
 - An **unpublished** facade's lock is derived and regenerated freely.
 - A **published** facade (astgen's `PUBLISHED` list) is generated *from* its
@@ -346,6 +362,11 @@ PR 6 makes them generic over every (facade, enum) pair.
 - **PR 4 — the union behind `unstable-union`** (#13, #670): the hand-written
   union in a private `syntax::union`, re-exported only under the feature, with a
   featureless clippy and doc step in CI. `v8`/`v9` are behind it too until PR 6.
+- **PR 5 — astgen owns every node** (D4): the standalone nodes and the value
+  enums moved into astgen's tables (`generated::union_standalone`); astgen reads
+  every accessor's signature out of `union.rs` and classifies its return shape,
+  and emits the union's lock, `crates/cst/facades/union.lock` (D6). The `v8` /
+  `v9` facades still re-export the union's dispatch-enum categories only.
 
 ## PR sequence
 
@@ -360,7 +381,7 @@ PR 6 makes them generic over every (facade, enum) pair.
 4. **Union behind `unstable-union`** (#13). Independent of 1–3. *Landed*
    (#670); the `v8`/`v9` facades are behind the feature too until PR 6.
 5. **astgen owns every node** and reads accessor signatures (D4); it emits the
-   union's lock only.
+   union's lock only. *Landed.*
 6. **Deep facades for every version and preview** (#14, #17),
    `Parse::view::<V>()` (#12), generic P2/P3/P4.
 7. **Freeze**: `PUBLISHED = v4_6 … v10`, the CI lock check, consumer fixtures,
@@ -371,7 +392,7 @@ PR 6 makes them generic over every (facade, enum) pair.
 
 ## Still to do
 
-Everything in PRs 2–8 above. Beyond them:
+Everything in PRs 2, 3 and 6–8 above. Beyond them:
 
 - **Stale issues.** #21's text predates the relax-whitespace and `#nowarn`
   work; its remaining scope is PR 3's list. #14's "interval data below 8.0" is

@@ -235,7 +235,13 @@ impl<'a> Filter<'a> {
         // unchanged. (LexFilter.fs:2117) The head's dotted-ident
         // scanner is consumed by the CtxtNamespaceHead transition arm
         // above; this arm only sets the stack up.
-        if let TokenContent::Real(TokenKind::Namespace) = &tt.token {
+        //
+        // FCS's NAMESPACE, MODULE and EXCEPTION arms match `_ :: _`: on an
+        // empty stack (the file's first context popped by an offside
+        // token) the keyword falls through to the catch-all and is
+        // returned raw, pushing nothing.
+        let stacked = !self.offside_stack.is_empty();
+        if stacked && let TokenContent::Real(TokenKind::Namespace) = &tt.token {
             self.push_ctxt(
                 tt.span,
                 Context::NamespaceHead {
@@ -267,7 +273,7 @@ impl<'a> Filter<'a> {
         // and stored on the head for `end_token_for_a_ctxt` (a forced
         // closure of a nested head emits OBLOCKSEP per
         // LexFilter.fs:1542-1543; a top-of-file head closes silently).
-        if let TokenContent::Real(TokenKind::Module) = &tt.token {
+        if stacked && let TokenContent::Real(TokenKind::Module) = &tt.token {
             self.check_invalid_decl_in_type_defn(NestedDeclKeyword::Module, &tt);
             let nested = !matches!(self.offside_stack.as_slice(), [Context::SeqBlock { .. }]);
             self.push_ctxt(
@@ -314,6 +320,12 @@ impl<'a> Filter<'a> {
 
     /// let/use, bang-binders, the multi-member pop cascade, and member-head pushes.
     pub(super) fn binding_member_pushes(&mut self, tt: TokenTup) -> Step {
+        // Every arm here matches a non-empty stack in FCS (`ctxt :: _`, or a
+        // `CtxtMemberBody` the cascade pops to): on an empty one the keyword
+        // is returned raw (LexFilter.fs:2146-2218).
+        if self.offside_stack.is_empty() {
+            return Step::Pass(tt);
+        }
         // `static let` — LET arriving while the head is `CtxtMemberHead`
         // (i.e. the `static` keyword has already opened a member-head)
         // pops the MemberHead and pushes `CtxtLetDecl(blockLet=true,
@@ -772,16 +784,18 @@ impl<'a> Filter<'a> {
         }
 
         // EXCEPTION → push CtxtException, pass token through unchanged.
-        // (LexFilter.fs:2135-2141) FCS guards on `_ :: _` (non-empty
-        // stack); after `peek_initial` our stack always has at least
-        // the top-level SeqBlock, so the guard is structurally satisfied
-        // and elided here. FCS also calls `checkForInvalidDeclsInTypeDefn`
+        // (LexFilter.fs:2135-2141) FCS guards on `_ :: _`: the stack is
+        // empty once a token offside of the file's first token has popped
+        // its SeqBlock (` [<A>]⏎exception E`), and the keyword is then
+        // returned raw. FCS also calls `checkForInvalidDeclsInTypeDefn`
         // for the FS0058 nested-exception diagnostic (no token effect).
         //
         // The context itself is silent on close (endTokenForACtxt = None,
         // L1545); its observable role is to route the subsequent `WITH`
         // through the L2362 dispatch arm rather than the L2462 catch-all.
-        if let TokenContent::Real(TokenKind::Exception) = &tt.token {
+        if !self.offside_stack.is_empty()
+            && let TokenContent::Real(TokenKind::Exception) = &tt.token
+        {
             self.check_invalid_decl_in_type_defn(NestedDeclKeyword::Exception, &tt);
             self.push_ctxt(tt.span, Context::Exception { pos: tt.start });
             return Step::Emit(tt);
