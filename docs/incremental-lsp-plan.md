@@ -2813,6 +2813,15 @@ then have to carry. It is not adopted by default.
   `projects_generation` no longer drops every semantic cache
   (`sync_with_evaluations`): what it drops is the envs with an unrecorded
   reader, and nothing else.
+- **A change owes one refresh.** A text sync or a watch event records the
+  paths it announced (`SemanticState::announced`) when it owes the
+  semantic-token refresh, and a cached fold found stale only at announced
+  paths owes no second one; a fold that reads a path consumes its
+  announcement. A change no one announced (a write on disk with no event)
+  still owes one from the request that finds it. Without this, every
+  keystroke sent the client two workspace-wide refreshes: one at the
+  `didChange`, and one from the next request's validation (found by Codex;
+  `each_change_owes_one_refresh`).
 - **A fold refusal records the evaluation it was refused under**, and
   `fold_outcome` reports `Unknown` under any other
   (`a_fold_refusal_does_not_outlive_the_project_that_caused_it`). A text
@@ -2975,6 +2984,10 @@ The oracle:
   `a_save_that_changes_the_project_recomputes_it`, gives the project a
   define and must evaluate it once and fold.
 - `xml_doc::lookup::tests::a_same_size_rewrite_with_its_mtime_put_back_is_seen`.
+- `observed_counts::each_change_owes_one_refresh`: a keystroke owes one
+  semantic-token refresh, at the keystroke, and the request that then finds
+  the fold stale owes none; a closed item rewritten with no event owes one,
+  from the request that finds it.
 - #313's mutations M1–M10, re-planted below.
 
 **Measured** on WoofWare.Incremental, each row the minimum over three runs of
@@ -3055,6 +3068,8 @@ Planted, each caught, then removed (each run against `cargo test -p borzoi
 | a structural event owing no token refresh | `diagnostic_refresh_precedes_semantic_tokens_refresh` |
 | the doc-file cache keyed by size and mtime, caching under a racy stamp | `a_same_size_rewrite_with_its_mtime_put_back_is_seen` |
 | the doc-file cache caching under a racy stamp | `nothing_is_cached_under_a_racy_stamp` (added for it) |
+| a validation owing a refresh for an announced change (Codex) | `each_change_owes_one_refresh` (added for it: `(1, 1, 0, 1)` where `(1, 0, 0, 1)` is right) |
+| every change treated as announced | `each_change_owes_one_refresh` (the unwatched write owes none), the pinned scripts |
 
 #313's mutations, re-planted where their code still exists:
 

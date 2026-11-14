@@ -840,3 +840,69 @@ proptest! {
         prop_assert!(recomputed.folds >= 1, "{:?}", recomputed);
     }
 }
+
+/// How many `workspace/semanticTokens/refresh` requests the server sent
+/// after each step, when the step is a keystroke in an open item and then a
+/// request for its tokens, or a closed item rewritten on disk with no watch
+/// event and then the same request.
+fn refreshes(n: usize, edited: usize, other: usize, pull: bool) -> (usize, usize, usize, usize) {
+    let tmp = TempDir::new().unwrap();
+    let (items, mut texts) = project(tmp.path(), n);
+    let mut client = Client::start(tmp.path(), pull, settled());
+    let uri = |i: usize| Uri::from_file_path(&items[i]).unwrap();
+    for i in [edited, other] {
+        client.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": uri(i).as_str(), "languageId": "fsharp", "version": 0, "text": texts[i],
+            }}),
+        );
+    }
+    let tokens = |client: &mut Client, i: usize| {
+        client
+            .request(
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": uri(i).as_str() } }),
+            )
+            .1
+    };
+    tokens(&mut client, edited);
+    tokens(&mut client, other);
+    client.settle();
+    // A barrier answers every refresh the server sent before it.
+    let barrier = |client: &mut Client| client.request("borzoi/test/barrier", Value::Null).1;
+
+    texts[edited].push_str("// typed");
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": uri(edited).as_str(), "version": 1 },
+            "contentChanges": [{ "text": texts[edited] }],
+        }),
+    );
+    let after_keystroke = barrier(&mut client);
+    let after_its_tokens = tokens(&mut client, edited) + barrier(&mut client);
+
+    let closed = (0..n)
+        .find(|i| ![edited, other].contains(i))
+        .expect("a third item");
+    std::fs::write(&items[closed], format!("{}// written\n", texts[closed])).unwrap();
+    let after_write = barrier(&mut client);
+    let after_write_tokens = tokens(&mut client, edited) + barrier(&mut client);
+    client.shut_down();
+    (after_keystroke, after_its_tokens, after_write, after_write_tokens)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+
+    /// A keystroke owes one semantic-token refresh, at the keystroke, and
+    /// the request that then finds the fold stale owes none: the change was
+    /// announced. A closed item rewritten on disk with no watch event owes
+    /// one, from the request that finds it, since nothing announced it.
+    #[test]
+    fn each_change_owes_one_refresh((n, edited, other, pull) in cases()) {
+        prop_assume!(n >= 3);
+        prop_assert_eq!(refreshes(n, edited, other, pull), (1, 0, 0, 1));
+    }
+}

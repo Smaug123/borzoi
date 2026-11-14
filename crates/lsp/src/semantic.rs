@@ -33,7 +33,7 @@ use borzoi_sema::{
 
 use crate::assembly_cache::AssemblyCache;
 use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
-use crate::paths::{lexically_normalize, paths_equal};
+use crate::paths::{lexically_normalize, path_dedup_key, paths_equal};
 use crate::project_assets::{
     resolve_assemblies_for_tfm, resolve_assemblies_root_only, resolve_transitive_project_tfms,
 };
@@ -531,6 +531,13 @@ pub struct SemanticState {
     /// Compile-order folds computed in the open generation
     /// ([`Self::end_generation`]).
     folds: u64,
+    /// The sources whose text changes have been announced to the client
+    /// since a fold last read them: a text sync or a watch event named them
+    /// and owed the refresh ([`Self::owe_token_refresh`]). A cached fold
+    /// found stale only at those owes no second refresh
+    /// ([`Self::validate_cached_fold`]); a fold that reads one consumes it.
+    /// Keyed as the `Vfs` keys its buffers ([`crate::paths::path_dedup_key`]).
+    announced: std::collections::HashSet<String>,
 }
 
 /// What the semantic layer did in one generation
@@ -657,15 +664,19 @@ impl SemanticState {
         }
     }
 
-    /// Something an open buffer's semantic tokens may read changed: a source
-    /// buffer was opened, edited or closed, or a watch event reported a
-    /// source or a project file changed. The caches need nothing (each
-    /// confirms its inputs when read), but an open buffer other than the one
-    /// touched may now be shown stale tokens, and the client re-asks only
-    /// for the one it touched, so a `workspace/semanticTokens/refresh` is
-    /// owed.
-    pub fn owe_token_refresh(&mut self) {
+    /// Something an open buffer's semantic tokens may read changed, at
+    /// `paths`: a source buffer was opened, edited or closed, or a watch
+    /// event reported a source or a project file changed. The caches need
+    /// nothing (each confirms its inputs when read), but an open buffer
+    /// other than the one touched may now be shown stale tokens, and the
+    /// client re-asks only for the one it touched, so a
+    /// `workspace/semanticTokens/refresh` is owed. The paths are recorded as
+    /// announced, so the fold that next finds them changed owes no second
+    /// one.
+    pub fn owe_token_refresh<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) {
         self.wants_refresh = true;
+        self.announced
+            .extend(paths.into_iter().map(|path| path_dedup_key(&lexically_normalize(path))));
     }
 
     /// Forget `project`'s cached parses and fold, as if it had never been
@@ -1709,6 +1720,12 @@ impl SemanticState {
         self.validate_cached_fold(&key, workspace, docs);
         if !self.project_parses.contains_key(&key) {
             let parses = self.fold(project, workspace, docs).ok()?;
+            // The fold read every item's current text: what was announced of
+            // them is in it.
+            for path in &parses.paths {
+                self.announced
+                    .remove(&path_dedup_key(&lexically_normalize(path)));
+            }
             self.project_parses.insert(
                 key.clone(),
                 CachedParses {
@@ -1770,18 +1787,26 @@ impl SemanticState {
             return;
         };
         let generation = docs.generation();
-        let current = cached.evaluation == evaluation
-            && ((generation.is_some() && cached.validated_in == generation)
-                || cached
-                    .parses
-                    .paths
-                    .iter()
-                    .zip(&cached.parses.texts)
-                    .all(|(path, text)| {
-                        docs.text_of(path)
-                            .is_some_and(|now| Arc::ptr_eq(&now, text) || *now == **text)
-                    }));
-        if current {
+        let same_evaluation = cached.evaluation == evaluation;
+        let checked = generation.is_some() && cached.validated_in == generation;
+        // Every item whose text moved, if the evaluation stands.
+        let moved: Vec<&PathBuf> = if same_evaluation && !checked {
+            cached
+                .parses
+                .paths
+                .iter()
+                .zip(&cached.parses.texts)
+                .filter(|(path, text)| {
+                    !docs
+                        .text_of(path)
+                        .is_some_and(|now| Arc::ptr_eq(&now, *text) || *now == ***text)
+                })
+                .map(|(path, _)| path)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if same_evaluation && moved.is_empty() {
             cached.validated_in = generation;
             return;
         }
@@ -1789,11 +1814,21 @@ impl SemanticState {
             project = %key.as_path().display(),
             "a cached fold's evaluation or a Compile item's text moved; dropping it"
         );
+        // Another open buffer's tokens may now be stale, unless every move
+        // was announced already, which owed the refresh then. A moved
+        // evaluation is announced by the moved projects generation, but the
+        // refresh is owed again here rather than reasoned about.
+        let announced = &self.announced;
+        let unannounced = !same_evaluation
+            || moved
+                .iter()
+                .any(|path| !announced.contains(&path_dedup_key(&lexically_normalize(path))));
         self.project_parses.remove(key);
         self.resolved_projects.remove(key);
         self.observed_fold_refusals.remove(key);
-        // As for an edit: another open buffer's tokens may now be stale.
-        self.wants_refresh = true;
+        if unannounced {
+            self.wants_refresh = true;
+        }
     }
 
     /// The one place the fold runs, so that **every** outcome is observed no
@@ -8395,7 +8430,7 @@ mod tests {
         assert!(!sema.take_wants_refresh(), "nothing owed initially");
 
         // No fold anywhere — just what the notification path records.
-        sema.owe_token_refresh();
+        sema.owe_token_refresh([Path::new("/some/project/A.fs")]);
         assert!(
             sema.take_wants_refresh(),
             "a fold-less source change still owes a refresh"
