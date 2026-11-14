@@ -1232,11 +1232,14 @@ fn op_kind_name(text: &str) -> &'static str {
 // FilteredToken → FCS FSharpTokenKind name mapping
 // ============================================================================
 
-/// Map a `FilteredToken` to the FCS kind name that `tokens-filtered` would
-/// emit for it. Raw tokens delegate to [`rust_kind_name`]; virtuals get the
-/// `Offside*` name.
+/// Map a `FilteredToken` to the kind name `parse_fcs_parser_stream` gives
+/// FCS's token in the parser stream. Raw tokens delegate to
+/// [`rust_kind_name`]; virtuals get the `Offside*` name. A raw `and!` (the
+/// filter passes one through when no SeqBlock heads the stack) has no
+/// `FSharpTokenKind`, so the oracle prints FCS's token name, `AND_BANG`.
 pub fn filtered_kind_name(tok: &FilteredToken<'_>) -> String {
     match tok {
+        FilteredToken::Raw(Token::AndBang) => "AND_BANG".into(),
         FilteredToken::Raw(t) => rust_kind_name(t),
         FilteredToken::Virtual(v) => virtual_kind_name(v).into(),
     }
