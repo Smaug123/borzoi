@@ -1934,6 +1934,9 @@ const REQUEST_SPAN_ID: u64 = 2;
 /// which units begin before the stopped step ends.
 struct StopAtSpan {
     at: Option<usize>,
+    /// What is sent: a notification the server ignores, unless a test asks
+    /// for another (a cancellation of the request).
+    sends: Message,
     input: borzoi::inbox::InboxSender,
     trace: Arc<Mutex<SpanTrace>>,
 }
@@ -1969,9 +1972,7 @@ impl tracing::Subscriber for StopAtSpan {
             trace.points.push(name);
             if self.at == Some(index) {
                 trace.sent_at = Some(index);
-                self.input
-                    .send(notification("$/borzoi-test/ignored", Value::Null))
-                    .unwrap();
+                self.input.send(self.sends.clone()).unwrap();
             }
         }
         tracing::span::Id::from_u64(1)
@@ -1989,6 +1990,16 @@ impl tracing::Subscriber for StopAtSpan {
         }
         true
     }
+}
+
+/// A notification the server ignores.
+fn ignored() -> Message {
+    notification("$/borzoi-test/ignored", Value::Null)
+}
+
+/// A cancellation of the request `id`.
+fn cancel(id: &str) -> Message {
+    notification("$/cancelRequest", json!({ "id": id }))
 }
 
 /// A scenario for [`a_request_stops_for_a_notification_wherever_it_arrives`]:
@@ -2051,7 +2062,39 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
         .unwrap()
         .as_str()
         .to_string();
+    // A directory of three projects that compile nothing, beside a source
+    // they all fail to claim: its ownership walk weighs (evaluates) each.
+    let s_dir = world.root.join("S");
+    std::fs::create_dir_all(&s_dir).unwrap();
+    for name in ["S1", "S2", "S3"] {
+        std::fs::write(
+            s_dir.join(format!("{name}.fsproj")),
+            "<Project>\n  <ItemGroup>\n  </ItemGroup>\n</Project>\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(s_dir.join("X.fs"), "module X\n\nlet x = 1\n").unwrap();
+    let x = Uri::from_file_path(s_dir.join("X.fs"))
+        .unwrap()
+        .as_str()
+        .to_string();
     vec![
+        LatencyScenario {
+            name: "a hover whose ownership walk evaluates three projects again",
+            setup: vec![did_open(&x, "module X\n\nlet x = 1\n")],
+            rewrite: ["S1", "S2", "S3"]
+                .iter()
+                .map(|name| s_dir.join(format!("{name}.fsproj")))
+                .collect(),
+            request: request(
+                "hover",
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": x },
+                    "position": { "line": 2, "character": 4 },
+                }),
+            ),
+        },
         LatencyScenario {
             name: "a cold hover (parses, env, fold, inference)",
             setup: opens.clone(),
@@ -2131,13 +2174,14 @@ fn run_latency_case(
         // A text this session has not evaluated.
         static REWRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = REWRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let text = std::fs::read_to_string(project).unwrap();
+        let text = crate::common::host_fs::read_to_string(project).unwrap();
         let text = text.split("<!--").next().unwrap().trim_end().to_string();
         std::fs::write(project, format!("{text}\n<!-- {n} -->\n")).unwrap();
     }
     let trace = Arc::new(Mutex::new(SpanTrace::default()));
     let subscriber = StopAtSpan {
         at,
+        sends: ignored(),
         input: session.input.clone(),
         trace: Arc::clone(&trace),
     };
@@ -2358,7 +2402,7 @@ fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
     /// One session: warm, `B` rewritten on disk, then tokens for `C` with a
     /// notification at the `stop`th span of the handler. The trace, and how
     /// many token refreshes the server sent for the request.
-    fn round(stop: Option<usize>) -> (SpanTrace, usize) {
+    fn round(stop: Option<usize>, sends: Message) -> (SpanTrace, usize, Option<i32>) {
         let mut world = World::new();
         let a = world.uri(Doc::Src(Src::A));
         let c = world.uri(Doc::Src(Src::C));
@@ -2383,22 +2427,24 @@ fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
         let trace = Arc::new(Mutex::new(SpanTrace::default()));
         let subscriber = StopAtSpan {
             at: stop,
+            sends,
             input: session.input.clone(),
             trace: Arc::clone(&trace),
         };
         let answers =
             tracing::subscriber::with_default(subscriber, || session.deliver(vec![tokens_c()]));
-        assert_eq!(error_code(&answers, "tokens"), None);
+        let code = error_code(&answers, "tokens");
         let trace = std::mem::take(&mut *trace.lock().unwrap());
         let refreshes = session
             .server_requests
             .iter()
             .filter(|method| *method == "workspace/semanticTokens/refresh")
             .count();
-        (trace, refreshes)
+        (trace, refreshes, code)
     }
     on_server_stack(|| {
-        let (unstopped, refreshes) = round(None);
+        let (unstopped, refreshes, code) = round(None, ignored());
+        assert_eq!(code, None);
         assert_eq!(
             refreshes, 1,
             "the unannounced change owes one token refresh"
@@ -2410,11 +2456,99 @@ fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
             .iter()
             .position(|p| *p == "parse_compile_item")
             .expect("the request rebuilds the parses");
-        let (stopped, refreshes) = round(Some(first_parse));
+        let (stopped, refreshes, code) = round(Some(first_parse), ignored());
+        assert_eq!(code, None, "it ran again");
         assert_eq!(stopped.stopped, 1, "the rebuild stopped: {stopped:?}");
         assert_eq!(
             refreshes, 1,
             "a rebuild that stopped still owes the token refresh for the unannounced change"
+        );
+        // Stopped by its own cancellation, the request is refused, and no
+        // rebuild finishes: the refresh is owed all the same (Codex).
+        let (stopped, refreshes, code) = round(Some(first_parse), cancel("tokens"));
+        assert_eq!(code, CANCELLED);
+        assert_eq!(stopped.stopped, 1, "the rebuild stopped: {stopped:?}");
+        assert_eq!(
+            refreshes, 1,
+            "a rebuild stopped for its cancellation still owes the token refresh"
+        );
+    });
+}
+
+/// A request that re-evaluated a project, stopped and refused for its own
+/// cancellation, still leaves the client told what the moved evaluation may
+/// have staled: a pull client is sent the diagnostic refresh it would have
+/// been sent had the request finished (Codex).
+#[test]
+fn a_request_cancelled_mid_evaluation_still_reports_the_moved_evaluation() {
+    fn round(stop: Option<usize>) -> (SpanTrace, usize, Option<i32>) {
+        let world = World::new();
+        let c = world.uri(Doc::Src(Src::C));
+        let hover_c = || {
+            request(
+                "hover",
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 10 },
+                }),
+            )
+        };
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![did_open(&c, Src::C.text(0))]);
+        session.settle();
+        session.deliver(vec![hover_c()]);
+        session.settle();
+        session.server_requests.clear();
+        // The project gains a define, with no watch event.
+        let project = world.root.join("P").join("P.fsproj");
+        let text = crate::common::host_fs::read_to_string(&project).unwrap();
+        std::fs::write(
+            &project,
+            text.replace(
+                "<Project>",
+                "<Project>\n  <PropertyGroup><DefineConstants>MOVED</DefineConstants></PropertyGroup>",
+            ),
+        )
+        .unwrap();
+        let trace = Arc::new(Mutex::new(SpanTrace::default()));
+        let subscriber = StopAtSpan {
+            at: stop,
+            sends: cancel("hover"),
+            input: session.input.clone(),
+            trace: Arc::clone(&trace),
+        };
+        let answers =
+            tracing::subscriber::with_default(subscriber, || session.deliver(vec![hover_c()]));
+        let code = error_code(&answers, "hover");
+        session.settle();
+        let trace = std::mem::take(&mut *trace.lock().unwrap());
+        let refreshes = session
+            .server_requests
+            .iter()
+            .filter(|method| *method == "workspace/diagnostic/refresh")
+            .count();
+        (trace, refreshes, code)
+    }
+    on_server_stack(|| {
+        let (unstopped, refreshes, code) = round(None);
+        assert_eq!(code, None);
+        assert_eq!(
+            refreshes, 1,
+            "the moved evaluation owes a diagnostic refresh"
+        );
+        let evaluation = unstopped
+            .points
+            .iter()
+            .position(|p| *p == "evaluate_project")
+            .expect("the hover evaluates the project again");
+        let (stopped, refreshes, code) = round(Some(evaluation));
+        assert_eq!(stopped.stopped, 1, "the hover stopped: {stopped:?}");
+        assert_eq!(code, CANCELLED);
+        assert_eq!(
+            refreshes, 1,
+            "the hover stopped for its cancellation, and the moved evaluation still owes a \
+             diagnostic refresh"
         );
     });
 }

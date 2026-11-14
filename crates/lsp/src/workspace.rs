@@ -42,6 +42,7 @@
 //! [`crate::fsproj_diagnostics`]), but evaluation still completes and the
 //! body's own `<DefineConstants>` are still collected.
 
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::observed::{EvaluationCounts, Unobserved};
 use crate::read_checks::{Check, ReadChecks, a_fact};
 use crate::vfs::Nanos;
@@ -1488,21 +1489,44 @@ impl Workspace {
     /// answer; every other path degrades such a file to the implicit symbol
     /// set for its kind.
     pub fn owning_project(&mut self, file: &Path) -> Option<PathBuf> {
+        never_superseded(self.owning_project_watched(file, &Watch::unwatched()))
+    }
+
+    /// [`Self::owning_project`], stopping at a checkpoint before each
+    /// evaluation it may run (each project a remembered answer consulted,
+    /// each candidate the walk weighs) once `watch` sees a notification
+    /// ([`crate::inbox`]). The evaluations run by then stay cached; a
+    /// remembered answer the walk was replacing is kept, so the next walk
+    /// still notices the owner moved.
+    pub fn owning_project_watched(
+        &mut self,
+        file: &Path,
+        watch: &Watch,
+    ) -> Result<Option<PathBuf>, Superseded> {
         let Some(generation) = self.dir_listings.checks.generation() else {
             // Outside a generation nothing confirms an answer, so nothing
             // is remembered.
-            return self.walk_for_owner(file, 0).project;
+            return Ok(self.walk_for_owner(file, 0, watch)?.project);
         };
         // The answer the last walk found, when it no longer stands.
         let moved_from = if self.owners.contains_key(file) {
-            if self.owner_holds(file, generation) {
-                return self.owners[file].project.clone();
+            if self.owner_holds(file, generation, watch)? {
+                return Ok(self.owners[file].project.clone());
             }
-            self.owners.remove(file).map(|owner| owner.project)
+            self.owners.remove(file)
         } else {
             None
         };
-        let walked = self.walk_for_owner(file, generation);
+        let walked = match self.walk_for_owner(file, generation, watch) {
+            Ok(walked) => walked,
+            Err(Superseded) => {
+                if let Some(before) = moved_from {
+                    self.owners.insert(file.to_path_buf(), before);
+                }
+                return Err(Superseded);
+            }
+        };
+        let moved_from = moved_from.map(|owner| owner.project);
         let project = walked.project.clone();
         if moved_from.is_some_and(|before| before != project) {
             // What the client was shown for this file came from another
@@ -1514,19 +1538,24 @@ impl Workspace {
             self.projects_generation.0 += 1;
         }
         self.owners.insert(file.to_path_buf(), walked);
-        project
+        Ok(project)
     }
 
     /// Whether the remembered owner of `file` still stands in `generation`:
     /// confirmed in it already, or every listing its walk read holds and
     /// every evaluation it consulted is still the entry cached, once
     /// confirmed for this generation ([`Self::validate`]).
-    fn owner_holds(&mut self, file: &Path, generation: u64) -> bool {
+    fn owner_holds(
+        &mut self,
+        file: &Path,
+        generation: u64,
+        watch: &Watch,
+    ) -> Result<bool, Superseded> {
         let Some(owner) = self.owners.get(file) else {
-            return false;
+            return Ok(false);
         };
         if owner.validated_in == generation {
-            return true;
+            return Ok(true);
         }
         let listings = &mut self.dir_listings;
         if !owner
@@ -1534,25 +1563,32 @@ impl Workspace {
             .iter()
             .all(|(dir, id)| listings.current(dir, generation) == Some(*id))
         {
-            return false;
+            return Ok(false);
         }
         let consulted = owner.consulted.clone();
         for (project, id) in &consulted {
+            // Confirming may evaluate the project again.
+            watch.check()?;
             self.validate(project);
             if self.projects.get(project).map(|cached| cached.id) != Some(*id) {
-                return false;
+                return Ok(false);
             }
         }
         if let Some(owner) = self.owners.get_mut(file) {
             owner.validated_in = generation;
         }
-        true
+        Ok(true)
     }
 
     /// The ownership walk itself: [`Self::owning_project`]'s rule, reading
     /// every directory's listing through [`Self::dir_listings`] and
     /// recording each evaluation whose verdict it consulted.
-    fn walk_for_owner(&mut self, file: &Path, generation: u64) -> Owner {
+    fn walk_for_owner(
+        &mut self,
+        file: &Path,
+        generation: u64,
+        watch: &Watch,
+    ) -> Result<Owner, Superseded> {
         let mut listings = Vec::new();
         let mut consulted = Vec::new();
         let mut dir = file.parent();
@@ -1562,6 +1598,8 @@ impl Workspace {
             let (projects, listing) = self.dir_listings.projects_in(d);
             listings.push((d.to_path_buf(), listing));
             for cand in projects {
+                // Weighing a candidate may evaluate it.
+                watch.check()?;
                 let project = ProjectId::new(&cand);
                 let membership = self.membership(&cand, file);
                 if let Some(cached) = self.projects.get(&project) {
@@ -1588,12 +1626,12 @@ impl Workspace {
             Some(member) => member,
             None => find_owning_project(file, &mut self.dir_listings, &mut listings),
         };
-        Owner {
+        Ok(Owner {
             project,
             listings,
             consulted,
             validated_in: generation,
-        }
+        })
     }
 
     /// The evaluated project at `project_path`, lazily computed and cached
@@ -4299,7 +4337,11 @@ mod tests {
         write_file(&file, "let x = 1");
 
         let mut ws = Workspace::default();
-        let walked = ws.walk_for_owner(&file, 0);
+        let walked = crate::inbox::never_superseded(ws.walk_for_owner(
+            &file,
+            0,
+            &crate::inbox::Watch::unwatched(),
+        ));
         assert_eq!(walked.project, Some(root.clone()));
         let listed: Vec<&Path> = walked
             .listings
@@ -4335,7 +4377,11 @@ mod tests {
         write_file(&file, "let x = 1");
 
         let mut ws = Workspace::default();
-        let walked = ws.walk_for_owner(&file, 0);
+        let walked = crate::inbox::never_superseded(ws.walk_for_owner(
+            &file,
+            0,
+            &crate::inbox::Watch::unwatched(),
+        ));
         assert_eq!(walked.project, Some(root));
         let climbed = file.parent().unwrap().ancestors().count();
         assert_eq!(walked.listings.len(), climbed + 3);

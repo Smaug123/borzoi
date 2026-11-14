@@ -97,7 +97,7 @@ fn member_candidates(
     let Ok(path) = uri.to_file_path() else {
         return Ok(None);
     };
-    let Some(project) = state.workspace.owning_project(&path) else {
+    let Some(project) = state.workspace.owning_project_watched(&path, watch)? else {
         return Ok(None);
     };
     watch.check()?;

@@ -3590,8 +3590,11 @@ the re-run pays one unit at most again.
   item, before the env, before the fold and before the inference, each unit
   cached before the next checkpoint. The handlers that fold (`hover`, `definition`,
   `references`, `completion`, `semanticTokens`, `workspace/symbol`) take a
-  watch (`handle_watched`) and check after finding the owning project; the
-  loop checks once more after the handler returns. Every other caller keeps
+  watch (`handle_watched`), find the owning project through
+  `Workspace::owning_project_watched` (a checkpoint before each evaluation
+  the walk may run: each project a remembered answer consulted, each
+  candidate it weighs) and check after it; the loop checks once more after
+  the handler returns. Every other caller keeps
   the unwatched entry points, which no checkpoint can stop
   (`inbox::never_superseded`). Hover computes its project prefix once
   (`FilePrefix`) and hands it to both of its project paths.
@@ -3606,8 +3609,12 @@ the re-run pays one unit at most again.
   three-project scenario). The next step reads what arrived and
   only then records the request as a `batch::Restart` with the size of the
   epoch, so the requests that arrived with the notification run before it.
-  A stopped fold records no outcome, and puts back the stale parses its
-  rebuild needs to decide the refresh it owes.
+  A stopped fold records no outcome, and decides at the stop the refresh its
+  rebuild would have decided (`owe_refresh_for_unannounced_now`: each stale
+  item against the text the rebuild would read), since a request stopped by
+  its own cancellation is refused and no rebuild may finish. The step that
+  applies a cancellation responds to moved evaluations, as every other step
+  that applies a notification does.
 - **The plan** takes the restarts (`batch::plan`'s `restarts`): a restarted
   request runs after every request the epoch held when it stopped and
   before any read later, and its fate is still decided by what arrived after
@@ -3653,12 +3660,14 @@ The oracle, as built:
   request then answers as it does unstopped. Swept over every such span of a
   cold hover, cold references, cold semantic tokens, a hover whose fold is
   cached and whose inference is not, `workspace/symbol` over two projects,
-  and `workspace/symbol` over three whose project files were all rewritten. Its first version sent the
+  `workspace/symbol` over three whose project files were all rewritten, and
+  a hover whose ownership walk weighs three rewritten projects. Its first version sent the
   notification only as a unit began, over the three cold requests; Codex
   found two units it let begin after a notification (the next project's
   first parse in `workspace/symbol`, and cold inference after a cached
   prefix) and, in its third round, a third (the next ownership walk's
-  evaluation in `workspace/symbol`); and the plant of a missing checkpoint
+  evaluation in `workspace/symbol`), in its fourth a fourth (the next
+  candidate of one ownership walk); and the plant of a missing checkpoint
   after the handler passed it once every unit was followed by one. Each was
   a scenario the sweep did not have, so each is now one of its scenarios.
 - `dispatch_coalescing::an_edit_that_arrives_mid_request_is_answered_before_it`:
@@ -3687,6 +3696,9 @@ and the state machine's warm and stopping properties):
 | a stopped run doing its follow-ups (a moved evaluation's response, the deferral report) before its step ends | the same scenario: re-walking every open buffer's owner evaluates the other two |
 | a stopped fold's partial parses cached as the project's | the latency sweep, the stopping state machine |
 | the stale parses lost on a stop (the rebuild's refresh decision) | `a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change` (added for it: it passed everything else) |
+| the stale parses kept for a rebuild that a cancellation refuses (Codex) | the same test, once it also cancelled the request it stopped |
+| the cancellation's step not responding to a moved evaluation a stopped request left (Codex) | `a_request_cancelled_mid_evaluation_still_reports_the_moved_evaluation` (added for it) |
+| no checkpoint between the candidates an ownership walk weighs (Codex) | the latency sweep, once it covered a directory of three projects that all evaluate again |
 | an unbounded inbox | `a_full_inbox_holds_the_sender_back` |
 | an unbounded epoch | `the_epoch_holds_at_most_its_bound` |
 | a stopped request answered as well as run again | the coalescing property, the latency sweep, the gate in small, the stopping state machine |

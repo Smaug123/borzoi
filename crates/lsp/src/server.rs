@@ -1046,6 +1046,10 @@ impl Dispatcher {
                         if let Some(in_flight) = self.sweep.take() {
                             self.sweep = cancel_sweep_if_named(connection, in_flight, id.as_ref())?;
                         }
+                        // A request stopped for this cancellation left what a
+                        // moved evaluation owes the client to the step that
+                        // applies it, which is this one.
+                        respond_to_moved_evaluations(state, connection);
                         // Including a diagnostic refresh a just-cancelled
                         // sweep was holding.
                         maybe_send_refresh(state, connection, SweepStatus::of(&self.sweep));

@@ -94,7 +94,7 @@ pub fn handle_watched(
         // Each ownership walk may evaluate a project: a unit of its own.
         watch.check()?;
         if let Some(path) = &src.path
-            && let Some(project) = state.workspace.owning_project(path)
+            && let Some(project) = state.workspace.owning_project_watched(path, watch)?
             && !projects
                 .iter()
                 .any(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&project)))

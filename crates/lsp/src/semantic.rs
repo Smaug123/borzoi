@@ -1816,10 +1816,12 @@ impl SemanticState {
             let parses = match self.fold(project, workspace, docs, watch) {
                 Ok(Ok(parses)) => parses,
                 Err(Superseded) => {
-                    // The stale parses decide the refresh the rebuild owes;
-                    // the run that finishes the rebuild needs them.
-                    if let Some(stale) = stale {
-                        self.superseded.insert(key, stale);
+                    // The rebuild that would decide the refresh this
+                    // staleness owes may never finish (a request stopped by
+                    // its own cancellation is refused, not run again), so it
+                    // is decided now, against the texts it would read.
+                    if let Some(stale) = &stale {
+                        self.owe_refresh_for_unannounced_now(stale, docs);
                     }
                     return Err(Superseded);
                 }
@@ -1947,11 +1949,8 @@ impl SemanticState {
         fresh: &ProjectParses,
         docs: &Vfs,
     ) {
-        let synced_from_a_buffer = |path: &Path, now: &Arc<str>| {
-            docs.buffer_uri(path)
-                .and_then(|uri| docs.get(uri))
-                .is_some_and(|buffer| Arc::ptr_eq(buffer, now))
-        };
+        let synced_from_a_buffer =
+            |path: &Path, now: &Arc<str>| synced_from_a_buffer(docs, path, now);
         let unannounced = stale.parses.paths != fresh.paths
             || stale
                 .parses
@@ -1960,6 +1959,30 @@ impl SemanticState {
                 .zip(stale.parses.texts.iter().zip(&fresh.texts))
                 .filter(|(_, (before, now))| !(Arc::ptr_eq(before, now) || ***before == ***now))
                 .any(|(path, (_, now))| !synced_from_a_buffer(path, now));
+        if unannounced {
+            self.wants_refresh = true;
+        }
+    }
+
+    /// [`Self::owe_refresh_for_unannounced`] for a rebuild that stopped
+    /// before it read every item: each of `stale`'s items against the text
+    /// the rebuild would read for it now (the evaluation is the one `stale`
+    /// was folded under, so the Compile list is too). An item that can no
+    /// longer be read has moved, to nothing a buffer announced.
+    fn owe_refresh_for_unannounced_now(&mut self, stale: &CachedParses, docs: &Vfs) {
+        let unannounced =
+            stale
+                .parses
+                .paths
+                .iter()
+                .zip(&stale.parses.texts)
+                .any(|(path, before)| match docs.text_of(path) {
+                    Some(now) => {
+                        !(Arc::ptr_eq(before, &now) || **before == *now)
+                            && !synced_from_a_buffer(docs, path, &now)
+                    }
+                    None => true,
+                });
         if unannounced {
             self.wants_refresh = true;
         }
@@ -2048,6 +2071,15 @@ impl SemanticState {
             None => FoldOutcome::Unknown,
         }
     }
+}
+
+/// Whether `now`, the text `path` reads, is the open buffer's: the buffer's
+/// opening or one of its edits, each of which owed the refresh when it was
+/// synced ([`SemanticState::owe_token_refresh`]).
+fn synced_from_a_buffer(docs: &Vfs, path: &Path, now: &Arc<str>) -> bool {
+    docs.buffer_uri(path)
+        .and_then(|uri| docs.get(uri))
+        .is_some_and(|buffer| Arc::ptr_eq(buffer, now))
 }
 
 /// Build the compile-ordered parses for a fresh cache miss. Pure (modulo
