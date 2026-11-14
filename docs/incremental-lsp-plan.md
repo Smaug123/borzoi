@@ -3680,7 +3680,11 @@ The oracle, as built:
   `a_restarted_request_waits_behind_the_requests_read_while_it_ran`.
 - The loop tests that queue a script before the loop starts send it into the
   inbox itself (`inbox::channel`), so all of it is waiting when the loop
-  starts, as before.
+  starts, as before. `the_loop_reads_again_before_each_message_it_handles`
+  hands its late change to the inbox between two steps of a `Dispatcher`,
+  not from a `tracing` subscriber at the end of the first generation, which
+  under parallel tests could miss that event (Codex saw it fail once in
+  three runs).
 
 Planted, each caught, then removed (each run against the `inbox` and
 `batch` unit tests, `dispatch_coalescing`, `workspace_diagnostic_sweep`,

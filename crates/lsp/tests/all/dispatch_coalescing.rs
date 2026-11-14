@@ -1748,82 +1748,25 @@ fn a_superseded_change_publishes_nothing() {
     });
 }
 
-/// Sends messages to the loop (the closure it holds) when the server
-/// ends its first generation: as a client's messages arrive while the loop is
-/// handling one.
-type Sending = Box<dyn FnOnce() + Send>;
-
-struct SendAtFirstGeneration(Mutex<Option<Sending>>);
-
-impl tracing::Subscriber for SendAtFirstGeneration {
-    fn register_callsite(
-        &self,
-        metadata: &'static tracing::Metadata<'static>,
-    ) -> tracing::subscriber::Interest {
-        if self.enabled(metadata) {
-            tracing::subscriber::Interest::always()
-        } else {
-            tracing::subscriber::Interest::sometimes()
-        }
-    }
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.is_event() && metadata.name() == borzoi::observed::GENERATION_EVENT
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, _: &tracing::Event<'_>) {
-        if let Some(send) = self.0.lock().unwrap().take() {
-            send();
-        }
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
-
 /// The loop reads its inbox again before each message it handles: a
 /// change that arrives while it handles an earlier message refuses a request
-/// it had read before the change arrived.
+/// it had read before the change arrived. The change is sent through the
+/// inbox once the first step is done, as the input thread hands over a
+/// message that arrives then.
 #[test]
 fn the_loop_reads_again_before_each_message_it_handles() {
     on_server_stack(|| {
         let world = World::new();
         let b = world.uri(Doc::Src(Src::B));
-        let (server, client) = Connection::memory();
-        let (input, inbox) = borzoi::inbox::channel(borzoi::server::INPUT_BUFFER);
-        input.send(did_open(&b, Src::B.text(0))).unwrap();
-        input.send(hover_b(&world, "h1")).unwrap();
-        let late = vec![
-            did_change(&b, Src::B.text(1)),
-            request("s", "shutdown", Value::Null),
-            notification("exit", Value::Null),
-        ];
-        let subscriber = SendAtFirstGeneration(Mutex::new(Some(Box::new(move || {
-            for message in late {
-                input.send(message).unwrap();
-            }
-        }))));
-        let mut state = State::new();
-        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
-            dotnet_root: Some(world.root.join("no-dotnet")),
-            ..SdkDiscoveryEnv::default()
-        });
-        tracing::subscriber::with_default(subscriber, || {
-            borzoi::server::run_inbox(&server, inbox, state, None).expect("the loop ends cleanly")
-        });
-        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
-        for message in client.receiver.try_iter() {
-            if let Message::Response(response) = message {
-                answers
-                    .entry(response.id.clone())
-                    .or_default()
-                    .push(response);
-            }
-        }
+        let mut session = Session::start(&world.root, false);
+        session
+            .dispatcher
+            .admit([did_open(&b, Src::B.text(0)), hover_b(&world, "h1")]);
+        assert_eq!(session.step(), Progress::Handled, "the open");
+        session.input.send(did_change(&b, Src::B.text(1))).unwrap();
+        session.run_out();
+        let answers = session.absorb();
         assert_eq!(error_code(&answers, "h1"), CONTENT_MODIFIED);
-        assert_eq!(error_code(&answers, "s"), None);
     });
 }
 
