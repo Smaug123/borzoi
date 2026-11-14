@@ -641,15 +641,22 @@ fn identities_decoding_loses_the_spelling_of() {
     }
 }
 
-/// Expressions whose quoted strings the XML reader and MSBuild read apart: a
-/// line break inside any of MSBuild's quotes (`'`, `"`, `` ` ``), which XML
+/// Expressions the XML reader and MSBuild read apart: a line break inside
+/// any of MSBuild's quotes (`'`, `"`, `` ` ``), nested ones too, which XML
 /// attribute normalisation turns into a space, in a condition and in a
 /// target list; a quote spelt as an entity; and an item list inside a
 /// property function's quoted argument, past parentheses the quote holds.
 /// Each run may decline; if it runs, it must be MSBuild's.
 #[test]
 fn quoted_expressions_read_as_msbuild_reads_them() {
-    const CASES: [&str; 6] = [
+    const CASES: [&str; 7] = [
+        "<Project>
+           <PropertyGroup><A>x y</A></PropertyGroup>
+           <Target Name=\"T0\"
+                   Condition=\"$([System.String]::IsNullOrEmpty('$(A.TrimStart('x\ny'))'))\">
+             <PropertyGroup><C>ran</C></PropertyGroup>
+           </Target>
+         </Project>",
         "<Project>
            <PropertyGroup><A>x y</A></PropertyGroup>
            <Target Name=\"T0\" Condition=\"$(A.Split(`\n`).Length) == 2\">

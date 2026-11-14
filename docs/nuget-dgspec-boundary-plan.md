@@ -1994,14 +1994,16 @@ the two differ where it matters:
   item reference in a function's arguments (MSBuild expands properties
   first, so the function receives the reference as text).
 - **Conditions and target lists** (`DependsOnTargets`, `BeforeTargets`,
-  `AfterTargets`) are expressions, read alike. Entities decode alike in
-  MSBuild and the XML reader, and outside a quoted string a line break is
-  whitespace either way. A tab or line break inside a quoted string (a
-  condition's `'`, or the `'`, `"` or `` ` `` of a property function's
-  argument), which MSBuild keeps and the XML reader normalises, declines, as
-  does a quote or character spelt as an entity (`&apos;`, `&quot;`, `&#…;`),
-  which the scan for quotes cannot see. The walk does not yet read its own
-  conditions this way (#750).
+  `AfterTargets`) are read as MSBuild reads them: the source text with XML's
+  five entities decoded and its whitespace kept. MSBuild does not normalise
+  attribute values, so a tab or line feed inside a quoted string is itself,
+  not the space the XML reader makes it. The reader's value only checks that
+  this is the one difference; a carriage return, a character reference or
+  another entity declines. The condition and expression evaluators are
+  graded on such text by the whitespace axes of `condition_diff` and
+  `property_expr_diff` (the oracle's `eval` op writes the condition's
+  whitespace as character references, so MSBuild sees it unnormalised). The
+  walk still reads its own conditions normalised (#750).
 - **A task whose condition is false** does not run, in MSBuild or here: only
   one that would run declines. But MSBuild looks for batching in a task's
   parameters before its condition, so a task mentioning `%(…)` declines

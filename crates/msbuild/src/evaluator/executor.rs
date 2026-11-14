@@ -115,8 +115,14 @@ const ITEM_LIST_PROPERTY: &str = "-ItemList-";
 
 struct Decline(String);
 
+/// A decline, its reason on one line: the expressions it quotes are read with
+/// their whitespace kept ([`expression_attribute`]), and are shown as the XML
+/// reader would give them, each tab, line break and CRLF a space.
 fn decline<T>(why: impl Into<String>) -> Result<T, Decline> {
-    Err(Decline(why.into()))
+    let why: String = why.into();
+    Err(Decline(
+        why.replace("\r\n", " ").replace(['\t', '\n', '\r'], " "),
+    ))
 }
 
 /// A target definition, parsed.
@@ -1061,13 +1067,14 @@ fn respellable(identity: &str) -> bool {
 const QUOTES: [char; 3] = ['\'', '"', '`'];
 
 /// `node`'s attribute `name` holding an expression (a condition, a target
-/// list), as MSBuild reads it. Entities decode alike in MSBuild and the XML
-/// reader, and outside a quoted string a tab or line break is whitespace
-/// either way; only inside one would the XML reader's normalisation (to a
-/// space) and MSBuild's literal character differ, so that declines. So does a
-/// quote or character spelt as an entity (`&apos;`, `&quot;`, `&#…;`), which
-/// the scan for quotes cannot see. (The walk does not yet read its
-/// conditions this way: #750.)
+/// list), as MSBuild reads it: the source text with its entities decoded and
+/// its whitespace kept. MSBuild normalises neither attribute values nor line
+/// ends (probed: a quoted CRLF reaches a property function as two characters,
+/// a lone CR as one), so a tab, line feed or carriage return reaches the
+/// expression as itself, where the XML reader's value has a space for each
+/// (and for each CRLF); that value serves only to check that this is the one
+/// difference. A character reference or an entity other than XML's five
+/// declines. (The walk still reads its conditions normalised: #750.)
 fn expression_attribute(node: Node<'_, '_>, name: &str) -> Result<Option<String>, Decline> {
     let Some(attr) = node.attributes().find(|a| a.name() == name) else {
         return Ok(None);
@@ -1077,21 +1084,40 @@ fn expression_attribute(node: Node<'_, '_>, name: &str) -> Result<Option<String>
         .input_text()
         .get(attr.range_value())
         .unwrap_or_default();
-    if raw.contains("&#") || raw.contains("&apos;") || raw.contains("&quot;") {
-        return decline(format!("the {name} {raw} spells a character as an entity"));
+    let Some(text) = decode_predefined_entities(raw) else {
+        return decline(format!(
+            "the {name} {raw} holds a character reference or an entity of its own"
+        ));
+    };
+    if text.replace("\r\n", "\n").replace(['\t', '\n', '\r'], " ") != attr.value() {
+        return decline(format!(
+            "the {name} {raw} reads apart from the XML reader's value"
+        ));
     }
-    let mut quote: Option<char> = None;
-    for c in raw.chars() {
-        match quote {
-            None if QUOTES.contains(&c) => quote = Some(c),
-            Some(open) if c == open => quote = None,
-            Some(_) if matches!(c, '\t' | '\n' | '\r') => {
-                return decline(format!("the {name} {raw} breaks a line inside a quote"));
-            }
-            _ => {}
-        }
+    Ok(Some(text))
+}
+
+/// `raw` with XML's five predefined entities decoded; `None` for any other
+/// `&`, a character reference among them.
+fn decode_predefined_entities(raw: &str) -> Option<String> {
+    const ENTITIES: [(&str, char); 5] = [
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&amp;", '&'),
+        ("&quot;", '"'),
+        ("&apos;", '\''),
+    ];
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let (entity, c) = ENTITIES.iter().find(|(e, _)| rest.starts_with(e))?;
+        out.push(*c);
+        rest = &rest[entity.len()..];
     }
-    Ok(Some(attr.value().to_owned()))
+    out.push_str(rest);
+    Some(out)
 }
 
 /// Whether an `@(` in `raw` sits inside a `$(…)` (a property function's
