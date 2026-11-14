@@ -300,6 +300,7 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
         properties: Vec::new(),
         item_types: ITEM_TYPES.iter().map(|t| (*t).to_owned()).collect(),
         targets: Vec::new(),
+        execute: None,
     };
     let (_, reads) = parse_fsproj_reads(
         xml,

@@ -90,6 +90,15 @@
 ///     definition it keeps is, or null.
 ///     `{"ok":false}` when MSBuild rejects the project.
 ///
+///   {"op":"runTargets","path":s,"targets":[..],"properties":[..],"items":[..]}
+///     -> {"ok":true,"succeeded":b,"errors":[..],"targets":[name, ..],
+///         "properties":{name:value|null, ..},
+///         "items":{type:[{"identity":s,"metadata":{..}}, ..], ..}}
+///      | {"ok":false}                           // MSBuild rejects the project
+///     Evaluates the project file at `path`, builds `targets` on it in-process,
+///     and reads back every target that started, in order, and the properties
+///     and items the build leaves. A₁.3c's executor is held to it.
+///
 ///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"items":[fullPath, ..]}
 ///      | {"ok":false}                           // MSBuild rejects the project
@@ -885,6 +894,67 @@ let private respondTargetItems (root: JsonElement) : string =
                items = items |}
     | None -> JsonSerializer.Serialize {| ok = false |}
 
+/// The `runTargets` op: evaluate the project file at `path`, build `targets`
+/// on that evaluation in-process, and read back every target that started, in
+/// order, each named property (null when unset), and each named item type's
+/// items with their metadata. `None` when MSBuild rejects the project at
+/// evaluation. What A₁.3c's executor is held to on generated targets.
+let private runTargets
+    (path: string)
+    (targets: string list)
+    (properties: string list)
+    (itemTypes: string list)
+    =
+    use collection = new ProjectCollection()
+
+    try
+        let instance =
+            ProjectInstance(path, Collections.Generic.Dictionary<string, string>(), null, collection)
+
+        let logger = ConeLogger()
+
+        let succeeded =
+            instance.Build(List.toArray targets, [ logger :> Microsoft.Build.Framework.ILogger ])
+
+        Some
+            {| ok = true
+               succeeded = succeeded
+               errors = logger.Errors
+               targets = logger.Targets |> List.map (fun t -> t.Name)
+               properties =
+                properties
+                |> List.map (fun name ->
+                    match instance.GetProperty name with
+                    | null -> (name, null)
+                    | p -> (name, p.EvaluatedValue))
+                |> dict
+               items =
+                itemTypes
+                |> List.map (fun itemType ->
+                    let items =
+                        instance.GetItems itemType
+                        |> Seq.map (fun item ->
+                            {| identity = item.EvaluatedInclude
+                               metadata =
+                                item.Metadata
+                                |> Seq.sortBy (fun m -> m.Name)
+                                |> Seq.map (fun m -> (m.Name, m.EvaluatedValue))
+                                |> dict |})
+                        |> List.ofSeq
+
+                    (itemType, items))
+                |> dict |}
+    with :? InvalidProjectFileException ->
+        None
+
+let private respondRunTargets (root: JsonElement) : string =
+    let names (field: string) =
+        root.GetProperty(field).EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
+
+    match runTargets (root.GetProperty("path").GetString()) (names "targets") (names "properties") (names "items") with
+    | Some answer -> JsonSerializer.Serialize answer
+    | None -> JsonSerializer.Serialize {| ok = false |}
+
 /// Register the MSBuild the oracle runs. With no arguments, the SDK `dotnet`
 /// resolves from the working directory (`RegisterDefaults`). With
 /// `--msbuild-sdk <dir>`, the SDK installed at `<dir>` (`<root>/sdk/<version>`),
@@ -957,6 +1027,7 @@ let main argv =
                     | "restoreCone" -> respondRestoreCone root
                     | "evaluated" -> respondEvaluated root
                     | "targetItems" -> respondTargetItems root
+                    | "runTargets" -> respondRunTargets root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}

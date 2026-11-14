@@ -776,7 +776,9 @@ fn reads(
     sdk: &str,
     prefix: &str,
 ) -> Vec<(String, String)> {
-    use borzoi_msbuild::test_support::{InexactUnset, PropertyRead, ReadProbe, parse_fsproj_reads};
+    use borzoi_msbuild::test_support::{
+        ExecutionProbe, ExecutionRead, InexactUnset, PropertyRead, ReadProbe, parse_fsproj_reads,
+    };
     use borzoi_msbuild::{SdkVersion, VersionSpec, glob_resolver, resolve_sdk, workloads};
 
     let text = cone_text(cone, &subject.key);
@@ -840,6 +842,12 @@ fn reads(
         properties: properties.iter().map(|p| (*p).to_owned()).collect(),
         item_types: items.iter().map(|i| (*i).to_owned()).collect(),
         targets: own_targets.iter().map(|name| (*name).to_owned()).collect(),
+        // Where the executor stops on the cone's entry target: the next
+        // construct A₁.3c has to model.
+        execute: Some(ExecutionProbe {
+            targets: vec!["GenerateRestoreGraphFile".to_owned()],
+            ..ExecutionProbe::default()
+        }),
     };
     let (parsed, ours) = parse_fsproj_reads(
         &source,
@@ -989,6 +997,11 @@ fn reads(
         format!("{prefix} retains its targets"),
         format!("{retained} as MSBuild ran them, {inexact} not exact"),
     ));
+    let execution = match ours.execution.as_ref().expect("the census asks for a run") {
+        ExecutionRead::Ran { targets, .. } => format!("ran {} targets", targets.len()),
+        ExecutionRead::Declined(why) => format!("declines: {why}"),
+    };
+    out.push((format!("{prefix} runs GenerateRestoreGraphFile"), execution));
     out
 }
 

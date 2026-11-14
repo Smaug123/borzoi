@@ -74,6 +74,7 @@ pub fn property_references(raw: &str) -> Vec<&str> {
     crate::properties::property_references(raw).collect()
 }
 
+pub use crate::evaluator::executor::{ExecutedItem, ExecutionProbe, ExecutionRead};
 pub use crate::evaluator::reads::{
     EvaluationReads, InexactUnset, ItemRead, ItemRow, PropertyRead, ReadProbe, TargetDefinition,
     TargetRead,

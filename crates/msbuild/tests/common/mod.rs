@@ -584,6 +584,26 @@ impl Oracle {
         )
     }
 
+    /// The `runTargets` op: build `targets` on `path`'s evaluation and read
+    /// back the targets that started, in order, and `properties` and `items`
+    /// as the build leaves them. `None` when MSBuild rejects the project.
+    pub fn run_targets(
+        &mut self,
+        path: &Path,
+        targets: &[&str],
+        properties: &[&str],
+        items: &[&str],
+    ) -> Option<serde_json::Value> {
+        let answer = self.request(&serde_json::json!({
+            "op": "runTargets",
+            "path": path.to_str().expect("UTF-8 project path"),
+            "targets": targets,
+            "properties": properties,
+            "items": items,
+        }));
+        (answer["ok"] == serde_json::Value::Bool(true)).then_some(answer)
+    }
+
     /// The `items` op enriched for dependency items, where `FullPath` is
     /// meaningless: each evaluated item of `item_type` comes back as its
     /// identity (`EvaluatedInclude` — what `Update`/`Remove` match against) and
