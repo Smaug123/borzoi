@@ -3015,8 +3015,8 @@ The oracle:
 
 **Measured** on WoofWare.Incremental, each row the minimum over three runs of
 each binary: Stage 6b's head with this stage's `own-save` script (fcbbc7ed)
-and this stage (merged with `main` at 93abbbc5, whose changes since 6b are
-outside the LSP). The keystroke script ran 20 keystrokes per run; the three
+and this stage at f1cc6641 (merged with `main` at 93abbbc5, whose changes
+since 6b are outside the LSP). The keystroke script ran 20 keystrokes per run; the three
 save scripts 5 rounds per run, each round the save's watch event and then
 the keystroke's requests. The on-disk assembly cache is off.
 
@@ -3024,9 +3024,9 @@ The headline, per round:
 
 | round of | instructions 6b | 7 | allocs 6b | 7 | evaluations 6b | 7 | parses 6b | 7 | envs built 6b | 7 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| a save of an unrelated project's `.fsproj` | 1,238.6 M | **48.9 M** | 582,997 | 7,438 | 1 | **0** | 82 | **0** | 0 | 0 |
-| a save of the project's own `.fsproj`, unchanged | 3,779.5 M | **58.8 M** | 4,000,900 | 9,777 | 1 | **0** | 82 | **0** | 1 | **0** |
-| a build of an unrelated project | 37.6 M | 38.5 M | 7,128 | 7,378 | 0 | 0 | 0 | 0 | 0 | 0 |
+| a save of an unrelated project's `.fsproj` | 1,238.6 M | **49.2 M** | 582,997 | 7,431 | 1 | **0** | 82 | **0** | 0 | 0 |
+| a save of the project's own `.fsproj`, unchanged | 3,779.5 M | **59.1 M** | 4,000,900 | 9,770 | 1 | **0** | 82 | **0** | 1 | **0** |
+| a build of an unrelated project | 37.6 M | 38.8 M | 7,128 | 7,378 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 No round folds (`f.new` is 0 on every row after the event). Per message, the
 `stat`s (sources, evaluation confirmation, ownership, env confirmation) and
@@ -3055,13 +3055,13 @@ The keystroke:
 
 | message, per keystroke | instructions 6b | 7 | allocs 6b | 7 |
 |---|---:|---:|---:|---:|
-| `didChange E` | 0.17 M | **0.04 M** | 99 | 41 |
+| `didChange E` | 0.17 M | **0.02 M** | 99 | 30 |
 | `diagnostic E` | 3.42 M | 3.44 M | 247 | 248 |
 | `diagnostic L` (`unchanged`) | 2.68 M | 2.70 M | 84 | 84 |
-| `semanticTokens E` | 9.10 M | 9.28 M | 4,932 | 5,010 |
-| `semanticTokens L` | 13.04 M | 13.08 M | 11,447 | 11,450 |
-| `hover L` | 8.41 M | 8.44 M | 3,886 | 3,886 |
-| **keystroke total** | **36.84 M** | **37.06 M** | 20,695 | 20,719 |
+| `semanticTokens E` | 9.10 M | 9.34 M | 4,932 | 5,010 |
+| `semanticTokens L` | 13.04 M | 13.27 M | 11,447 | 11,450 |
+| `hover L` | 8.41 M | 8.48 M | 3,886 | 3,886 |
+| **keystroke total** | **36.84 M** | **37.30 M** | 20,695 | 20,708 |
 
 Every `stat` column is unchanged: 240 source `stat`s, 680 evaluation, 8
 ownership and 30 env `stat`s per keystroke, no opens. `didChange E` no longer
@@ -3069,7 +3069,9 @@ walks every cached project's Compile items to invalidate them. The fold the
 edit stales is now found by `semanticTokens E`'s validation, which compares
 items up to the edited one (index 10) before dropping the fold, and its
 rebuild compares the stale texts with the new to decide the refresh: 78
-allocations and 0.18 M. A first version decided it in validation, comparing
+allocations and about 0.2 M; the keystroke is 0.46 M (1.2%) dearer in all,
+most of it in rows whose work is unchanged and which moved by as much
+between this stage's own runs on earlier heads (37.06 M to 37.30 M). A first version decided it in validation, comparing
 every item, which cost 0.88 M and 525 allocations. The cold rows move within
 their runs' spread; the env's first confirmation (`semanticTokens L (cold)`)
 `stat`s 10 more paths, its root's canonical spelling now among its reads.
