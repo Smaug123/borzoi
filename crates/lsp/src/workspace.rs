@@ -7445,7 +7445,11 @@ mod tests {
             assert_eq!((first, reused), (4, 0));
             ws.drop_every_evaluation();
             assert!(ws.project(&project).is_some());
-            assert_eq!(parses(&ws), (first, 4), "nothing moved, so nothing is parsed");
+            assert_eq!(
+                parses(&ws),
+                (first, 4),
+                "nothing moved, so nothing is parsed"
+            );
             write_file(
                 &root.join("repo/common.props"),
                 "<Project><PropertyGroup><DefineConstants>$(DefineConstants);MOVED</DefineConstants></PropertyGroup></Project>",

@@ -891,7 +891,9 @@ impl Observer {
         let parsed = Arc::new(ParsedDocument::parse(text, digest).map_err(|e| (e, digest))?);
         if reusing {
             documents.parsed += 1;
-            documents.by_path.insert(key.to_owned(), Arc::clone(&parsed));
+            documents
+                .by_path
+                .insert(key.to_owned(), Arc::clone(&parsed));
         }
         Ok(parsed)
     }
