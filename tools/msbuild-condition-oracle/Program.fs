@@ -38,7 +38,7 @@
 ///     generative sweep cannot afford.
 ///
 ///   {"op":"itemsMeta","xml":s,"path":s,"itemType":s,"metadata":[name, ..]}
-///     -> {"ok":true,"items":[{"identity":s,"metadata":{name:value, ..}}, ..]}
+///     -> {"ok":true,"items":[{"identity":s,"escaped":s,"metadata":{name:value, ..}}, ..]}
 ///      | {"ok":false}                           // MSBuild rejects the project
 ///     The `items` op enriched for the *dependency* set, where `FullPath` is
 ///     meaningless: each evaluated item of `itemType` comes back as its
@@ -392,16 +392,36 @@ let private respondItems (root: JsonElement) : string =
     | Some items -> JsonSerializer.Serialize {| ok = true; items = items |}
     | None -> JsonSerializer.Serialize {| ok = false |}
 
+/// An item's include as MSBuild holds it, still escaped (`a%2Ex` where
+/// `EvaluatedInclude` reads `a.x`): the spelling every expansion of the item
+/// list and every metadata derivation starts from. MSBuild keeps it internal
+/// (`EvaluatedIncludeEscaped`, implementing `IItem`'s), so it is read by
+/// reflection. Lazily: `Microsoft.Build` must not load before
+/// `MSBuildLocator` has registered the SDK's copy.
+let private evaluatedIncludeEscapedProperty =
+    lazy
+        (let flags =
+            Reflection.BindingFlags.Instance
+            ||| Reflection.BindingFlags.Public
+            ||| Reflection.BindingFlags.NonPublic
+
+         typeof<ProjectItem>.GetProperties flags
+         |> Array.tryFind (fun p -> p.Name.EndsWith "EvaluatedIncludeEscaped")
+         |> Option.defaultWith (fun () -> failwith "ProjectItem has no EvaluatedIncludeEscaped"))
+
+let private evaluatedIncludeEscaped (item: ProjectItem) : string =
+    evaluatedIncludeEscapedProperty.Value.GetValue item :?> string
+
 /// The `items` op enriched for dependency items: each item's `EvaluatedInclude`
-/// (the identity `Update`/`Remove` match against) and the requested metadata's
-/// evaluated values, in evaluation order. `None` when MSBuild rejects the
-/// project.
+/// (the identity `Update`/`Remove` match against), its escaped spelling, and
+/// the requested metadata's evaluated values, in evaluation order. `None` when
+/// MSBuild rejects the project.
 let private evalItemsMeta
     (path: string)
     (xml: string)
     (itemType: string)
     (metadata: string list)
-    : (string * Map<string, string>) list option =
+    : (string * string * Map<string, string>) list option =
     use collection = new ProjectCollection()
 
     try
@@ -416,7 +436,7 @@ let private evalItemsMeta
                 |> List.map (fun name -> (name, item.GetMetadataValue name))
                 |> Map.ofList
 
-            (item.EvaluatedInclude, values))
+            (item.EvaluatedInclude, evaluatedIncludeEscaped item, values))
         |> List.ofSeq
         |> Some
     with :? InvalidProjectFileException ->
@@ -438,8 +458,9 @@ let private respondItemsMeta (root: JsonElement) : string =
             {| ok = true
                items =
                 items
-                |> List.map (fun (identity, values) ->
+                |> List.map (fun (identity, escaped, values) ->
                     {| identity = identity
+                       escaped = escaped
                        metadata = values |> Map.toSeq |> dict |}) |}
     | None -> JsonSerializer.Serialize {| ok = false |}
 

@@ -1224,6 +1224,8 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
             Some(true) => {}
             Some(false) => captured.push(EvaluatedItem {
                 identity,
+                #[cfg(any(test, feature = "test-support"))]
+                escaped_identity: Some(fragment.to_owned()),
                 metadata: metadata.values.clone(),
                 #[cfg(any(test, feature = "test-support"))]
                 exact_metadata: with_definitions(state, item_type, &metadata.exact),
@@ -1507,6 +1509,9 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
             let identity = ordered.identity.as_ref().filter(|id| !id.contains('\\'))?;
             Some(EvaluatedItem {
                 identity: identity.clone(),
+                // The reference capture keeps the identity decoded only.
+                #[cfg(any(test, feature = "test-support"))]
+                escaped_identity: None,
                 // We capture a reference's metadata in its own model, not as
                 // the package metadata a helper item records: a consumer
                 // reading one through the copy must treat it as unknown.
@@ -2331,7 +2336,11 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
                     PackageRefOp::Include => {
                         included_row(state, "PackageReference", &source, &exact)
                     }
-                    PackageRefOp::Update => EvaluatedItem::bare(&id).with_metadata_applied(&exact),
+                    // An `Update` row names the items it matches; it is never
+                    // one, so its own spelling is never read.
+                    PackageRefOp::Update => {
+                        EvaluatedItem::bare(&id, None).with_metadata_applied(&exact)
+                    }
                 },
                 id,
                 metadata,
@@ -3322,7 +3331,7 @@ fn resolve_dependency_identity_sources(
         let identity = fragment_identity(entry);
         resolved.push(DependencyIdentitySource {
             #[cfg(any(test, feature = "test-support"))]
-            row: EvaluatedItem::bare(&identity),
+            row: EvaluatedItem::bare(&identity, Some(entry)),
             #[cfg(any(test, feature = "test-support"))]
             direct: true,
             identity,
@@ -3369,11 +3378,13 @@ struct GenericItemMetadata {
 }
 
 impl EvaluatedItem {
-    /// An item of `identity` and no metadata, all of it known.
+    /// An item of `identity`, spelt `escaped` where that is known, and no
+    /// metadata, all of it known.
     #[cfg(any(test, feature = "test-support"))]
-    fn bare(identity: &str) -> EvaluatedItem {
+    fn bare(identity: &str, escaped: Option<&str>) -> EvaluatedItem {
         EvaluatedItem {
             identity: identity.to_owned(),
+            escaped_identity: escaped.map(str::to_owned),
             metadata: HashMap::new(),
             exact_metadata: HashMap::new(),
             metadata_uncertainties: Vec::new(),
@@ -3973,7 +3984,7 @@ fn push_include_entry(
     // own metadata.
     #[cfg(any(test, feature = "test-support"))]
     let row = metadata.row.as_ref().map(|exact| {
-        let mut row = EvaluatedItem::bare(&identity);
+        let mut row = EvaluatedItem::bare(&identity, Some(entry));
         row.exact_metadata = with_definitions(state, "ProjectReference", &row.exact_metadata);
         row.definitions_applied = true;
         row.with_metadata_applied(exact)
