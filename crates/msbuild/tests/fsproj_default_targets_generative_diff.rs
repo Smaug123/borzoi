@@ -23,8 +23,10 @@ use common::{Oracle, SplitMix64};
 const NAME: &str = "MSBuildProjectDefaultTargets";
 /// MSBuild stores the unescaped text as the escaped value, so `%2541` reads
 /// back as `A`. Blanks and separators set the property but list no target,
-/// so a later root may still set it.
-const VALUES: [&str; 11] = [
+/// so a later root may still set it. `%20` is trimmed before it is
+/// unescaped, so it lists the target " ".
+const VALUES: [&str; 12] = [
+    "%20",
     " ; ",
     "  ",
     "A",

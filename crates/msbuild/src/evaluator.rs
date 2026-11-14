@@ -6366,7 +6366,8 @@ fn resolve_property_import_target(
 /// whose `DefaultTargets` expands (properties only) to anything sets the
 /// property to that text, unescaped and untrimmed; MSBuild stores the
 /// unescaped text as the escaped value. The offer settles at the first root
-/// whose expansion lists a target (split on `;`, each trimmed), and nothing
+/// whose expansion lists a target (split on `;`, each trimmed before it is
+/// unescaped), and nothing
 /// changes the property after; a root that sets it to blanks or separators
 /// alone leaves the offer open.
 ///
@@ -6401,7 +6402,9 @@ fn latch_default_targets(root: Node<'_, '_>, state: &mut State<'_>) {
         .value
         .as_escaped()
         .split(';')
-        .any(|target| !properties::escaping::unescape(target).trim().is_empty());
+        // Trimmed in the escaped domain, before unescaping: `%20` lists the
+        // target " " (`EscapingUtilities.UnescapeAll(…, trim: true)`).
+        .any(|target| !target.trim().is_empty());
     state
         .lookup
         .insert_escaped("MSBuildProjectDefaultTargets", Escaped::from_xml(value));
