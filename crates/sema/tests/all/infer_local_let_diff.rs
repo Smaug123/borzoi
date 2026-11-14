@@ -980,27 +980,27 @@ fn ill_typed_and_unmodelled_patterns_commit_only_what_fcs_kept() {
 // ---------------------------------------------------------------------------
 
 /// SplitMix64: a deterministic stream, so a failing seed reproduces exactly.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         z ^ (z >> 31)
     }
-    fn below(&mut self, n: usize) -> usize {
+    pub(crate) fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
-    fn chance(&mut self, pct: usize) -> bool {
+    pub(crate) fn chance(&mut self, pct: usize) -> bool {
         self.below(100) < pct
     }
 }
 
 /// The ground types the generator builds expressions at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum T {
+pub(crate) enum T {
     Int,
     Str,
     Bool,
@@ -1011,11 +1011,11 @@ enum T {
     Opt,
 }
 
-const TYPES: [T; 6] = [T::Int, T::Str, T::Bool, T::Pair, T::Unit, T::Opt];
+pub(crate) const TYPES: [T; 6] = [T::Int, T::Str, T::Bool, T::Pair, T::Unit, T::Opt];
 
 /// What an in-scope name can be used as.
 #[derive(Debug, Clone, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     Mono(T),
     /// `'a -> 'a`: applicable at any type.
     Generic,
@@ -1026,9 +1026,9 @@ enum Kind {
 }
 
 #[derive(Debug, Clone)]
-struct Var {
-    name: String,
-    kind: Kind,
+pub(crate) struct Var {
+    pub(crate) name: String,
+    pub(crate) kind: Kind,
 }
 
 /// The generator's state for one function: the in-scope names, a fresh-name
@@ -1040,22 +1040,22 @@ struct Var {
 /// incomplete, no argument check fires in an incomplete binding, and so a rule
 /// that lets a use ground an open local only shows up in a binding that is
 /// otherwise complete.
-struct Gen<'r> {
-    rng: &'r mut Rng,
-    env: Vec<Var>,
-    next: usize,
-    generic_uses: Vec<(String, T)>,
-    modelled_only: bool,
+pub(crate) struct Gen<'r> {
+    pub(crate) rng: &'r mut Rng,
+    pub(crate) env: Vec<Var>,
+    pub(crate) next: usize,
+    pub(crate) generic_uses: Vec<(String, T)>,
+    pub(crate) modelled_only: bool,
     /// Use an open parameter wherever *any* type is asked for — the ill-typed
     /// family's lever: FCS fixes the parameter at its first use and reports the
     /// rest, and whatever we commit must still agree with what FCS kept. It also
     /// gives `.Length` receivers of any type, so FCS rejects some accesses.
-    open_anywhere: bool,
+    pub(crate) open_anywhere: bool,
     /// Generating under an expected type a coercion meets (an `obj`-annotated
     /// pattern element). FCS propagates that type into a pipe's result as an
     /// equality before it checks the pipe's arguments, so `(x |> mono)` there
     /// is rejected; no pipe is generated in such a position.
-    under_coercion: bool,
+    pub(crate) under_coercion: bool,
 }
 
 impl Gen<'_> {
@@ -1084,7 +1084,7 @@ impl Gen<'_> {
     }
 
     /// An expression of type `t`, built to `depth`.
-    fn expr(&mut self, t: T, depth: usize) -> String {
+    pub(crate) fn expr(&mut self, t: T, depth: usize) -> String {
         let vars = self.vars_of(&Kind::Mono(t));
         let opens = self.vars_of(&Kind::Open);
         if self.open_anywhere && !opens.is_empty() && self.rng.chance(20) {
@@ -1244,7 +1244,7 @@ impl Gen<'_> {
 
     /// A statement: a non-unit expression (FS0020 is a warning), `ignore` of
     /// one, or an open parameter (which the statement forces to `unit`).
-    fn statement(&mut self, depth: usize) -> String {
+    pub(crate) fn statement(&mut self, depth: usize) -> String {
         let opens = self.vars_of(&Kind::Open);
         if self.modelled_only {
             let t = TYPES[self.rng.below(TYPES.len())];
@@ -1265,7 +1265,7 @@ impl Gen<'_> {
 
     /// One local binding, returning its source text (`name = rhs` or a
     /// pattern form) and extending the environment with what it binds.
-    fn binding(&mut self, depth: usize) -> String {
+    pub(crate) fn binding(&mut self, depth: usize) -> String {
         let choice = if self.modelled_only {
             // The modelled shapes: a generic local, a tuple pattern, a
             // wildcard, and a plain value local.
@@ -1480,12 +1480,12 @@ impl Gen<'_> {
 /// the `pr` pair, `uu` (a pair FCS types but inference does not, so its
 /// variable is open in every later binding), and a module-level tuple
 /// pattern binding `hp` and `hq`.
-const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet mo (o: obj) = 3\n\
+pub(crate) const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet mo (o: obj) = 3\n\
                       let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n\
                       let ho = Some 5\nlet hn = None\n";
 
 /// The names every generated function body may use besides its parameters.
-fn header_vars() -> Vec<Var> {
+pub(crate) fn header_vars() -> Vec<Var> {
     vec![
         Var {
             name: "hp".into(),
@@ -1514,7 +1514,7 @@ fn header_vars() -> Vec<Var> {
 /// trailing wildcard, or a `()` element. With `shadowed`, sometimes binds `p` twice, the nested
 /// shape FCS accepts (a use means the inner `p`). Returns the function's name
 /// stem and its parameters.
-fn params(rng: &mut Rng, with_open: bool, shadowed: bool) -> (&'static str, String) {
+pub(crate) fn params(rng: &mut Rng, with_open: bool, shadowed: bool) -> (&'static str, String) {
     let open = if with_open { " p" } else { "" };
     if shadowed && with_open && rng.chance(20) {
         return ("tf", "((s: string, p), b: bool, p)".to_string());

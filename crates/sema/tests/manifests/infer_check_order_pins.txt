@@ -1,0 +1,63 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all infer_check_order_pins::
+access-before-grounding binder 4-6 `r6`	ours - fcs System.String -> 'a * System.Int32
+access-before-grounding binder 7-8 `x`	ours - fcs System.String
+access-before-grounding census	[]
+access-before-grounding fcs	errors FS0072
+access-before-grounding node 12-20 `x.Length`	ours - fcs 'a
+access-before-grounding node 12-29 `x.Length, monos x`	ours - fcs 'a * System.Int32
+access-before-grounding node 22-29 `monos x`	ours System.Int32 fcs System.Int32
+access-before-grounding node 28-29 `x`	ours - fcs System.String
+argument-check-before-a-complete-suffix binder 4-6 `r7`	ours Microsoft.FSharp.Core.Unit -> (System.Int32 * System.String) * Microsoft.FSharp.Core.FSharpOption<'a> fcs Microsoft.FSharp.Core.Unit -> (System.Int32 * System.String) * Microsoft.FSharp.Core.FSharpOption<'a>
+argument-check-before-a-complete-suffix binder 7-9 `()`	ours - fcs Microsoft.FSharp.Core.Unit
+argument-check-before-a-complete-suffix census	[]
+argument-check-before-a-complete-suffix fcs	clean
+argument-check-before-a-complete-suffix node 13-19 `idf uu`	ours System.Int32 * System.String fcs System.Int32 * System.String
+argument-check-before-a-complete-suffix node 13-25 `idf uu, None`	ours - fcs (System.Int32 * System.String) * Microsoft.FSharp.Core.FSharpOption<'a>
+argument-check-before-a-complete-suffix node 17-19 `uu`	ours - fcs System.Int32 * System.String
+argument-check-before-a-complete-suffix node 21-25 `None`	ours - fcs Microsoft.FSharp.Core.FSharpOption<'a>
+argument-check-before-an-unmodelled-suffix binder 4-6 `r8`	ours - fcs Microsoft.FSharp.Core.Unit -> (System.Int32 * System.String) * 'a
+argument-check-before-an-unmodelled-suffix binder 7-9 `()`	ours - fcs Microsoft.FSharp.Core.Unit
+argument-check-before-an-unmodelled-suffix census	[Unmodelled(TYPE_APP_EXPR)]
+argument-check-before-an-unmodelled-suffix fcs	clean
+argument-check-before-an-unmodelled-suffix node 13-19 `idf uu`	ours - fcs System.Int32 * System.String
+argument-check-before-an-unmodelled-suffix node 13-43 `idf uu, Unchecked.defaultof<_>`	ours - fcs (System.Int32 * System.String) * 'a
+argument-check-before-an-unmodelled-suffix node 17-19 `uu`	ours - fcs System.Int32 * System.String
+argument-check-before-an-unmodelled-suffix node 21-40 `Unchecked.defaultof`	ours - fcs 'a
+id-wrapped-access binder 4-6 `r5`	ours System.String -> System.Int32 fcs System.String -> System.Int32
+id-wrapped-access binder 8-9 `x`	ours System.String fcs System.String
+id-wrapped-access census	[]
+id-wrapped-access fcs	clean
+id-wrapped-access node 21-35 `(idf x).Length`	ours System.Int32 fcs System.Int32
+id-wrapped-access node 22-27 `idf x`	ours System.String fcs System.String
+id-wrapped-access node 26-27 `x`	ours - fcs System.String
+id-wrapped-lambda-access binder 4-6 `r3`	ours System.Int32 fcs System.Int32
+id-wrapped-lambda-access census	[Lambda]
+id-wrapped-lambda-access fcs	clean
+id-wrapped-lambda-access node 16-39 `idf (fun s -> s.Length)`	ours - fcs System.String -> System.Int32
+id-wrapped-lambda-access node 21-38 `fun s -> s.Length`	ours - fcs System.String -> System.Int32
+id-wrapped-lambda-access node 30-31 `s`	ours - fcs System.String
+id-wrapped-lambda-access node 30-38 `s.Length`	ours - fcs System.Int32
+id-wrapped-lambda-access node 9-40 `apply (idf (fun s -> s.Length))`	ours System.Int32 fcs System.Int32
+lambda-access binder 4-6 `r4`	ours System.Int32 fcs System.Int32
+lambda-access census	[Lambda]
+lambda-access fcs	clean
+lambda-access node 16-33 `fun s -> s.Length`	ours - fcs System.String -> System.Int32
+lambda-access node 25-26 `s`	ours - fcs System.String
+lambda-access node 25-33 `s.Length`	ours - fcs System.Int32
+lambda-access node 9-34 `apply (fun s -> s.Length)`	ours System.Int32 fcs System.Int32
+singleton-into-obj-list binder 4-6 `r1`	ours System.String -> System.Int32 fcs System.String -> System.Int32
+singleton-into-obj-list binder 8-9 `y`	ours System.String fcs System.String
+singleton-into-obj-list census	[]
+singleton-into-obj-list fcs	clean
+singleton-into-obj-list node 21-36 `g (singleton y)`	ours System.Int32 fcs System.Int32
+singleton-into-obj-list node 24-35 `singleton y`	ours - fcs Microsoft.FSharp.Collections.FSharpList<System.Object>
+singleton-into-obj-list node 34-35 `y`	ours - fcs System.Object
+singleton-into-string-list binder 4-6 `r2`	ours System.String -> System.Int32 fcs System.String -> System.Int32
+singleton-into-string-list binder 8-9 `y`	ours System.String fcs System.String
+singleton-into-string-list census	[]
+singleton-into-string-list fcs	clean
+singleton-into-string-list node 21-37 `gs (singleton y)`	ours System.Int32 fcs System.Int32
+singleton-into-string-list node 25-36 `singleton y`	ours - fcs Microsoft.FSharp.Collections.FSharpList<System.String>
+singleton-into-string-list node 35-36 `y`	ours - fcs System.String

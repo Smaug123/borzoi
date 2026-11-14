@@ -5,11 +5,11 @@
 //! Generated from `crates/cst/facades/v9.lock` and the union's lock.
 //!
 //! The **F# 9.0** typed facade (`docs/ast-versioning-plan.md` D4): every node
-//! type and enum of the F# 9.0 / F# 10.0 / F# 11.0 surface, each a newtype over the union's, with
+//! type and enum of the F# 9.0 / F# 10.0 surface, each a newtype over the union's, with
 //! accessors that re-cast the union's results. A node outside the surface
 //! reads as an absent child. Read a parse through it with
 //! [`Parse::view`](crate::parser::Parse::view).
-//! `v10`, `v11` have the same surface, so they re-export this module's types.
+//! `v10` has the same surface, so it re-exports this module's types.
 
 use crate::language_version::LanguageVersion;
 use crate::syntax::union as u;
@@ -1419,6 +1419,30 @@ pub enum TyparDeclsForm {
     SinglePrefix,
 }
 
+impl ActivePatName {
+    pub(crate) fn from_union(node: u::ActivePatName) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AnonRecdTypeField {
+    pub(crate) fn from_union(node: u::AnonRecdTypeField) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl Attribute {
+    pub(crate) fn from_union(node: u::Attribute) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AttributeList {
+    pub(crate) fn from_union(node: u::AttributeList) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
 impl AutoPropertyKind {
     pub(crate) fn from_union(value: u::AutoPropertyKind) -> Self {
         match value {
@@ -1430,78 +1454,209 @@ impl AutoPropertyKind {
     }
 }
 
+impl Binding {
+    pub(crate) fn from_union(node: u::Binding) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ConstExpr {
+    pub(crate) fn from_union(node: u::ConstExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ConstPat {
+    pub(crate) fn from_union(node: u::ConstPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl EnumCase {
+    pub(crate) fn from_union(node: u::EnumCase) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
 impl Expr {
     pub(crate) fn from_union(value: u::Expr) -> Option<Self> {
         Some(match value {
-            u::Expr::AddressOf(n) => Expr::AddressOf(AddressOfExpr(n)),
-            u::Expr::AnonRecd(n) => Expr::AnonRecd(AnonRecdExpr(n)),
-            u::Expr::App(n) => Expr::App(AppExpr(n)),
-            u::Expr::ArrayOrList(n) => Expr::ArrayOrList(ArrayOrListExpr(n)),
-            u::Expr::Assert(n) => Expr::Assert(AssertExpr(n)),
-            u::Expr::Assign(n) => Expr::Assign(AssignExpr(n)),
-            u::Expr::Computation(n) => Expr::Computation(ComputationExpr(n)),
-            u::Expr::Cons(n) => Expr::Cons(ConsExpr(n)),
-            u::Expr::Const(n) => Expr::Const(ConstExpr(n)),
-            u::Expr::Do(n) => Expr::Do(DoExpr(n)),
-            u::Expr::DoBang(n) => Expr::DoBang(DoBangExpr(n)),
-            u::Expr::DotGet(n) => Expr::DotGet(DotGetExpr(n)),
-            u::Expr::DotIndexedGet(n) => Expr::DotIndexedGet(DotIndexedGetExpr(n)),
-            u::Expr::DotLambda(n) => Expr::DotLambda(DotLambdaExpr(n)),
-            u::Expr::DotMissing(n) => Expr::DotMissing(DotMissingExpr(n)),
-            u::Expr::Downcast(n) => Expr::Downcast(DowncastExpr(n)),
-            u::Expr::Dynamic(n) => Expr::Dynamic(DynamicExpr(n)),
-            u::Expr::Fixed(n) => Expr::Fixed(FixedExpr(n)),
-            u::Expr::For(n) => Expr::For(ForExpr(n)),
-            u::Expr::ForEach(n) => Expr::ForEach(ForEachExpr(n)),
-            u::Expr::Fun(n) => Expr::Fun(FunExpr(n)),
-            u::Expr::Ident(n) => Expr::Ident(IdentExpr(n)),
-            u::Expr::IfThenElse(n) => Expr::IfThenElse(IfThenElseExpr(n)),
-            u::Expr::IndexRange(n) => Expr::IndexRange(IndexRangeExpr(n)),
-            u::Expr::InferredDowncast(n) => Expr::InferredDowncast(InferredDowncastExpr(n)),
-            u::Expr::InferredUpcast(n) => Expr::InferredUpcast(InferredUpcastExpr(n)),
-            u::Expr::InlineIl(n) => Expr::InlineIl(InlineIlExpr(n)),
-            u::Expr::InterpString(n) => Expr::InterpString(InterpStringExpr(n)),
-            u::Expr::JoinIn(n) => Expr::JoinIn(JoinInExpr(n)),
-            u::Expr::Lazy(n) => Expr::Lazy(LazyExpr(n)),
-            u::Expr::LetOrUse(n) => Expr::LetOrUse(LetOrUseExpr(n)),
-            u::Expr::LibraryOnlyFieldGet(n) => {
-                Expr::LibraryOnlyFieldGet(LibraryOnlyFieldGetExpr(n))
+            u::Expr::AddressOf(n) => Expr::AddressOf(AddressOfExpr::from_union(n)?),
+            u::Expr::AnonRecd(n) => Expr::AnonRecd(AnonRecdExpr::from_union(n)?),
+            u::Expr::App(n) => Expr::App(AppExpr::from_union(n)?),
+            u::Expr::ArrayOrList(n) => Expr::ArrayOrList(ArrayOrListExpr::from_union(n)?),
+            u::Expr::Assert(n) => Expr::Assert(AssertExpr::from_union(n)?),
+            u::Expr::Assign(n) => Expr::Assign(AssignExpr::from_union(n)?),
+            u::Expr::Computation(n) => Expr::Computation(ComputationExpr::from_union(n)?),
+            u::Expr::Cons(n) => Expr::Cons(ConsExpr::from_union(n)?),
+            u::Expr::Const(n) => Expr::Const(ConstExpr::from_union(n)?),
+            u::Expr::Do(n) => Expr::Do(DoExpr::from_union(n)?),
+            u::Expr::DoBang(n) => Expr::DoBang(DoBangExpr::from_union(n)?),
+            u::Expr::DotGet(n) => Expr::DotGet(DotGetExpr::from_union(n)?),
+            u::Expr::DotIndexedGet(n) => Expr::DotIndexedGet(DotIndexedGetExpr::from_union(n)?),
+            u::Expr::DotLambda(n) => Expr::DotLambda(DotLambdaExpr::from_union(n)?),
+            u::Expr::DotMissing(n) => Expr::DotMissing(DotMissingExpr::from_union(n)?),
+            u::Expr::Downcast(n) => Expr::Downcast(DowncastExpr::from_union(n)?),
+            u::Expr::Dynamic(n) => Expr::Dynamic(DynamicExpr::from_union(n)?),
+            u::Expr::Fixed(n) => Expr::Fixed(FixedExpr::from_union(n)?),
+            u::Expr::For(n) => Expr::For(ForExpr::from_union(n)?),
+            u::Expr::ForEach(n) => Expr::ForEach(ForEachExpr::from_union(n)?),
+            u::Expr::Fun(n) => Expr::Fun(FunExpr::from_union(n)?),
+            u::Expr::Ident(n) => Expr::Ident(IdentExpr::from_union(n)?),
+            u::Expr::IfThenElse(n) => Expr::IfThenElse(IfThenElseExpr::from_union(n)?),
+            u::Expr::IndexRange(n) => Expr::IndexRange(IndexRangeExpr::from_union(n)?),
+            u::Expr::InferredDowncast(n) => {
+                Expr::InferredDowncast(InferredDowncastExpr::from_union(n)?)
             }
-            u::Expr::LongIdent(n) => Expr::LongIdent(LongIdentExpr(n)),
-            u::Expr::Match(n) => Expr::Match(MatchExpr(n)),
-            u::Expr::MatchBang(n) => Expr::MatchBang(MatchBangExpr(n)),
-            u::Expr::MatchLambda(n) => Expr::MatchLambda(MatchLambdaExpr(n)),
-            u::Expr::MeasureLit(n) => Expr::MeasureLit(MeasureLitExpr(n)),
-            u::Expr::New(n) => Expr::New(NewExpr(n)),
-            u::Expr::Null(n) => Expr::Null(NullExpr(n)),
-            u::Expr::ObjExpr(n) => Expr::ObjExpr(ObjExpr(n)),
-            u::Expr::Paren(n) => Expr::Paren(ParenExpr(n)),
-            u::Expr::Quote(n) => Expr::Quote(QuoteExpr(n)),
-            u::Expr::Record(n) => Expr::Record(RecordExpr(n)),
-            u::Expr::Sequential(n) => Expr::Sequential(SequentialExpr(n)),
-            u::Expr::StaticOptimization(n) => Expr::StaticOptimization(StaticOptimizationExpr(n)),
-            u::Expr::TraitCall(n) => Expr::TraitCall(TraitCallExpr(n)),
-            u::Expr::Try(n) => Expr::Try(TryExpr(n)),
-            u::Expr::Tuple(n) => Expr::Tuple(TupleExpr(n)),
-            u::Expr::Typar(n) => Expr::Typar(TyparExpr(n)),
-            u::Expr::TypeApp(n) => Expr::TypeApp(TypeAppExpr(n)),
-            u::Expr::TypeTest(n) => Expr::TypeTest(TypeTestExpr(n)),
-            u::Expr::Typed(n) => Expr::Typed(TypedExpr(n)),
-            u::Expr::Upcast(n) => Expr::Upcast(UpcastExpr(n)),
-            u::Expr::While(n) => Expr::While(WhileExpr(n)),
-            u::Expr::WhileBang(n) => Expr::WhileBang(WhileBangExpr(n)),
-            u::Expr::Yield(n) => Expr::Yield(YieldExpr(n)),
+            u::Expr::InferredUpcast(n) => Expr::InferredUpcast(InferredUpcastExpr::from_union(n)?),
+            u::Expr::InlineIl(n) => Expr::InlineIl(InlineIlExpr::from_union(n)?),
+            u::Expr::InterpString(n) => Expr::InterpString(InterpStringExpr::from_union(n)?),
+            u::Expr::JoinIn(n) => Expr::JoinIn(JoinInExpr::from_union(n)?),
+            u::Expr::Lazy(n) => Expr::Lazy(LazyExpr::from_union(n)?),
+            u::Expr::LetOrUse(n) => Expr::LetOrUse(LetOrUseExpr::from_union(n)?),
+            u::Expr::LibraryOnlyFieldGet(n) => {
+                Expr::LibraryOnlyFieldGet(LibraryOnlyFieldGetExpr::from_union(n)?)
+            }
+            u::Expr::LongIdent(n) => Expr::LongIdent(LongIdentExpr::from_union(n)?),
+            u::Expr::Match(n) => Expr::Match(MatchExpr::from_union(n)?),
+            u::Expr::MatchBang(n) => Expr::MatchBang(MatchBangExpr::from_union(n)?),
+            u::Expr::MatchLambda(n) => Expr::MatchLambda(MatchLambdaExpr::from_union(n)?),
+            u::Expr::MeasureLit(n) => Expr::MeasureLit(MeasureLitExpr::from_union(n)?),
+            u::Expr::New(n) => Expr::New(NewExpr::from_union(n)?),
+            u::Expr::Null(n) => Expr::Null(NullExpr::from_union(n)?),
+            u::Expr::ObjExpr(n) => Expr::ObjExpr(ObjExpr::from_union(n)?),
+            u::Expr::Paren(n) => Expr::Paren(ParenExpr::from_union(n)?),
+            u::Expr::Quote(n) => Expr::Quote(QuoteExpr::from_union(n)?),
+            u::Expr::Record(n) => Expr::Record(RecordExpr::from_union(n)?),
+            u::Expr::Sequential(n) => Expr::Sequential(SequentialExpr::from_union(n)?),
+            u::Expr::StaticOptimization(n) => {
+                Expr::StaticOptimization(StaticOptimizationExpr::from_union(n)?)
+            }
+            u::Expr::TraitCall(n) => Expr::TraitCall(TraitCallExpr::from_union(n)?),
+            u::Expr::Try(n) => Expr::Try(TryExpr::from_union(n)?),
+            u::Expr::Tuple(n) => Expr::Tuple(TupleExpr::from_union(n)?),
+            u::Expr::Typar(n) => Expr::Typar(TyparExpr::from_union(n)?),
+            u::Expr::TypeApp(n) => Expr::TypeApp(TypeAppExpr::from_union(n)?),
+            u::Expr::TypeTest(n) => Expr::TypeTest(TypeTestExpr::from_union(n)?),
+            u::Expr::Typed(n) => Expr::Typed(TypedExpr::from_union(n)?),
+            u::Expr::Upcast(n) => Expr::Upcast(UpcastExpr::from_union(n)?),
+            u::Expr::While(n) => Expr::While(WhileExpr::from_union(n)?),
+            u::Expr::WhileBang(n) => Expr::WhileBang(WhileBangExpr::from_union(n)?),
+            u::Expr::Yield(n) => Expr::Yield(YieldExpr::from_union(n)?),
+            #[allow(unreachable_patterns)]
             _ => return None,
         })
     }
 }
 
+impl AddressOfExpr {
+    pub(crate) fn from_union(node: u::AddressOfExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AnonRecdExpr {
+    pub(crate) fn from_union(node: u::AnonRecdExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AppExpr {
+    pub(crate) fn from_union(node: u::AppExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ArrayOrListExpr {
+    pub(crate) fn from_union(node: u::ArrayOrListExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AssertExpr {
+    pub(crate) fn from_union(node: u::AssertExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AssignExpr {
+    pub(crate) fn from_union(node: u::AssignExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ComputationExpr {
+    pub(crate) fn from_union(node: u::ComputationExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ConsExpr {
+    pub(crate) fn from_union(node: u::ConsExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DoBangExpr {
+    pub(crate) fn from_union(node: u::DoBangExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DoExpr {
+    pub(crate) fn from_union(node: u::DoExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DotGetExpr {
+    pub(crate) fn from_union(node: u::DotGetExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DotIndexedGetExpr {
+    pub(crate) fn from_union(node: u::DotIndexedGetExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DotLambdaExpr {
+    pub(crate) fn from_union(node: u::DotLambdaExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DotMissingExpr {
+    pub(crate) fn from_union(node: u::DotMissingExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DowncastExpr {
+    pub(crate) fn from_union(node: u::DowncastExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl DynamicExpr {
+    pub(crate) fn from_union(node: u::DynamicExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ExternArg {
+    pub(crate) fn from_union(node: u::ExternArg) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
 impl ExternCTypeBase {
-    pub(crate) fn from_union(value: u::ExternCTypeBase) -> Self {
-        match value {
-            u::ExternCTypeBase::Path(x0) => ExternCTypeBase::Path(LongIdent(x0)),
+    pub(crate) fn from_union(value: u::ExternCTypeBase) -> Option<Self> {
+        Some(match value {
+            u::ExternCTypeBase::Path(x0) => ExternCTypeBase::Path(LongIdent::from_union(x0)?),
             u::ExternCTypeBase::Void(x0) => ExternCTypeBase::Void(x0),
-        }
+        })
     }
 }
 
@@ -1512,6 +1667,96 @@ impl ExternCTypeSuffix {
             u::ExternCTypeSuffix::Byref(x0) => ExternCTypeSuffix::Byref(x0),
             u::ExternCTypeSuffix::Pointer(x0) => ExternCTypeSuffix::Pointer(x0),
         }
+    }
+}
+
+impl ExternRet {
+    pub(crate) fn from_union(node: u::ExternRet) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl FixedExpr {
+    pub(crate) fn from_union(node: u::FixedExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ForEachExpr {
+    pub(crate) fn from_union(node: u::ForEachExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ForExpr {
+    pub(crate) fn from_union(node: u::ForExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl FunExpr {
+    pub(crate) fn from_union(node: u::FunExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl GetSetAccessor {
+    pub(crate) fn from_union(node: u::GetSetAccessor) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl IdentExpr {
+    pub(crate) fn from_union(node: u::IdentExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl IfThenElseExpr {
+    pub(crate) fn from_union(node: u::IfThenElseExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ImplicitCtor {
+    pub(crate) fn from_union(node: u::ImplicitCtor) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl IndexRangeExpr {
+    pub(crate) fn from_union(node: u::IndexRangeExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl InferredDowncastExpr {
+    pub(crate) fn from_union(node: u::InferredDowncastExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl InferredUpcastExpr {
+    pub(crate) fn from_union(node: u::InferredUpcastExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl InheritMember {
+    pub(crate) fn from_union(node: u::InheritMember) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl InlineIlExpr {
+    pub(crate) fn from_union(node: u::InlineIlExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl InterpStringExpr {
+    pub(crate) fn from_union(node: u::InterpStringExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
@@ -1527,36 +1772,204 @@ impl InterpStringPart {
     }
 }
 
+impl JoinInExpr {
+    pub(crate) fn from_union(node: u::JoinInExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LazyExpr {
+    pub(crate) fn from_union(node: u::LazyExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LetOrUseExpr {
+    pub(crate) fn from_union(node: u::LetOrUseExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LibraryOnlyFieldGetExpr {
+    pub(crate) fn from_union(node: u::LibraryOnlyFieldGetExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LongIdent {
+    pub(crate) fn from_union(node: u::LongIdent) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LongIdentExpr {
+    pub(crate) fn from_union(node: u::LongIdentExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LongIdentPat {
+    pub(crate) fn from_union(node: u::LongIdentPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MatchBangExpr {
+    pub(crate) fn from_union(node: u::MatchBangExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MatchClause {
+    pub(crate) fn from_union(node: u::MatchClause) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MatchExpr {
+    pub(crate) fn from_union(node: u::MatchExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MatchLambdaExpr {
+    pub(crate) fn from_union(node: u::MatchLambdaExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
 impl Measure {
-    pub(crate) fn from_union(value: u::Measure) -> Self {
-        match value {
-            u::Measure::Anon(n) => Measure::Anon(MeasureAnon(n)),
-            u::Measure::Divide(n) => Measure::Divide(MeasureDivide(n)),
-            u::Measure::Named(n) => Measure::Named(MeasureNamed(n)),
-            u::Measure::One(n) => Measure::One(MeasureOne(n)),
-            u::Measure::Paren(n) => Measure::Paren(MeasureParen(n)),
-            u::Measure::Power(n) => Measure::Power(MeasurePower(n)),
-            u::Measure::Product(n) => Measure::Product(MeasureProduct(n)),
-            u::Measure::Seq(n) => Measure::Seq(MeasureSeq(n)),
-            u::Measure::Var(n) => Measure::Var(MeasureVar(n)),
-        }
+    pub(crate) fn from_union(value: u::Measure) -> Option<Self> {
+        Some(match value {
+            u::Measure::Anon(n) => Measure::Anon(MeasureAnon::from_union(n)?),
+            u::Measure::Divide(n) => Measure::Divide(MeasureDivide::from_union(n)?),
+            u::Measure::Named(n) => Measure::Named(MeasureNamed::from_union(n)?),
+            u::Measure::One(n) => Measure::One(MeasureOne::from_union(n)?),
+            u::Measure::Paren(n) => Measure::Paren(MeasureParen::from_union(n)?),
+            u::Measure::Power(n) => Measure::Power(MeasurePower::from_union(n)?),
+            u::Measure::Product(n) => Measure::Product(MeasureProduct::from_union(n)?),
+            u::Measure::Seq(n) => Measure::Seq(MeasureSeq::from_union(n)?),
+            u::Measure::Var(n) => Measure::Var(MeasureVar::from_union(n)?),
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl MeasureAnon {
+    pub(crate) fn from_union(node: u::MeasureAnon) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureDivide {
+    pub(crate) fn from_union(node: u::MeasureDivide) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureLitExpr {
+    pub(crate) fn from_union(node: u::MeasureLitExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureNamed {
+    pub(crate) fn from_union(node: u::MeasureNamed) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureOne {
+    pub(crate) fn from_union(node: u::MeasureOne) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureParen {
+    pub(crate) fn from_union(node: u::MeasureParen) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasurePower {
+    pub(crate) fn from_union(node: u::MeasurePower) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureProduct {
+    pub(crate) fn from_union(node: u::MeasureProduct) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureSeq {
+    pub(crate) fn from_union(node: u::MeasureSeq) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureVar {
+    pub(crate) fn from_union(node: u::MeasureVar) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
 impl MemberDefn {
-    pub(crate) fn from_union(value: u::MemberDefn) -> Self {
-        match value {
-            u::MemberDefn::AbstractSlot(n) => MemberDefn::AbstractSlot(AbstractSlot(n)),
-            u::MemberDefn::AutoProperty(n) => MemberDefn::AutoProperty(AutoProperty(n)),
-            u::MemberDefn::Do(n) => MemberDefn::Do(MemberDo(n)),
-            u::MemberDefn::GetSetMember(n) => MemberDefn::GetSetMember(GetSetMember(n)),
-            u::MemberDefn::Inherit(n) => MemberDefn::Inherit(InheritMember(n)),
-            u::MemberDefn::Interface(n) => MemberDefn::Interface(InterfaceImpl(n)),
-            u::MemberDefn::LetBindings(n) => MemberDefn::LetBindings(MemberLetBindings(n)),
-            u::MemberDefn::Member(n) => MemberDefn::Member(MemberMethod(n)),
-            u::MemberDefn::MemberSig(n) => MemberDefn::MemberSig(MemberSig(n)),
-            u::MemberDefn::ValField(n) => MemberDefn::ValField(ValField(n)),
-        }
+    pub(crate) fn from_union(value: u::MemberDefn) -> Option<Self> {
+        Some(match value {
+            u::MemberDefn::AbstractSlot(n) => {
+                MemberDefn::AbstractSlot(AbstractSlot::from_union(n)?)
+            }
+            u::MemberDefn::AutoProperty(n) => {
+                MemberDefn::AutoProperty(AutoProperty::from_union(n)?)
+            }
+            u::MemberDefn::Do(n) => MemberDefn::Do(MemberDo::from_union(n)?),
+            u::MemberDefn::GetSetMember(n) => {
+                MemberDefn::GetSetMember(GetSetMember::from_union(n)?)
+            }
+            u::MemberDefn::Inherit(n) => MemberDefn::Inherit(InheritMember::from_union(n)?),
+            u::MemberDefn::Interface(n) => MemberDefn::Interface(InterfaceImpl::from_union(n)?),
+            u::MemberDefn::LetBindings(n) => {
+                MemberDefn::LetBindings(MemberLetBindings::from_union(n)?)
+            }
+            u::MemberDefn::Member(n) => MemberDefn::Member(MemberMethod::from_union(n)?),
+            u::MemberDefn::MemberSig(n) => MemberDefn::MemberSig(MemberSig::from_union(n)?),
+            u::MemberDefn::ValField(n) => MemberDefn::ValField(ValField::from_union(n)?),
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl AbstractSlot {
+    pub(crate) fn from_union(node: u::AbstractSlot) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AutoProperty {
+    pub(crate) fn from_union(node: u::AutoProperty) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl GetSetMember {
+    pub(crate) fn from_union(node: u::GetSetMember) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl InterfaceImpl {
+    pub(crate) fn from_union(node: u::InterfaceImpl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MemberDo {
+    pub(crate) fn from_union(node: u::MemberDo) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
@@ -1569,6 +1982,24 @@ impl MemberLeading {
             u::MemberLeading::Override => MemberLeading::Override,
             u::MemberLeading::StaticMember => MemberLeading::StaticMember,
         }
+    }
+}
+
+impl MemberLetBindings {
+    pub(crate) fn from_union(node: u::MemberLetBindings) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MemberMethod {
+    pub(crate) fn from_union(node: u::MemberMethod) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MemberSig {
+    pub(crate) fn from_union(node: u::MemberSig) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
@@ -1590,19 +2021,75 @@ impl MemberSigLeading {
 }
 
 impl ModuleDecl {
-    pub(crate) fn from_union(value: u::ModuleDecl) -> Self {
-        match value {
-            u::ModuleDecl::Attributes(n) => ModuleDecl::Attributes(AttributesDecl(n)),
-            u::ModuleDecl::Exception(n) => ModuleDecl::Exception(ExceptionDefnDecl(n)),
-            u::ModuleDecl::Expr(n) => ModuleDecl::Expr(ExprDecl(n)),
-            u::ModuleDecl::Extern(n) => ModuleDecl::Extern(ExternDecl(n)),
-            u::ModuleDecl::HashDirective(n) => ModuleDecl::HashDirective(HashDirectiveDecl(n)),
-            u::ModuleDecl::Let(n) => ModuleDecl::Let(LetDecl(n)),
-            u::ModuleDecl::ModuleAbbrev(n) => ModuleDecl::ModuleAbbrev(ModuleAbbrevDecl(n)),
-            u::ModuleDecl::NestedModule(n) => ModuleDecl::NestedModule(NestedModuleDecl(n)),
-            u::ModuleDecl::Open(n) => ModuleDecl::Open(OpenDecl(n)),
-            u::ModuleDecl::Types(n) => ModuleDecl::Types(TypeDefnsDecl(n)),
-        }
+    pub(crate) fn from_union(value: u::ModuleDecl) -> Option<Self> {
+        Some(match value {
+            u::ModuleDecl::Attributes(n) => ModuleDecl::Attributes(AttributesDecl::from_union(n)?),
+            u::ModuleDecl::Exception(n) => ModuleDecl::Exception(ExceptionDefnDecl::from_union(n)?),
+            u::ModuleDecl::Expr(n) => ModuleDecl::Expr(ExprDecl::from_union(n)?),
+            u::ModuleDecl::Extern(n) => ModuleDecl::Extern(ExternDecl::from_union(n)?),
+            u::ModuleDecl::HashDirective(n) => {
+                ModuleDecl::HashDirective(HashDirectiveDecl::from_union(n)?)
+            }
+            u::ModuleDecl::Let(n) => ModuleDecl::Let(LetDecl::from_union(n)?),
+            u::ModuleDecl::ModuleAbbrev(n) => {
+                ModuleDecl::ModuleAbbrev(ModuleAbbrevDecl::from_union(n)?)
+            }
+            u::ModuleDecl::NestedModule(n) => {
+                ModuleDecl::NestedModule(NestedModuleDecl::from_union(n)?)
+            }
+            u::ModuleDecl::Open(n) => ModuleDecl::Open(OpenDecl::from_union(n)?),
+            u::ModuleDecl::Types(n) => ModuleDecl::Types(TypeDefnsDecl::from_union(n)?),
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl AttributesDecl {
+    pub(crate) fn from_union(node: u::AttributesDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ExceptionDefnDecl {
+    pub(crate) fn from_union(node: u::ExceptionDefnDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ExprDecl {
+    pub(crate) fn from_union(node: u::ExprDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ExternDecl {
+    pub(crate) fn from_union(node: u::ExternDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl HashDirectiveDecl {
+    pub(crate) fn from_union(node: u::HashDirectiveDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LetDecl {
+    pub(crate) fn from_union(node: u::LetDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ModuleAbbrevDecl {
+    pub(crate) fn from_union(node: u::ModuleAbbrevDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ModuleOrNamespace {
+    pub(crate) fn from_union(node: u::ModuleOrNamespace) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
@@ -1617,64 +2104,318 @@ impl ModuleOrNamespaceKind {
     }
 }
 
+impl NamePatPair {
+    pub(crate) fn from_union(node: u::NamePatPair) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl NamePatPairs {
+    pub(crate) fn from_union(node: u::NamePatPairs) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl NestedModuleDecl {
+    pub(crate) fn from_union(node: u::NestedModuleDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl NewExpr {
+    pub(crate) fn from_union(node: u::NewExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl NullExpr {
+    pub(crate) fn from_union(node: u::NullExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ObjExpr {
+    pub(crate) fn from_union(node: u::ObjExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl OpenDecl {
+    pub(crate) fn from_union(node: u::OpenDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ParenExpr {
+    pub(crate) fn from_union(node: u::ParenExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
 impl Pat {
-    pub(crate) fn from_union(value: u::Pat) -> Self {
-        match value {
-            u::Pat::Ands(n) => Pat::Ands(AndsPat(n)),
-            u::Pat::ArrayOrList(n) => Pat::ArrayOrList(ArrayOrListPat(n)),
-            u::Pat::As(n) => Pat::As(AsPat(n)),
-            u::Pat::Attrib(n) => Pat::Attrib(AttribPat(n)),
-            u::Pat::Const(n) => Pat::Const(ConstPat(n)),
-            u::Pat::IsInst(n) => Pat::IsInst(IsInstPat(n)),
-            u::Pat::ListCons(n) => Pat::ListCons(ListConsPat(n)),
-            u::Pat::LongIdent(n) => Pat::LongIdent(LongIdentPat(n)),
-            u::Pat::MeasureLit(n) => Pat::MeasureLit(MeasureLitPat(n)),
-            u::Pat::Named(n) => Pat::Named(NamedPat(n)),
-            u::Pat::Null(n) => Pat::Null(NullPat(n)),
-            u::Pat::OptionalVal(n) => Pat::OptionalVal(OptionalValPat(n)),
-            u::Pat::Or(n) => Pat::Or(OrPat(n)),
-            u::Pat::Paren(n) => Pat::Paren(ParenPat(n)),
-            u::Pat::Quote(n) => Pat::Quote(QuotePat(n)),
-            u::Pat::Record(n) => Pat::Record(RecordPat(n)),
-            u::Pat::Tuple(n) => Pat::Tuple(TuplePat(n)),
-            u::Pat::Typed(n) => Pat::Typed(TypedPat(n)),
-            u::Pat::Wildcard(n) => Pat::Wildcard(WildcardPat(n)),
-        }
+    pub(crate) fn from_union(value: u::Pat) -> Option<Self> {
+        Some(match value {
+            u::Pat::Ands(n) => Pat::Ands(AndsPat::from_union(n)?),
+            u::Pat::ArrayOrList(n) => Pat::ArrayOrList(ArrayOrListPat::from_union(n)?),
+            u::Pat::As(n) => Pat::As(AsPat::from_union(n)?),
+            u::Pat::Attrib(n) => Pat::Attrib(AttribPat::from_union(n)?),
+            u::Pat::Const(n) => Pat::Const(ConstPat::from_union(n)?),
+            u::Pat::IsInst(n) => Pat::IsInst(IsInstPat::from_union(n)?),
+            u::Pat::ListCons(n) => Pat::ListCons(ListConsPat::from_union(n)?),
+            u::Pat::LongIdent(n) => Pat::LongIdent(LongIdentPat::from_union(n)?),
+            u::Pat::MeasureLit(n) => Pat::MeasureLit(MeasureLitPat::from_union(n)?),
+            u::Pat::Named(n) => Pat::Named(NamedPat::from_union(n)?),
+            u::Pat::Null(n) => Pat::Null(NullPat::from_union(n)?),
+            u::Pat::OptionalVal(n) => Pat::OptionalVal(OptionalValPat::from_union(n)?),
+            u::Pat::Or(n) => Pat::Or(OrPat::from_union(n)?),
+            u::Pat::Paren(n) => Pat::Paren(ParenPat::from_union(n)?),
+            u::Pat::Quote(n) => Pat::Quote(QuotePat::from_union(n)?),
+            u::Pat::Record(n) => Pat::Record(RecordPat::from_union(n)?),
+            u::Pat::Tuple(n) => Pat::Tuple(TuplePat::from_union(n)?),
+            u::Pat::Typed(n) => Pat::Typed(TypedPat::from_union(n)?),
+            u::Pat::Wildcard(n) => Pat::Wildcard(WildcardPat::from_union(n)?),
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl AndsPat {
+    pub(crate) fn from_union(node: u::AndsPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ArrayOrListPat {
+    pub(crate) fn from_union(node: u::ArrayOrListPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AsPat {
+    pub(crate) fn from_union(node: u::AsPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AttribPat {
+    pub(crate) fn from_union(node: u::AttribPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl IsInstPat {
+    pub(crate) fn from_union(node: u::IsInstPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ListConsPat {
+    pub(crate) fn from_union(node: u::ListConsPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasureLitPat {
+    pub(crate) fn from_union(node: u::MeasureLitPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl NamedPat {
+    pub(crate) fn from_union(node: u::NamedPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl NullPat {
+    pub(crate) fn from_union(node: u::NullPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl OptionalValPat {
+    pub(crate) fn from_union(node: u::OptionalValPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl OrPat {
+    pub(crate) fn from_union(node: u::OrPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ParenPat {
+    pub(crate) fn from_union(node: u::ParenPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl QuoteExpr {
+    pub(crate) fn from_union(node: u::QuoteExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl QuotePat {
+    pub(crate) fn from_union(node: u::QuotePat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
 impl RationalConst {
-    pub(crate) fn from_union(value: u::RationalConst) -> Self {
-        match value {
-            u::RationalConst::Integer(n) => RationalConst::Integer(RationalConstInteger(n)),
-            u::RationalConst::Negate(n) => RationalConst::Negate(RationalConstNegate(n)),
-            u::RationalConst::Paren(n) => RationalConst::Paren(RationalConstParen(n)),
-            u::RationalConst::Rational(n) => RationalConst::Rational(RationalConstRational(n)),
-        }
+    pub(crate) fn from_union(value: u::RationalConst) -> Option<Self> {
+        Some(match value {
+            u::RationalConst::Integer(n) => {
+                RationalConst::Integer(RationalConstInteger::from_union(n)?)
+            }
+            u::RationalConst::Negate(n) => {
+                RationalConst::Negate(RationalConstNegate::from_union(n)?)
+            }
+            u::RationalConst::Paren(n) => RationalConst::Paren(RationalConstParen::from_union(n)?),
+            u::RationalConst::Rational(n) => {
+                RationalConst::Rational(RationalConstRational::from_union(n)?)
+            }
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl RationalConstInteger {
+    pub(crate) fn from_union(node: u::RationalConstInteger) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RationalConstNegate {
+    pub(crate) fn from_union(node: u::RationalConstNegate) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RationalConstParen {
+    pub(crate) fn from_union(node: u::RationalConstParen) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RationalConstRational {
+    pub(crate) fn from_union(node: u::RationalConstRational) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RecordExpr {
+    pub(crate) fn from_union(node: u::RecordExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RecordField {
+    pub(crate) fn from_union(node: u::RecordField) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RecordFieldDecl {
+    pub(crate) fn from_union(node: u::RecordFieldDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RecordPat {
+    pub(crate) fn from_union(node: u::RecordPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RecordPatField {
+    pub(crate) fn from_union(node: u::RecordPatField) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl SequentialExpr {
+    pub(crate) fn from_union(node: u::SequentialExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
 impl SigDecl {
-    pub(crate) fn from_union(value: u::SigDecl) -> Self {
-        match value {
-            u::SigDecl::Exception(n) => SigDecl::Exception(ExceptionDefnDecl(n)),
-            u::SigDecl::HashDirective(n) => SigDecl::HashDirective(HashDirectiveDecl(n)),
-            u::SigDecl::ModuleAbbrev(n) => SigDecl::ModuleAbbrev(ModuleAbbrevDecl(n)),
-            u::SigDecl::NestedModule(n) => SigDecl::NestedModule(NestedModuleDecl(n)),
-            u::SigDecl::Open(n) => SigDecl::Open(OpenDecl(n)),
-            u::SigDecl::Types(n) => SigDecl::Types(TypeDefnsDecl(n)),
-            u::SigDecl::Val(n) => SigDecl::Val(ValDecl(n)),
-        }
+    pub(crate) fn from_union(value: u::SigDecl) -> Option<Self> {
+        Some(match value {
+            u::SigDecl::Exception(n) => SigDecl::Exception(ExceptionDefnDecl::from_union(n)?),
+            u::SigDecl::HashDirective(n) => {
+                SigDecl::HashDirective(HashDirectiveDecl::from_union(n)?)
+            }
+            u::SigDecl::ModuleAbbrev(n) => SigDecl::ModuleAbbrev(ModuleAbbrevDecl::from_union(n)?),
+            u::SigDecl::NestedModule(n) => SigDecl::NestedModule(NestedModuleDecl::from_union(n)?),
+            u::SigDecl::Open(n) => SigDecl::Open(OpenDecl::from_union(n)?),
+            u::SigDecl::Types(n) => SigDecl::Types(TypeDefnsDecl::from_union(n)?),
+            u::SigDecl::Val(n) => SigDecl::Val(ValDecl::from_union(n)?),
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl StaticOptCondition {
+    pub(crate) fn from_union(node: u::StaticOptCondition) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl StaticOptWhenClause {
+    pub(crate) fn from_union(node: u::StaticOptWhenClause) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl StaticOptimizationExpr {
+    pub(crate) fn from_union(node: u::StaticOptimizationExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TraitCallExpr {
+    pub(crate) fn from_union(node: u::TraitCallExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TryExpr {
+    pub(crate) fn from_union(node: u::TryExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TupleExpr {
+    pub(crate) fn from_union(node: u::TupleExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TuplePat {
+    pub(crate) fn from_union(node: u::TuplePat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
 impl TupleSegment {
-    pub(crate) fn from_union(value: u::TupleSegment) -> Self {
-        match value {
+    pub(crate) fn from_union(value: u::TupleSegment) -> Option<Self> {
+        Some(match value {
             u::TupleSegment::Slash(x0) => TupleSegment::Slash(x0),
             u::TupleSegment::Star(x0) => TupleSegment::Star(x0),
-            u::TupleSegment::Type(x0) => TupleSegment::Type(Type::from_union(x0)),
-        }
+            u::TupleSegment::Type(x0) => TupleSegment::Type(Type::from_union(x0)?),
+        })
+    }
+}
+
+impl TyparConstraint {
+    pub(crate) fn from_union(node: u::TyparConstraint) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
@@ -1695,6 +2436,24 @@ impl TyparConstraintKind {
     }
 }
 
+impl TyparConstraints {
+    pub(crate) fn from_union(node: u::TyparConstraints) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TyparDecl {
+    pub(crate) fn from_union(node: u::TyparDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TyparDecls {
+    pub(crate) fn from_union(node: u::TyparDecls) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
 impl TyparDeclsForm {
     pub(crate) fn from_union(value: u::TyparDeclsForm) -> Self {
         match value {
@@ -1705,50 +2464,328 @@ impl TyparDeclsForm {
     }
 }
 
+impl TyparExpr {
+    pub(crate) fn from_union(node: u::TyparExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
 impl Type {
-    pub(crate) fn from_union(value: u::Type) -> Self {
-        match value {
-            u::Type::Anon(n) => Type::Anon(AnonType(n)),
-            u::Type::AnonRecd(n) => Type::AnonRecd(AnonRecdType(n)),
-            u::Type::App(n) => Type::App(AppType(n)),
-            u::Type::Array(n) => Type::Array(ArrayType(n)),
-            u::Type::Constrained(n) => Type::Constrained(ConstrainedType(n)),
-            u::Type::Fun(n) => Type::Fun(FunType(n)),
-            u::Type::Hash(n) => Type::Hash(HashConstraintType(n)),
-            u::Type::Intersection(n) => Type::Intersection(IntersectionType(n)),
-            u::Type::LongIdent(n) => Type::LongIdent(LongIdentType(n)),
-            u::Type::LongIdentApp(n) => Type::LongIdentApp(LongIdentAppType(n)),
-            u::Type::MeasurePower(n) => Type::MeasurePower(MeasurePowerType(n)),
-            u::Type::Paren(n) => Type::Paren(ParenType(n)),
-            u::Type::SignatureParameter(n) => Type::SignatureParameter(SignatureParameterType(n)),
-            u::Type::StaticConst(n) => Type::StaticConst(StaticConstType(n)),
-            u::Type::StaticConstExpr(n) => Type::StaticConstExpr(StaticConstExprType(n)),
-            u::Type::StaticConstNamed(n) => Type::StaticConstNamed(StaticConstNamedType(n)),
-            u::Type::StaticConstNull(n) => Type::StaticConstNull(StaticConstNullType(n)),
-            u::Type::Tuple(n) => Type::Tuple(TupleType(n)),
-            u::Type::Var(n) => Type::Var(VarType(n)),
-            u::Type::WithNull(n) => Type::WithNull(WithNullType(n)),
-        }
+    pub(crate) fn from_union(value: u::Type) -> Option<Self> {
+        Some(match value {
+            u::Type::Anon(n) => Type::Anon(AnonType::from_union(n)?),
+            u::Type::AnonRecd(n) => Type::AnonRecd(AnonRecdType::from_union(n)?),
+            u::Type::App(n) => Type::App(AppType::from_union(n)?),
+            u::Type::Array(n) => Type::Array(ArrayType::from_union(n)?),
+            u::Type::Constrained(n) => Type::Constrained(ConstrainedType::from_union(n)?),
+            u::Type::Fun(n) => Type::Fun(FunType::from_union(n)?),
+            u::Type::Hash(n) => Type::Hash(HashConstraintType::from_union(n)?),
+            u::Type::Intersection(n) => Type::Intersection(IntersectionType::from_union(n)?),
+            u::Type::LongIdent(n) => Type::LongIdent(LongIdentType::from_union(n)?),
+            u::Type::LongIdentApp(n) => Type::LongIdentApp(LongIdentAppType::from_union(n)?),
+            u::Type::MeasurePower(n) => Type::MeasurePower(MeasurePowerType::from_union(n)?),
+            u::Type::Paren(n) => Type::Paren(ParenType::from_union(n)?),
+            u::Type::SignatureParameter(n) => {
+                Type::SignatureParameter(SignatureParameterType::from_union(n)?)
+            }
+            u::Type::StaticConst(n) => Type::StaticConst(StaticConstType::from_union(n)?),
+            u::Type::StaticConstExpr(n) => {
+                Type::StaticConstExpr(StaticConstExprType::from_union(n)?)
+            }
+            u::Type::StaticConstNamed(n) => {
+                Type::StaticConstNamed(StaticConstNamedType::from_union(n)?)
+            }
+            u::Type::StaticConstNull(n) => {
+                Type::StaticConstNull(StaticConstNullType::from_union(n)?)
+            }
+            u::Type::Tuple(n) => Type::Tuple(TupleType::from_union(n)?),
+            u::Type::Var(n) => Type::Var(VarType::from_union(n)?),
+            u::Type::WithNull(n) => Type::WithNull(WithNullType::from_union(n)?),
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl AnonRecdType {
+    pub(crate) fn from_union(node: u::AnonRecdType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AnonType {
+    pub(crate) fn from_union(node: u::AnonType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl AppType {
+    pub(crate) fn from_union(node: u::AppType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ArrayType {
+    pub(crate) fn from_union(node: u::ArrayType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ConstrainedType {
+    pub(crate) fn from_union(node: u::ConstrainedType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl FunType {
+    pub(crate) fn from_union(node: u::FunType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl HashConstraintType {
+    pub(crate) fn from_union(node: u::HashConstraintType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl IntersectionType {
+    pub(crate) fn from_union(node: u::IntersectionType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LongIdentAppType {
+    pub(crate) fn from_union(node: u::LongIdentAppType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl LongIdentType {
+    pub(crate) fn from_union(node: u::LongIdentType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl MeasurePowerType {
+    pub(crate) fn from_union(node: u::MeasurePowerType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ParenType {
+    pub(crate) fn from_union(node: u::ParenType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl SignatureParameterType {
+    pub(crate) fn from_union(node: u::SignatureParameterType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl StaticConstExprType {
+    pub(crate) fn from_union(node: u::StaticConstExprType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl StaticConstNamedType {
+    pub(crate) fn from_union(node: u::StaticConstNamedType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl StaticConstNullType {
+    pub(crate) fn from_union(node: u::StaticConstNullType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl StaticConstType {
+    pub(crate) fn from_union(node: u::StaticConstType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TupleType {
+    pub(crate) fn from_union(node: u::TupleType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TypeAppExpr {
+    pub(crate) fn from_union(node: u::TypeAppExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TypeDefn {
+    pub(crate) fn from_union(node: u::TypeDefn) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
 impl TypeDefnRepr {
-    pub(crate) fn from_union(value: u::TypeDefnRepr) -> Self {
-        match value {
-            u::TypeDefnRepr::Abbrev(n) => TypeDefnRepr::Abbrev(TypeAbbrev(n)),
-            u::TypeDefnRepr::Delegate(n) => TypeDefnRepr::Delegate(DelegateRepr(n)),
-            u::TypeDefnRepr::Enum(n) => TypeDefnRepr::Enum(EnumRepr(n)),
-            u::TypeDefnRepr::InlineIl(n) => TypeDefnRepr::InlineIl(InlineIlRepr(n)),
-            u::TypeDefnRepr::ObjectModel(n) => TypeDefnRepr::ObjectModel(ObjectModelRepr(n)),
-            u::TypeDefnRepr::Record(n) => TypeDefnRepr::Record(RecordRepr(n)),
-            u::TypeDefnRepr::Union(n) => TypeDefnRepr::Union(UnionRepr(n)),
-        }
+    pub(crate) fn from_union(value: u::TypeDefnRepr) -> Option<Self> {
+        Some(match value {
+            u::TypeDefnRepr::Abbrev(n) => TypeDefnRepr::Abbrev(TypeAbbrev::from_union(n)?),
+            u::TypeDefnRepr::Delegate(n) => TypeDefnRepr::Delegate(DelegateRepr::from_union(n)?),
+            u::TypeDefnRepr::Enum(n) => TypeDefnRepr::Enum(EnumRepr::from_union(n)?),
+            u::TypeDefnRepr::InlineIl(n) => TypeDefnRepr::InlineIl(InlineIlRepr::from_union(n)?),
+            u::TypeDefnRepr::ObjectModel(n) => {
+                TypeDefnRepr::ObjectModel(ObjectModelRepr::from_union(n)?)
+            }
+            u::TypeDefnRepr::Record(n) => TypeDefnRepr::Record(RecordRepr::from_union(n)?),
+            u::TypeDefnRepr::Union(n) => TypeDefnRepr::Union(UnionRepr::from_union(n)?),
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+impl DelegateRepr {
+    pub(crate) fn from_union(node: u::DelegateRepr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl EnumRepr {
+    pub(crate) fn from_union(node: u::EnumRepr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl InlineIlRepr {
+    pub(crate) fn from_union(node: u::InlineIlRepr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ObjectModelRepr {
+    pub(crate) fn from_union(node: u::ObjectModelRepr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl RecordRepr {
+    pub(crate) fn from_union(node: u::RecordRepr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TypeAbbrev {
+    pub(crate) fn from_union(node: u::TypeAbbrev) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TypeDefnsDecl {
+    pub(crate) fn from_union(node: u::TypeDefnsDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TypeTestExpr {
+    pub(crate) fn from_union(node: u::TypeTestExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TypedExpr {
+    pub(crate) fn from_union(node: u::TypedExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl TypedPat {
+    pub(crate) fn from_union(node: u::TypedPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl UnionCase {
+    pub(crate) fn from_union(node: u::UnionCase) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl UnionCaseField {
+    pub(crate) fn from_union(node: u::UnionCaseField) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl UnionRepr {
+    pub(crate) fn from_union(node: u::UnionRepr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl UpcastExpr {
+    pub(crate) fn from_union(node: u::UpcastExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ValDecl {
+    pub(crate) fn from_union(node: u::ValDecl) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ValField {
+    pub(crate) fn from_union(node: u::ValField) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl ValSig {
+    pub(crate) fn from_union(node: u::ValSig) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl VarType {
+    pub(crate) fn from_union(node: u::VarType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl WhileBangExpr {
+    pub(crate) fn from_union(node: u::WhileBangExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl WhileExpr {
+    pub(crate) fn from_union(node: u::WhileExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl WildcardPat {
+    pub(crate) fn from_union(node: u::WildcardPat) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl WithNullType {
+    pub(crate) fn from_union(node: u::WithNullType) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
+    }
+}
+
+impl YieldExpr {
+    pub(crate) fn from_union(node: u::YieldExpr) -> Option<Self> {
+        Self::can_cast(node.syntax().kind()).then_some(Self(node))
     }
 }
 
 impl AbstractSlot {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn is_abstract_member(&self) -> bool {
         self.0.is_abstract_member()
@@ -1757,7 +2794,7 @@ impl AbstractSlot {
         self.0.is_static()
     }
     pub fn val_sig(&self) -> Option<ValSig> {
-        self.0.val_sig().map(ValSig)
+        self.0.val_sig().and_then(ValSig::from_union)
     }
 }
 
@@ -1781,7 +2818,7 @@ impl AddressOfExpr {
 
 impl AndsPat {
     pub fn operands(&self) -> impl Iterator<Item = Pat> + '_ {
-        self.0.operands().map(Pat::from_union)
+        self.0.operands().filter_map(Pat::from_union)
     }
 }
 
@@ -1790,7 +2827,7 @@ impl AnonRecdExpr {
         self.0.copy_source().and_then(Expr::from_union)
     }
     pub fn fields(&self) -> impl Iterator<Item = RecordField> + '_ {
-        self.0.fields().map(RecordField)
+        self.0.fields().filter_map(RecordField::from_union)
     }
     pub fn is_struct(&self) -> bool {
         self.0.is_struct()
@@ -1799,7 +2836,7 @@ impl AnonRecdExpr {
 
 impl AnonRecdType {
     pub fn fields(&self) -> impl Iterator<Item = AnonRecdTypeField> + '_ {
-        self.0.fields().map(AnonRecdTypeField)
+        self.0.fields().filter_map(AnonRecdTypeField::from_union)
     }
     pub fn is_struct(&self) -> bool {
         self.0.is_struct()
@@ -1811,7 +2848,7 @@ impl AnonRecdTypeField {
         self.0.ident()
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -1847,11 +2884,11 @@ impl AppType {
         self.0
             .type_args()
             .into_iter()
-            .map(Type::from_union)
+            .filter_map(Type::from_union)
             .collect()
     }
     pub fn type_name(&self) -> Option<Type> {
-        self.0.type_name().map(Type::from_union)
+        self.0.type_name().and_then(Type::from_union)
     }
 }
 
@@ -1866,7 +2903,7 @@ impl ArrayOrListExpr {
 
 impl ArrayOrListPat {
     pub fn elements(&self) -> impl Iterator<Item = Pat> + '_ {
-        self.0.elements().map(Pat::from_union)
+        self.0.elements().filter_map(Pat::from_union)
     }
     pub fn is_array(&self) -> bool {
         self.0.is_array()
@@ -1875,7 +2912,7 @@ impl ArrayOrListPat {
 
 impl ArrayType {
     pub fn element_type(&self) -> Option<Type> {
-        self.0.element_type().map(Type::from_union)
+        self.0.element_type().and_then(Type::from_union)
     }
     pub fn rank(&self) -> usize {
         self.0.rank()
@@ -1887,10 +2924,10 @@ impl AsPat {
         self.0.as_token()
     }
     pub fn lhs(&self) -> Option<Pat> {
-        self.0.lhs().map(Pat::from_union)
+        self.0.lhs().and_then(Pat::from_union)
     }
     pub fn rhs(&self) -> Option<Pat> {
-        self.0.rhs().map(Pat::from_union)
+        self.0.rhs().and_then(Pat::from_union)
     }
 }
 
@@ -1911,10 +2948,10 @@ impl AssignExpr {
 
 impl AttribPat {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn pat(&self) -> Option<Pat> {
-        self.0.pat().map(Pat::from_union)
+        self.0.pat().and_then(Pat::from_union)
     }
 }
 
@@ -1926,25 +2963,25 @@ impl Attribute {
         self.0.target()
     }
     pub fn type_name(&self) -> Option<LongIdent> {
-        self.0.type_name().map(LongIdent)
+        self.0.type_name().and_then(LongIdent::from_union)
     }
 }
 
 impl AttributeList {
     pub fn attributes(&self) -> impl Iterator<Item = Attribute> + '_ {
-        self.0.attributes().map(Attribute)
+        self.0.attributes().filter_map(Attribute::from_union)
     }
 }
 
 impl AttributesDecl {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
 }
 
 impl AutoProperty {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn expr(&self) -> Option<Expr> {
         self.0.expr().and_then(Expr::from_union)
@@ -1959,13 +2996,13 @@ impl AutoProperty {
         AutoPropertyKind::from_union(self.0.prop_kind())
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
 impl Binding {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn ctor_self_id(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ctor_self_id()
@@ -1980,16 +3017,16 @@ impl Binding {
         self.0.is_mutable()
     }
     pub fn pat(&self) -> Option<Pat> {
-        self.0.pat().map(Pat::from_union)
+        self.0.pat().and_then(Pat::from_union)
     }
     pub fn return_type(&self) -> Option<Type> {
-        self.0.return_type().map(Type::from_union)
+        self.0.return_type().and_then(Type::from_union)
     }
 }
 
 impl BindingReturnInfo {
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -2025,19 +3062,19 @@ impl ConstPat {
 
 impl ConstrainedType {
     pub fn base(&self) -> Option<Type> {
-        self.0.base().map(Type::from_union)
+        self.0.base().and_then(Type::from_union)
     }
     pub fn constraints(&self) -> Option<TyparConstraints> {
-        self.0.constraints().map(TyparConstraints)
+        self.0.constraints().and_then(TyparConstraints::from_union)
     }
     pub fn subtype(&self) -> Option<Type> {
-        self.0.subtype().map(Type::from_union)
+        self.0.subtype().and_then(Type::from_union)
     }
 }
 
 impl DelegateRepr {
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -2058,7 +3095,7 @@ impl DotGetExpr {
         self.0.expr().and_then(Expr::from_union)
     }
     pub fn long_ident(&self) -> Option<LongIdent> {
-        self.0.long_ident().map(LongIdent)
+        self.0.long_ident().and_then(LongIdent::from_union)
     }
 }
 
@@ -2088,7 +3125,7 @@ impl DowncastExpr {
         self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -2103,7 +3140,7 @@ impl DynamicExpr {
 
 impl EnumCase {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -2118,22 +3155,22 @@ impl EnumCase {
 
 impl EnumRepr {
     pub fn cases(&self) -> impl Iterator<Item = EnumCase> + '_ {
-        self.0.cases().map(EnumCase)
+        self.0.cases().filter_map(EnumCase::from_union)
     }
 }
 
 impl ExceptionDefnDecl {
     pub fn abbrev_path(&self) -> Option<LongIdent> {
-        self.0.abbrev_path().map(LongIdent)
+        self.0.abbrev_path().and_then(LongIdent::from_union)
     }
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
-        self.0.members().map(MemberDefn::from_union)
+        self.0.members().filter_map(MemberDefn::from_union)
     }
     pub fn union_case(&self) -> Option<UnionCase> {
-        self.0.union_case().map(UnionCase)
+        self.0.union_case().and_then(UnionCase::from_union)
     }
 }
 
@@ -2145,10 +3182,10 @@ impl ExprDecl {
 
 impl ExternArg {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn c_type_base(&self) -> Option<ExternCTypeBase> {
-        self.0.c_type_base().map(ExternCTypeBase::from_union)
+        self.0.c_type_base().and_then(ExternCTypeBase::from_union)
     }
     pub fn c_type_suffixes(&self) -> impl Iterator<Item = ExternCTypeSuffix> + '_ {
         self.0.c_type_suffixes().map(ExternCTypeSuffix::from_union)
@@ -2157,28 +3194,28 @@ impl ExternArg {
         self.0.name()
     }
     pub fn ty(&self) -> Option<LongIdent> {
-        self.0.ty().map(LongIdent)
+        self.0.ty().and_then(LongIdent::from_union)
     }
 }
 
 impl ExternDecl {
     pub fn args(&self) -> impl Iterator<Item = ExternArg> + '_ {
-        self.0.args().map(ExternArg)
+        self.0.args().filter_map(ExternArg::from_union)
     }
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn name(&self) -> Option<LongIdent> {
-        self.0.name().map(LongIdent)
+        self.0.name().and_then(LongIdent::from_union)
     }
     pub fn return_info(&self) -> Option<ExternRet> {
-        self.0.return_info().map(ExternRet)
+        self.0.return_info().and_then(ExternRet::from_union)
     }
 }
 
 impl ExternRet {
     pub fn c_type_base(&self) -> Option<ExternCTypeBase> {
-        self.0.c_type_base().map(ExternCTypeBase::from_union)
+        self.0.c_type_base().and_then(ExternCTypeBase::from_union)
     }
     pub fn c_type_suffixes(&self) -> impl Iterator<Item = ExternCTypeSuffix> + '_ {
         self.0.c_type_suffixes().map(ExternCTypeSuffix::from_union)
@@ -2187,7 +3224,7 @@ impl ExternRet {
         self.0.is_void()
     }
     pub fn ty(&self) -> Option<LongIdent> {
-        self.0.ty().map(LongIdent)
+        self.0.ty().and_then(LongIdent::from_union)
     }
 }
 
@@ -2205,7 +3242,7 @@ impl ForEachExpr {
         self.0.enum_expr().and_then(Expr::from_union)
     }
     pub fn pat(&self) -> Option<Pat> {
-        self.0.pat().map(Pat::from_union)
+        self.0.pat().and_then(Pat::from_union)
     }
 }
 
@@ -2229,7 +3266,7 @@ impl ForExpr {
 
 impl FunExpr {
     pub fn args(&self) -> impl Iterator<Item = Pat> + '_ {
-        self.0.args().map(Pat::from_union)
+        self.0.args().filter_map(Pat::from_union)
     }
     pub fn body(&self) -> Option<Expr> {
         self.0.body().and_then(Expr::from_union)
@@ -2238,19 +3275,19 @@ impl FunExpr {
 
 impl FunType {
     pub fn arg(&self) -> Option<Type> {
-        self.0.arg().map(Type::from_union)
+        self.0.arg().and_then(Type::from_union)
     }
     pub fn ret(&self) -> Option<Type> {
-        self.0.ret().map(Type::from_union)
+        self.0.ret().and_then(Type::from_union)
     }
 }
 
 impl GetSetAccessor {
     pub fn args(&self) -> impl Iterator<Item = Pat> + '_ {
-        self.0.args().map(Pat::from_union)
+        self.0.args().filter_map(Pat::from_union)
     }
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn body(&self) -> Option<Expr> {
         self.0.body().and_then(Expr::from_union)
@@ -2259,34 +3296,34 @@ impl GetSetAccessor {
         self.0.is_get()
     }
     pub fn return_type(&self) -> Option<Type> {
-        self.0.return_type().map(Type::from_union)
+        self.0.return_type().and_then(Type::from_union)
     }
 }
 
 impl GetSetMember {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn getter(&self) -> Option<GetSetAccessor> {
-        self.0.getter().map(GetSetAccessor)
+        self.0.getter().and_then(GetSetAccessor::from_union)
     }
     pub fn head_pat(&self) -> Option<LongIdentPat> {
-        self.0.head_pat().map(LongIdentPat)
+        self.0.head_pat().and_then(LongIdentPat::from_union)
     }
     pub fn is_static(&self) -> bool {
         self.0.is_static()
     }
     pub fn name(&self) -> Option<LongIdent> {
-        self.0.name().map(LongIdent)
+        self.0.name().and_then(LongIdent::from_union)
     }
     pub fn setter(&self) -> Option<GetSetAccessor> {
-        self.0.setter().map(GetSetAccessor)
+        self.0.setter().and_then(GetSetAccessor::from_union)
     }
 }
 
 impl HashConstraintType {
     pub fn inner(&self) -> Option<Type> {
-        self.0.inner().map(Type::from_union)
+        self.0.inner().and_then(Type::from_union)
     }
 }
 
@@ -2313,16 +3350,16 @@ impl IfThenElseExpr {
 
 impl ImplFile {
     pub fn modules(&self) -> impl Iterator<Item = ModuleOrNamespace> + '_ {
-        self.0.modules().map(ModuleOrNamespace)
+        self.0.modules().filter_map(ModuleOrNamespace::from_union)
     }
 }
 
 impl ImplicitCtor {
     pub fn args(&self) -> Option<Pat> {
-        self.0.args().map(Pat::from_union)
+        self.0.args().and_then(Pat::from_union)
     }
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn self_id(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.self_id()
@@ -2355,7 +3392,7 @@ impl InheritMember {
         self.0.args().and_then(Expr::from_union)
     }
     pub fn base_type(&self) -> Option<Type> {
-        self.0.base_type().map(Type::from_union)
+        self.0.base_type().and_then(Type::from_union)
     }
     pub fn is_implicit(&self) -> bool {
         self.0.is_implicit()
@@ -2370,7 +3407,7 @@ impl InlineIlExpr {
         self.0.instruction()
     }
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
-        self.0.types().map(Type::from_union)
+        self.0.types().filter_map(Type::from_union)
     }
 }
 
@@ -2379,10 +3416,10 @@ impl InterfaceImpl {
         self.0.has_with()
     }
     pub fn interface_type(&self) -> Option<Type> {
-        self.0.interface_type().map(Type::from_union)
+        self.0.interface_type().and_then(Type::from_union)
     }
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
-        self.0.members().map(MemberDefn::from_union)
+        self.0.members().filter_map(MemberDefn::from_union)
     }
 }
 
@@ -2398,16 +3435,16 @@ impl InterpStringExpr {
 
 impl IntersectionType {
     pub fn typar(&self) -> Option<VarType> {
-        self.0.typar().map(VarType)
+        self.0.typar().and_then(VarType::from_union)
     }
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
-        self.0.types().map(Type::from_union)
+        self.0.types().filter_map(Type::from_union)
     }
 }
 
 impl IsInstPat {
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -2431,10 +3468,10 @@ impl LazyExpr {
 
 impl LetDecl {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
-        self.0.bindings().map(Binding)
+        self.0.bindings().filter_map(Binding::from_union)
     }
     pub fn is_rec(&self) -> bool {
         self.0.is_rec()
@@ -2446,7 +3483,7 @@ impl LetDecl {
 
 impl LetOrUseExpr {
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
-        self.0.bindings().map(Binding)
+        self.0.bindings().filter_map(Binding::from_union)
     }
     pub fn body(&self) -> Option<Expr> {
         self.0.body().and_then(Expr::from_union)
@@ -2479,16 +3516,18 @@ impl ListConsPat {
         self.0.cons_token()
     }
     pub fn lhs(&self) -> Option<Pat> {
-        self.0.lhs().map(Pat::from_union)
+        self.0.lhs().and_then(Pat::from_union)
     }
     pub fn rhs(&self) -> Option<Pat> {
-        self.0.rhs().map(Pat::from_union)
+        self.0.rhs().and_then(Pat::from_union)
     }
 }
 
 impl LongIdent {
     pub fn active_pat_names(&self) -> impl Iterator<Item = ActivePatName> + '_ {
-        self.0.active_pat_names().map(ActivePatName)
+        self.0
+            .active_pat_names()
+            .filter_map(ActivePatName::from_union)
     }
     pub fn idents(&self) -> impl Iterator<Item = crate::syntax::SyntaxToken> + '_ {
         self.0.idents()
@@ -2497,53 +3536,53 @@ impl LongIdent {
 
 impl LongIdentAppType {
     pub fn path(&self) -> Option<LongIdent> {
-        self.0.path().map(LongIdent)
+        self.0.path().and_then(LongIdent::from_union)
     }
     pub fn root(&self) -> Option<Type> {
-        self.0.root().map(Type::from_union)
+        self.0.root().and_then(Type::from_union)
     }
     pub fn type_args(&self) -> Vec<Type> {
         self.0
             .type_args()
             .into_iter()
-            .map(Type::from_union)
+            .filter_map(Type::from_union)
             .collect()
     }
 }
 
 impl LongIdentExpr {
     pub fn long_ident(&self) -> Option<LongIdent> {
-        self.0.long_ident().map(LongIdent)
+        self.0.long_ident().and_then(LongIdent::from_union)
     }
 }
 
 impl LongIdentPat {
     pub fn active_pat_name(&self) -> Option<ActivePatName> {
-        self.0.active_pat_name().map(ActivePatName)
+        self.0.active_pat_name().and_then(ActivePatName::from_union)
     }
     pub fn args(&self) -> impl Iterator<Item = Pat> + '_ {
-        self.0.args().map(Pat::from_union)
+        self.0.args().filter_map(Pat::from_union)
     }
     pub fn head(&self) -> Option<LongIdent> {
-        self.0.head().map(LongIdent)
+        self.0.head().and_then(LongIdent::from_union)
     }
     pub fn name_pat_pairs(&self) -> Option<NamePatPairs> {
-        self.0.name_pat_pairs().map(NamePatPairs)
+        self.0.name_pat_pairs().and_then(NamePatPairs::from_union)
     }
     pub fn typar_decls(&self) -> Option<TyparDecls> {
-        self.0.typar_decls().map(TyparDecls)
+        self.0.typar_decls().and_then(TyparDecls::from_union)
     }
 }
 
 impl LongIdentType {
     pub fn long_ident(&self) -> Option<LongIdent> {
-        self.0.long_ident().map(LongIdent)
+        self.0.long_ident().and_then(LongIdent::from_union)
     }
 }
 
 impl MatchBangExpr {
     pub fn clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
-        self.0.clauses().map(MatchClause)
+        self.0.clauses().filter_map(MatchClause::from_union)
     }
     pub fn scrutinee(&self) -> Option<Expr> {
         self.0.scrutinee().and_then(Expr::from_union)
@@ -2555,7 +3594,7 @@ impl MatchClause {
         self.0.guard().and_then(Expr::from_union)
     }
     pub fn pat(&self) -> Option<Pat> {
-        self.0.pat().map(Pat::from_union)
+        self.0.pat().and_then(Pat::from_union)
     }
     pub fn result(&self) -> Option<Expr> {
         self.0.result().and_then(Expr::from_union)
@@ -2564,7 +3603,7 @@ impl MatchClause {
 
 impl MatchExpr {
     pub fn clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
-        self.0.clauses().map(MatchClause)
+        self.0.clauses().filter_map(MatchClause::from_union)
     }
     pub fn scrutinee(&self) -> Option<Expr> {
         self.0.scrutinee().and_then(Expr::from_union)
@@ -2573,55 +3612,55 @@ impl MatchExpr {
 
 impl MatchLambdaExpr {
     pub fn clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
-        self.0.clauses().map(MatchClause)
+        self.0.clauses().filter_map(MatchClause::from_union)
     }
 }
 
 impl MeasureDivide {
     pub fn denominator(&self) -> Option<Measure> {
-        self.0.denominator().map(Measure::from_union)
+        self.0.denominator().and_then(Measure::from_union)
     }
     pub fn numerator(&self) -> Option<Measure> {
-        self.0.numerator().map(Measure::from_union)
+        self.0.numerator().and_then(Measure::from_union)
     }
 }
 
 impl MeasureLitExpr {
     pub fn const_expr(&self) -> Option<ConstExpr> {
-        self.0.const_expr().map(ConstExpr)
+        self.0.const_expr().and_then(ConstExpr::from_union)
     }
     pub fn measure(&self) -> Option<Measure> {
-        self.0.measure().map(Measure::from_union)
+        self.0.measure().and_then(Measure::from_union)
     }
 }
 
 impl MeasureLitPat {
     pub fn const_pat(&self) -> Option<ConstPat> {
-        self.0.const_pat().map(ConstPat)
+        self.0.const_pat().and_then(ConstPat::from_union)
     }
     pub fn measure(&self) -> Option<Measure> {
-        self.0.measure().map(Measure::from_union)
+        self.0.measure().and_then(Measure::from_union)
     }
 }
 
 impl MeasureNamed {
     pub fn path(&self) -> Option<LongIdent> {
-        self.0.path().map(LongIdent)
+        self.0.path().and_then(LongIdent::from_union)
     }
 }
 
 impl MeasureParen {
     pub fn inner(&self) -> Option<Measure> {
-        self.0.inner().map(Measure::from_union)
+        self.0.inner().and_then(Measure::from_union)
     }
 }
 
 impl MeasurePower {
     pub fn base(&self) -> Option<Measure> {
-        self.0.base().map(Measure::from_union)
+        self.0.base().and_then(Measure::from_union)
     }
     pub fn exponent(&self) -> Option<RationalConst> {
-        self.0.exponent().map(RationalConst::from_union)
+        self.0.exponent().and_then(RationalConst::from_union)
     }
     pub fn is_negated(&self) -> bool {
         self.0.is_negated()
@@ -2630,10 +3669,10 @@ impl MeasurePower {
 
 impl MeasurePowerType {
     pub fn base(&self) -> Option<Type> {
-        self.0.base().map(Type::from_union)
+        self.0.base().and_then(Type::from_union)
     }
     pub fn exponent(&self) -> Option<RationalConst> {
-        self.0.exponent().map(RationalConst::from_union)
+        self.0.exponent().and_then(RationalConst::from_union)
     }
     pub fn is_negated(&self) -> bool {
         self.0.is_negated()
@@ -2642,16 +3681,16 @@ impl MeasurePowerType {
 
 impl MeasureProduct {
     pub fn lhs(&self) -> Option<Measure> {
-        self.0.lhs().map(Measure::from_union)
+        self.0.lhs().and_then(Measure::from_union)
     }
     pub fn rhs(&self) -> Option<Measure> {
-        self.0.rhs().map(Measure::from_union)
+        self.0.rhs().and_then(Measure::from_union)
     }
 }
 
 impl MeasureSeq {
     pub fn measures(&self) -> impl Iterator<Item = Measure> + '_ {
-        self.0.measures().map(Measure::from_union)
+        self.0.measures().filter_map(Measure::from_union)
     }
 }
 
@@ -2675,10 +3714,10 @@ impl MemberDo {
 
 impl MemberLetBindings {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
-        self.0.bindings().map(Binding)
+        self.0.bindings().filter_map(Binding::from_union)
     }
     pub fn is_rec(&self) -> bool {
         self.0.is_rec()
@@ -2693,10 +3732,10 @@ impl MemberLetBindings {
 
 impl MemberMethod {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn binding(&self) -> Option<Binding> {
-        self.0.binding().map(Binding)
+        self.0.binding().and_then(Binding::from_union)
     }
     pub fn is_static(&self) -> bool {
         self.0.is_static()
@@ -2708,31 +3747,31 @@ impl MemberMethod {
 
 impl MemberSig {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn leading_keyword(&self) -> MemberSigLeading {
         MemberSigLeading::from_union(self.0.leading_keyword())
     }
     pub fn val_sig(&self) -> Option<ValSig> {
-        self.0.val_sig().map(ValSig)
+        self.0.val_sig().and_then(ValSig::from_union)
     }
 }
 
 impl ModuleAbbrevDecl {
     pub fn ident(&self) -> Option<LongIdent> {
-        self.0.ident().map(LongIdent)
+        self.0.ident().and_then(LongIdent::from_union)
     }
     pub fn long_id(&self) -> Option<LongIdent> {
-        self.0.long_id().map(LongIdent)
+        self.0.long_id().and_then(LongIdent::from_union)
     }
 }
 
 impl ModuleOrNamespace {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn decls(&self) -> impl Iterator<Item = ModuleDecl> + '_ {
-        self.0.decls().map(ModuleDecl::from_union)
+        self.0.decls().filter_map(ModuleDecl::from_union)
     }
     pub fn is_anon(&self) -> bool {
         self.0.is_anon()
@@ -2744,10 +3783,10 @@ impl ModuleOrNamespace {
         ModuleOrNamespaceKind::from_union(self.0.kind())
     }
     pub fn long_id(&self) -> Option<LongIdent> {
-        self.0.long_id().map(LongIdent)
+        self.0.long_id().and_then(LongIdent::from_union)
     }
     pub fn sig_decls(&self) -> impl Iterator<Item = SigDecl> + '_ {
-        self.0.sig_decls().map(SigDecl::from_union)
+        self.0.sig_decls().filter_map(SigDecl::from_union)
     }
 }
 
@@ -2756,19 +3795,19 @@ impl NamePatPair {
         self.0.name()
     }
     pub fn pat(&self) -> Option<Pat> {
-        self.0.pat().map(Pat::from_union)
+        self.0.pat().and_then(Pat::from_union)
     }
 }
 
 impl NamePatPairs {
     pub fn pairs(&self) -> impl Iterator<Item = NamePatPair> + '_ {
-        self.0.pairs().map(NamePatPair)
+        self.0.pairs().filter_map(NamePatPair::from_union)
     }
 }
 
 impl NamedPat {
     pub fn active_pat_name(&self) -> Option<ActivePatName> {
-        self.0.active_pat_name().map(ActivePatName)
+        self.0.active_pat_name().and_then(ActivePatName::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -2777,19 +3816,19 @@ impl NamedPat {
 
 impl NestedModuleDecl {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn decls(&self) -> impl Iterator<Item = ModuleDecl> + '_ {
-        self.0.decls().map(ModuleDecl::from_union)
+        self.0.decls().filter_map(ModuleDecl::from_union)
     }
     pub fn is_rec(&self) -> bool {
         self.0.is_rec()
     }
     pub fn long_id(&self) -> Option<LongIdent> {
-        self.0.long_id().map(LongIdent)
+        self.0.long_id().and_then(LongIdent::from_union)
     }
     pub fn sig_decls(&self) -> impl Iterator<Item = SigDecl> + '_ {
-        self.0.sig_decls().map(SigDecl::from_union)
+        self.0.sig_decls().filter_map(SigDecl::from_union)
     }
 }
 
@@ -2798,7 +3837,7 @@ impl NewExpr {
         self.0.arg().and_then(Expr::from_union)
     }
     pub fn target_type(&self) -> Option<Type> {
-        self.0.target_type().map(Type::from_union)
+        self.0.target_type().and_then(Type::from_union)
     }
 }
 
@@ -2819,16 +3858,16 @@ impl ObjExpr {
         self.0.arg().and_then(Expr::from_union)
     }
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
-        self.0.bindings().map(Binding)
+        self.0.bindings().filter_map(Binding::from_union)
     }
     pub fn extra_impls(&self) -> impl Iterator<Item = MemberDefn> + '_ {
-        self.0.extra_impls().map(MemberDefn::from_union)
+        self.0.extra_impls().filter_map(MemberDefn::from_union)
     }
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
-        self.0.members().map(MemberDefn::from_union)
+        self.0.members().filter_map(MemberDefn::from_union)
     }
     pub fn obj_type(&self) -> Option<Type> {
-        self.0.obj_type().map(Type::from_union)
+        self.0.obj_type().and_then(Type::from_union)
     }
 }
 
@@ -2846,7 +3885,7 @@ impl ObjectModelRepr {
         self.0.is_struct()
     }
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
-        self.0.members().map(MemberDefn::from_union)
+        self.0.members().filter_map(MemberDefn::from_union)
     }
 }
 
@@ -2855,10 +3894,10 @@ impl OpenDecl {
         self.0.is_type()
     }
     pub fn long_ident(&self) -> Option<LongIdent> {
-        self.0.long_ident().map(LongIdent)
+        self.0.long_ident().and_then(LongIdent::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -2873,10 +3912,10 @@ impl OrPat {
         self.0.bar_token()
     }
     pub fn lhs(&self) -> Option<Pat> {
-        self.0.lhs().map(Pat::from_union)
+        self.0.lhs().and_then(Pat::from_union)
     }
     pub fn rhs(&self) -> Option<Pat> {
-        self.0.rhs().map(Pat::from_union)
+        self.0.rhs().and_then(Pat::from_union)
     }
 }
 
@@ -2888,13 +3927,13 @@ impl ParenExpr {
 
 impl ParenPat {
     pub fn inner(&self) -> Option<Pat> {
-        self.0.inner().map(Pat::from_union)
+        self.0.inner().and_then(Pat::from_union)
     }
 }
 
 impl ParenType {
     pub fn inner(&self) -> Option<Type> {
-        self.0.inner().map(Type::from_union)
+        self.0.inner().and_then(Type::from_union)
     }
 }
 
@@ -2921,13 +3960,13 @@ impl RationalConstInteger {
 
 impl RationalConstNegate {
     pub fn inner(&self) -> Option<RationalConst> {
-        self.0.inner().map(RationalConst::from_union)
+        self.0.inner().and_then(RationalConst::from_union)
     }
 }
 
 impl RationalConstParen {
     pub fn inner(&self) -> Option<RationalConst> {
-        self.0.inner().map(RationalConst::from_union)
+        self.0.inner().and_then(RationalConst::from_union)
     }
 }
 
@@ -2945,16 +3984,16 @@ impl RecordExpr {
         self.0.copy_source().and_then(Expr::from_union)
     }
     pub fn fields(&self) -> impl Iterator<Item = RecordField> + '_ {
-        self.0.fields().map(RecordField)
+        self.0.fields().filter_map(RecordField::from_union)
     }
     pub fn inherit(&self) -> Option<InheritMember> {
-        self.0.inherit().map(InheritMember)
+        self.0.inherit().and_then(InheritMember::from_union)
     }
 }
 
 impl RecordField {
     pub fn field_name(&self) -> Option<LongIdent> {
-        self.0.field_name().map(LongIdent)
+        self.0.field_name().and_then(LongIdent::from_union)
     }
     pub fn value(&self) -> Option<Expr> {
         self.0.value().and_then(Expr::from_union)
@@ -2963,7 +4002,7 @@ impl RecordField {
 
 impl RecordFieldDecl {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -2972,28 +4011,28 @@ impl RecordFieldDecl {
         self.0.is_mutable()
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
 impl RecordPat {
     pub fn fields(&self) -> impl Iterator<Item = RecordPatField> + '_ {
-        self.0.fields().map(RecordPatField)
+        self.0.fields().filter_map(RecordPatField::from_union)
     }
 }
 
 impl RecordPatField {
     pub fn name(&self) -> Option<LongIdent> {
-        self.0.name().map(LongIdent)
+        self.0.name().and_then(LongIdent::from_union)
     }
     pub fn pat(&self) -> Option<Pat> {
-        self.0.pat().map(Pat::from_union)
+        self.0.pat().and_then(Pat::from_union)
     }
 }
 
 impl RecordRepr {
     pub fn fields(&self) -> impl Iterator<Item = RecordFieldDecl> + '_ {
-        self.0.fields().map(RecordFieldDecl)
+        self.0.fields().filter_map(RecordFieldDecl::from_union)
     }
 }
 
@@ -3005,13 +4044,13 @@ impl SequentialExpr {
 
 impl SigFile {
     pub fn modules(&self) -> impl Iterator<Item = ModuleOrNamespace> + '_ {
-        self.0.modules().map(ModuleOrNamespace)
+        self.0.modules().filter_map(ModuleOrNamespace::from_union)
     }
 }
 
 impl SignatureParameterType {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn is_optional(&self) -> bool {
         self.0.is_optional()
@@ -3020,7 +4059,7 @@ impl SignatureParameterType {
         self.0.name()
     }
     pub fn value_type(&self) -> Option<Type> {
-        self.0.value_type().map(Type::from_union)
+        self.0.value_type().and_then(Type::from_union)
     }
 }
 
@@ -3032,10 +4071,10 @@ impl StaticConstExprType {
 
 impl StaticConstNamedType {
     pub fn ident(&self) -> Option<Type> {
-        self.0.ident().map(Type::from_union)
+        self.0.ident().and_then(Type::from_union)
     }
     pub fn value(&self) -> Option<Type> {
-        self.0.value().map(Type::from_union)
+        self.0.value().and_then(Type::from_union)
     }
 }
 
@@ -3050,10 +4089,10 @@ impl StaticOptCondition {
         self.0.is_struct()
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
     pub fn typar(&self) -> Option<TyparDecl> {
-        self.0.typar().map(TyparDecl)
+        self.0.typar().and_then(TyparDecl::from_union)
     }
 }
 
@@ -3062,13 +4101,15 @@ impl StaticOptWhenClause {
         self.0.branch().and_then(Expr::from_union)
     }
     pub fn conditions(&self) -> impl Iterator<Item = StaticOptCondition> + '_ {
-        self.0.conditions().map(StaticOptCondition)
+        self.0
+            .conditions()
+            .filter_map(StaticOptCondition::from_union)
     }
 }
 
 impl StaticOptimizationExpr {
     pub fn clauses(&self) -> impl Iterator<Item = StaticOptWhenClause> + '_ {
-        self.0.clauses().map(StaticOptWhenClause)
+        self.0.clauses().filter_map(StaticOptWhenClause::from_union)
     }
     pub fn main_expr(&self) -> Option<Expr> {
         self.0.main_expr().and_then(Expr::from_union)
@@ -3080,13 +4121,13 @@ impl TraitCallExpr {
         self.0.arg().and_then(Expr::from_union)
     }
     pub fn member_sig(&self) -> Option<MemberSig> {
-        self.0.member_sig().map(MemberSig)
+        self.0.member_sig().and_then(MemberSig::from_union)
     }
     pub fn support_type(&self) -> Option<Type> {
-        self.0.support_type().map(Type::from_union)
+        self.0.support_type().and_then(Type::from_union)
     }
     pub fn support_types(&self) -> impl Iterator<Item = Type> + '_ {
-        self.0.support_types().map(Type::from_union)
+        self.0.support_types().filter_map(Type::from_union)
     }
 }
 
@@ -3101,7 +4142,7 @@ impl TryExpr {
         self.0.try_expr().and_then(Expr::from_union)
     }
     pub fn with_clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
-        self.0.with_clauses().map(MatchClause)
+        self.0.with_clauses().filter_map(MatchClause::from_union)
     }
 }
 
@@ -3116,7 +4157,7 @@ impl TupleExpr {
 
 impl TuplePat {
     pub fn elements(&self) -> impl Iterator<Item = Pat> + '_ {
-        self.0.elements().map(Pat::from_union)
+        self.0.elements().filter_map(Pat::from_union)
     }
     pub fn is_struct(&self) -> bool {
         self.0.is_struct()
@@ -3131,7 +4172,7 @@ impl TupleType {
         self.0
             .segments()
             .into_iter()
-            .map(TupleSegment::from_union)
+            .filter_map(TupleSegment::from_union)
             .collect()
     }
 }
@@ -3141,40 +4182,42 @@ impl TyparConstraint {
         self.0.kind().map(TyparConstraintKind::from_union)
     }
     pub fn member_sig(&self) -> Option<MemberSig> {
-        self.0.member_sig().map(MemberSig)
+        self.0.member_sig().and_then(MemberSig::from_union)
     }
     pub fn self_constraint(&self) -> Option<Type> {
-        self.0.self_constraint().map(Type::from_union)
+        self.0.self_constraint().and_then(Type::from_union)
     }
     pub fn support_types(&self) -> impl Iterator<Item = Type> + '_ {
-        self.0.support_types().map(Type::from_union)
+        self.0.support_types().filter_map(Type::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
     pub fn typar(&self) -> Option<TyparDecl> {
-        self.0.typar().map(TyparDecl)
+        self.0.typar().and_then(TyparDecl::from_union)
     }
     pub fn type_args(&self) -> impl Iterator<Item = Type> + '_ {
-        self.0.type_args().map(Type::from_union)
+        self.0.type_args().filter_map(Type::from_union)
     }
 }
 
 impl TyparConstraints {
     pub fn constraints(&self) -> impl Iterator<Item = TyparConstraint> + '_ {
-        self.0.constraints().map(TyparConstraint)
+        self.0.constraints().filter_map(TyparConstraint::from_union)
     }
 }
 
 impl TyparDecl {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
     }
     pub fn intersection_constraints(&self) -> impl Iterator<Item = Type> + '_ {
-        self.0.intersection_constraints().map(Type::from_union)
+        self.0
+            .intersection_constraints()
+            .filter_map(Type::from_union)
     }
     pub fn is_head_type(&self) -> bool {
         self.0.is_head_type()
@@ -3183,13 +4226,15 @@ impl TyparDecl {
 
 impl TyparDecls {
     pub fn constraint_clause(&self) -> Option<TyparConstraints> {
-        self.0.constraint_clause().map(TyparConstraints)
+        self.0
+            .constraint_clause()
+            .and_then(TyparConstraints::from_union)
     }
     pub fn form(&self) -> TyparDeclsForm {
         TyparDeclsForm::from_union(self.0.form())
     }
     pub fn typars(&self) -> impl Iterator<Item = TyparDecl> + '_ {
-        self.0.typars().map(TyparDecl)
+        self.0.typars().filter_map(TyparDecl::from_union)
     }
 }
 
@@ -3201,7 +4246,7 @@ impl TyparExpr {
 
 impl TypeAbbrev {
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -3213,38 +4258,38 @@ impl TypeAppExpr {
         self.0
             .type_args()
             .into_iter()
-            .map(Type::from_union)
+            .filter_map(Type::from_union)
             .collect()
     }
 }
 
 impl TypeDefn {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn constraints(&self) -> impl Iterator<Item = TyparConstraint> + '_ {
-        self.0.constraints().map(TyparConstraint)
+        self.0.constraints().filter_map(TyparConstraint::from_union)
     }
     pub fn implicit_ctor(&self) -> Option<ImplicitCtor> {
-        self.0.implicit_ctor().map(ImplicitCtor)
+        self.0.implicit_ctor().and_then(ImplicitCtor::from_union)
     }
     pub fn long_id(&self) -> Option<LongIdent> {
-        self.0.long_id().map(LongIdent)
+        self.0.long_id().and_then(LongIdent::from_union)
     }
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
-        self.0.members().map(MemberDefn::from_union)
+        self.0.members().filter_map(MemberDefn::from_union)
     }
     pub fn repr(&self) -> Option<TypeDefnRepr> {
-        self.0.repr().map(TypeDefnRepr::from_union)
+        self.0.repr().and_then(TypeDefnRepr::from_union)
     }
     pub fn typar_decls(&self) -> Option<TyparDecls> {
-        self.0.typar_decls().map(TyparDecls)
+        self.0.typar_decls().and_then(TyparDecls::from_union)
     }
 }
 
 impl TypeDefnsDecl {
     pub fn defns(&self) -> impl Iterator<Item = TypeDefn> + '_ {
-        self.0.defns().map(TypeDefn)
+        self.0.defns().filter_map(TypeDefn::from_union)
     }
 }
 
@@ -3253,7 +4298,7 @@ impl TypeTestExpr {
         self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -3262,28 +4307,28 @@ impl TypedExpr {
         self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
 impl TypedPat {
     pub fn pat(&self) -> Option<Pat> {
-        self.0.pat().map(Pat::from_union)
+        self.0.pat().and_then(Pat::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
 impl UnionCase {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn fields(&self) -> impl Iterator<Item = UnionCaseField> + '_ {
-        self.0.fields().map(UnionCaseField)
+        self.0.fields().filter_map(UnionCaseField::from_union)
     }
     pub fn full_type(&self) -> Option<Type> {
-        self.0.full_type().map(Type::from_union)
+        self.0.full_type().and_then(Type::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -3298,7 +4343,7 @@ impl UnionCaseField {
         self.0.ident()
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
@@ -3307,7 +4352,7 @@ impl UnionRepr {
         self.0.access()
     }
     pub fn cases(&self) -> impl Iterator<Item = UnionCase> + '_ {
-        self.0.cases().map(UnionCase)
+        self.0.cases().filter_map(UnionCase::from_union)
     }
 }
 
@@ -3316,22 +4361,22 @@ impl UpcastExpr {
         self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
 impl ValDecl {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn val_sig(&self) -> Option<ValSig> {
-        self.0.val_sig().map(ValSig)
+        self.0.val_sig().and_then(ValSig::from_union)
     }
 }
 
 impl ValField {
     pub fn attributes(&self) -> impl Iterator<Item = AttributeList> + '_ {
-        self.0.attributes().map(AttributeList)
+        self.0.attributes().filter_map(AttributeList::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -3343,16 +4388,16 @@ impl ValField {
         self.0.is_static()
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
 }
 
 impl ValSig {
     pub fn active_pat_name(&self) -> Option<ActivePatName> {
-        self.0.active_pat_name().map(ActivePatName)
+        self.0.active_pat_name().and_then(ActivePatName::from_union)
     }
     pub fn constraints(&self) -> impl Iterator<Item = TyparConstraint> + '_ {
-        self.0.constraints().map(TyparConstraint)
+        self.0.constraints().filter_map(TyparConstraint::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -3361,10 +4406,10 @@ impl ValSig {
         self.0.literal_value().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
-        self.0.ty().map(Type::from_union)
+        self.0.ty().and_then(Type::from_union)
     }
     pub fn typar_decls(&self) -> Option<TyparDecls> {
-        self.0.typar_decls().map(TyparDecls)
+        self.0.typar_decls().and_then(TyparDecls::from_union)
     }
 }
 
@@ -3406,7 +4451,7 @@ impl WithNullType {
         self.0.bar_token()
     }
     pub fn inner(&self) -> Option<Type> {
-        self.0.inner().map(Type::from_union)
+        self.0.inner().and_then(Type::from_union)
     }
 }
 
@@ -3425,9 +4470,5 @@ impl YieldExpr {
 impl crate::syntax::view::Sealed for ParsedInput {}
 
 impl crate::syntax::Facade for ParsedInput {
-    const VERSIONS: &'static [LanguageVersion] = &[
-        LanguageVersion::V9_0,
-        LanguageVersion::V10_0,
-        LanguageVersion::V11_0,
-    ];
+    const VERSIONS: &'static [LanguageVersion] = &[LanguageVersion::V9_0, LanguageVersion::V10_0];
 }
