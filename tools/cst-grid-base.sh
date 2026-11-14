@@ -34,6 +34,7 @@ mkdir "$scratch/out"
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo/target/grid-base}" \
     nix develop -c cargo test -p borzoi-cst --test all -- \
     parser_diff_recovery:: parser_diff_decl_sequence_grid:: \
+    parser_diff_module_recover_grid:: \
     >"$scratch/run.log" 2>&1) || true
 
 for checked_in in "$manifests"/*.base.txt; do
