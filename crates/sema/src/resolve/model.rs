@@ -3847,7 +3847,7 @@ pub struct ResolvedFile {
     /// The file's declared project **namespace** paths (`["Outer", "Inner"]`),
     /// from its `namespace` header(s), each with its ancestor prefixes. Retained
     /// as a file-level fact because the OV-6 extension gate reads it through the
-    /// public [`Self::namespace_paths`] accessor (`crates/sema/src/infer.rs`); the
+    /// public [`Self::namespace_paths`] accessor (`crates/sema/src/infer/extension_scope.rs`); the
     /// *cross-file* namespace index now derives from the `Namespace`
     /// [`ExportDecl`]s (see [`ProjectItems::extend_with`]).
     pub(super) namespace_paths: Vec<Vec<String>>,

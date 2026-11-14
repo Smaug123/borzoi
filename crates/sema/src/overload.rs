@@ -113,7 +113,7 @@ enum ClosedTy {
     Vector(&'static str),
 }
 
-/// The 16 sealed BCL primitives — `is_sealed_primitive` in `infer.rs`, restated
+/// The 16 sealed BCL primitives — `is_sealed_primitive` in `infer/subsumption.rs`, restated
 /// here as the closed-set membership currency (canonical dotted paths). `Object`
 /// is deliberately absent: `obj` is an *open* target (everything boxes to it),
 /// so it can never eliminate a position.

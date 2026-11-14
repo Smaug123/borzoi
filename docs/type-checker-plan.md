@@ -89,7 +89,7 @@ Compile order. This mirrors the "reusable outside this repo" framing of
 binary as the only impure consumer.
 
 Name resolution is the crate's first module (`resolve`); inference has landed as
-`crates/sema/src/infer.rs` in the same crate. They are separated by module, not by
+`crates/sema/src/infer/` in the same crate. They are separated by module, not by
 crate, because inference consumes the resolver's output directly and
 there is no third-party consumer that wants one without the other (the
 boundary cost analysis from `gospel.md` — module boundaries are cheap,
