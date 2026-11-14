@@ -1997,12 +1997,26 @@ every committed run to it. The scheduling rules above came out of its
 failures. Its soak fails when any of the three push rules is changed.
 
 The census runs `GenerateRestoreGraphFile` on every cone and pins where the
-executor stops. Today every single-target cone stops at one hook,
-`Microsoft.Common.CurrentVersion.targets`'s
-`BeforeTargets="$(BuildDependsOn);Build;$(RebuildDependsOn);…"`.
-`RebuildDependsOn` rests on the reserved `MSBuildProjectDefaultTargets`,
-which the walk does not seed. The two multi-targeting outer builds stop at
-opacity.
+executor stops. Every single-target cone stops at
+`_GenerateRestoreGraph`'s `Returns`. The two multi-targeting outer builds
+stop at opacity.
+
+**`MSBuildProjectDefaultTargets`.** The hook
+`BeforeTargets="$(BuildDependsOn);Build;$(RebuildDependsOn);…"` in
+`Microsoft.Common.CurrentVersion.targets` reads `RebuildDependsOn`, which
+rests on the reserved `MSBuildProjectDefaultTargets`. The walk sets it as
+MSBuild's `Evaluator.UpdateDefaultTargets` does. The first project or
+import root, in depth-first import order and before its own implicit
+imports, whose `DefaultTargets` expands (properties only) to something sets
+it, unescaped and untrimmed. MSBuild stores that unescaped text as the
+escaped value, so `%2541` reads back as `A`, and nothing changes it after.
+On SDK projects it is `Build`, from `Microsoft.Common.targets`. A root whose
+expansion the walk cannot vouch for, or one reached after the walk passed
+content it could not see, leaves it unset and inexact.
+`fsproj_default_targets_generative_diff` holds it to MSBuild over entry and
+imported roots, literal, padded, escaped, list, empty and property-expanded
+values, and an import the walk cannot decide. Trimming, the last root
+winning, ignoring opacity, or re-escaping each fails its soak.
 
 #### A₁.4: the task leaves
 

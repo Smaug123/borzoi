@@ -513,6 +513,10 @@ fn walk_once<'r>(
         state.directory_build_props_splice_path = Some(canonicalise_or_normalise(observer, &path));
     }
 
+    // The entry root offers its `DefaultTargets` before its implicit SDK
+    // imports, as each imported root does in [`walk_external_file`].
+    latch_default_targets(root, &mut state);
+
     // Resolve the project root's SDK shorthand (if any). The returned
     // paths, when `Some`, are spliced as the OUTERMOST pair around the
     // Directory.Build.* splice, matching MSBuild's effective ordering:
@@ -1433,6 +1437,10 @@ struct State<'r> {
     /// definition) may be about any list.
     #[cfg(any(test, feature = "test-support"))]
     package_cause_owners: HashMap<usize, item_pass::PackageItemKind>,
+    /// Whether `MSBuildProjectDefaultTargets` is settled ([`latch_default_targets`]):
+    /// set from a root's `DefaultTargets`, or left unset because a root's
+    /// could not be decided.
+    default_targets_decided: bool,
     /// MSBuild's batch of `Update`s for each item type whose `Update`s the walk
     /// models (`Compile`, `PackageReference`), as far as the walk can follow it
     /// ([`item_pass`]'s `update_strands_late`), keyed by lowercased item type.
@@ -2175,6 +2183,7 @@ impl<'r> State<'r> {
             package_cause_owners: HashMap::new(),
             package_versions: Vec::new(),
             package_versions_untracked: false,
+            default_targets_decided: false,
             update_batches: HashMap::new(),
             global_package_references: Vec::new(),
             framework_references: Vec::new(),
@@ -2738,6 +2747,7 @@ impl<'r> State<'r> {
                 global_package_references_mutated: _,
             #[cfg(any(test, feature = "test-support"))]
                 package_cause_owners: _,
+            default_targets_decided: _,
             update_batches: _,
             package_versions,
             package_versions_untracked,
@@ -6343,6 +6353,39 @@ fn resolve_property_import_target(
 /// `state.depth`; a duplicate of an already-performed import returns
 /// silently (see below). The depth increment/decrement pair only runs
 /// on the happy path.
+/// Offer `root`'s `DefaultTargets` to `MSBuildProjectDefaultTargets`, as
+/// MSBuild's `Evaluator.UpdateDefaultTargets` does: the first project or
+/// import root, in depth-first import order and before its own implicit
+/// imports, whose `DefaultTargets` expands (properties only) to something
+/// sets it, unescaped and untrimmed, and nothing changes it after. MSBuild
+/// stores that unescaped text as the property's escaped value.
+///
+/// A root whose expansion the walk cannot vouch for (an undecided or
+/// unpinned read), or one reached after the walk passed content it could
+/// not see (which may have set it first), ends the offer without a value:
+/// the name stays unset, and reads of it stay inexact.
+fn latch_default_targets(root: Node<'_, '_>, state: &mut State<'_>) {
+    if state.default_targets_decided {
+        return;
+    }
+    let Some(raw) = root.attribute("DefaultTargets") else {
+        return;
+    };
+    let expansion = item_pass::expand_silent(raw, state);
+    if expansion.had_issue() || expansion.unpinned_root.is_some() || state.walk_opaque.is_some() {
+        state.default_targets_decided = true;
+        return;
+    }
+    if expansion.value.is_empty() {
+        return;
+    }
+    state.default_targets_decided = true;
+    let value = expansion.value.unescape();
+    state
+        .lookup
+        .insert_escaped("MSBuildProjectDefaultTargets", Escaped::from_xml(value));
+}
+
 fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // MSBuild's duplicate-import skip: an import that resolves to an
     // already-imported path (same lexically-normalised, case-insensitive
@@ -6581,6 +6624,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // the entry *has* an SDK, the eager before-body splice already ran
     // and `pending_directory_build_props` is `None`, so nothing fires
     // here.)
+    latch_default_targets(doc.root_element(), state);
     let nested_sdk = resolve_project_sdk(doc.root_element(), state);
     if let Some(paths) = nested_sdk.as_ref() {
         walk_external_file(&paths.props, doc.root_element().range(), state);
