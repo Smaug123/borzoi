@@ -15,7 +15,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::observed::soundness::{Edit, Perturbation, Tally, Why, sweep};
-use crate::observed::{Observer, ReadSet};
+use crate::observed::{Observation, Observer, ReadSet};
 use crate::{resolve_sdk, workloads};
 
 /// Which optional parts of the world exist.
@@ -238,21 +238,39 @@ fn sweep_world(world: &World) -> Tally {
     let root = canon(tmp.path());
     let (project, source) = build(&root, world);
     let documents = RefCell::new(ImportDocuments::default());
+    let read_a_file = std::cell::Cell::new(false);
     let tally = sweep(
         &root,
         &|| {
-            same_as_reference(
+            let reused = same_as_reference(
                 evaluate(&root, &project, &source, Through::Reference),
                 evaluate(&root, &project, &source, Through::Reusing(&documents)),
-            )
+            );
+            // The world holds no workload manifests, so every file an
+            // evaluation reads whole is an MSBuild file it reads through
+            // `read_document`, and every one is well-formed: each is kept,
+            // parsed from the bytes its read records.
+            let documents = documents.borrow();
+            for read in reused.read_set.reads() {
+                if let Observation::Text(Ok(digest)) = &read.observation {
+                    read_a_file.set(true);
+                    assert_eq!(
+                        documents.kept_digest(&read.path),
+                        Some(*digest),
+                        "{} is not kept as it was read",
+                        read.path.display()
+                    );
+                }
+            }
+            reused
         },
         &extras(&root, world),
     );
     // The sweep evaluates the world many times over a tree it changes one
-    // file at a time, so the comparison is vacuous unless those evaluations
-    // reused documents.
+    // file at a time, so once any evaluation reads a file the comparison is
+    // vacuous unless some later one reused its document.
     let documents = documents.into_inner();
-    if documents.parsed() > 0 {
+    if read_a_file.get() {
         assert!(
             documents.reused() > 0,
             "the sweep's evaluations reused no document: {documents:?}"
@@ -339,7 +357,6 @@ fn a_full_world_records_every_kind_of_query() {
     let read_set: &ReadSet = &parsed.read_set;
     let has =
         |pred: &dyn Fn(&Observation) -> bool| read_set.reads().iter().any(|r| pred(&r.observation));
-    use crate::observed::Observation;
     assert!(has(&|o| matches!(o, Observation::Text(Ok(_)))));
     assert!(has(&|o| matches!(o, Observation::Kind(Ok(_)))));
     assert!(has(

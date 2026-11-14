@@ -67,6 +67,7 @@ quote = "1"
 # 0.21.2 parses nested elements iteratively; earlier versions recurse once per
 # level, so a deeply nested project file or nuspec aborts the process.
 roxmltree = "0.21.2"
+self_cell = "1.2"
 rowan = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

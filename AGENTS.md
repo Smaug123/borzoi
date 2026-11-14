@@ -52,9 +52,10 @@ This is a Cargo workspace with nine members:
   and — when an SDK resolves to the canonical dotnet layout — walks the
   real `Microsoft.Common.props` → `NuGet.props` chain, including the
   `Directory.Packages.props` central-package import.
-  Self-contained: depends only on `roxmltree`. Intended to be reusable outside
-  this repo. Every file-system query an evaluation makes goes through
-  `observed`, which records it in the result's `read_set` (absences
+  Self-contained: depends only on `roxmltree` and `self_cell` (which holds a
+  parsed document beside its text, so the crate forbids `unsafe`). Intended to
+  be reusable outside this repo. Every file-system query an evaluation makes
+  goes through `observed`, which records it in the result's `read_set` (absences
   included); the crate's own `clippy.toml` bans the `std` calls elsewhere, and
   test code reaches them through `observed::host_fs`. A resolver the caller
   passes must query through the `Observer` it is handed. The read set is held

@@ -124,6 +124,12 @@ impl ImportDocuments {
     pub fn reused(&self) -> u64 {
         self.reused
     }
+
+    /// The digest of the text the document kept for `path` was parsed from.
+    #[cfg(test)]
+    pub(crate) fn kept_digest(&self, path: &Path) -> Option<TextDigest> {
+        self.by_path.get(path.as_os_str()).map(|kept| kept.digest())
+    }
 }
 
 impl Observer {

@@ -17,6 +17,9 @@
 //! metadata references. Anything we'd need one of those for emits a
 //! [`Diagnostic`] and sets [`ParsedProject::is_partial`].
 
+// `document`'s self-reference is `self_cell`'s; nothing here needs its own.
+#![forbid(unsafe_code)]
+
 mod condition;
 mod diagnostic;
 pub mod document;

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 roxmltree.workspace = true
+self_cell.workspace = true
 
 [features]
 # Differential-test helpers (the `test_support` module): a public window

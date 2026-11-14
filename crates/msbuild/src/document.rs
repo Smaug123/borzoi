@@ -3,30 +3,27 @@
 //! file across evaluations, and the item pass replays deferred groups
 //! against the document the property pass walked.
 
-use std::sync::Arc;
-
 use roxmltree::Document;
 
 use crate::observed::TextDigest;
 
+self_cell::self_cell!(
+    /// A text and the document `roxmltree` parsed from it, which borrows it.
+    struct Cell {
+        owner: String,
+        #[covariant]
+        dependent: Document,
+    }
+);
+
 /// A text and the document `roxmltree` parsed from it.
 ///
-/// `roxmltree` documents borrow the text they were parsed from. This type
-/// owns both, which needs one `unsafe` borrow (in [`Self::parse`]): the
-/// document is parsed from a `&'static str` that in truth lives exactly as
-/// long as `text`'s allocation. That is sound because
-///
-/// - the allocation never moves or changes while `self` lives: an `Arc<str>`
-///   is immutable, moving the `Arc` moves only the pointer, and nothing hands
-///   out the `Arc` or a mutable view of it;
-/// - `document` is declared before `text`, so it is dropped first;
-/// - the document is only ever lent out as `&'a Document<'a>`, tied to a
-///   borrow of `self` ([`Self::document`]), so no `&'static str` it holds can
-///   outlive the text. `Document` is covariant in its lifetime, which is what
-///   lets the compiler shorten `'static` to `'a` there.
+/// `roxmltree` documents borrow the text they were parsed from; this type owns
+/// both. The self-reference is `self_cell`'s, whose macro checks at compile
+/// time that the document is covariant in the borrow and fixes the drop
+/// order, so this crate holds no `unsafe` of its own.
 pub struct ParsedDocument {
-    document: Document<'static>,
-    text: Arc<str>,
+    cell: Cell,
     digest: TextDigest,
 }
 
@@ -34,26 +31,18 @@ impl ParsedDocument {
     /// Parse `text`, whose digest is `digest`.
     pub fn parse(text: String, digest: TextDigest) -> Result<Self, roxmltree::Error> {
         debug_assert_eq!(digest, TextDigest::of(&text));
-        let text: Arc<str> = Arc::from(text);
-        // SAFETY: see the type's documentation. The reference is used only to
-        // build `document`, which is stored beside `text` and dropped first.
-        let borrowed: &'static str = unsafe { &*Arc::as_ptr(&text) };
-        let document = Document::parse(borrowed)?;
-        Ok(Self {
-            document,
-            text,
-            digest,
-        })
+        let cell = Cell::try_new(text, |text| Document::parse(text))?;
+        Ok(Self { cell, digest })
     }
 
     /// The document, for as long as `self` is borrowed.
     pub fn document(&self) -> &Document<'_> {
-        &self.document
+        self.cell.borrow_dependent()
     }
 
     /// The text the document was parsed from.
     pub fn text(&self) -> &str {
-        &self.text
+        self.cell.borrow_owner()
     }
 
     /// [`Self::text`]'s digest.
@@ -72,6 +61,8 @@ impl std::fmt::Debug for ParsedDocument {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
