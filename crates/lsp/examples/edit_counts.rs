@@ -112,9 +112,27 @@
 //!   it, as an editor's save of an unmodified buffer does: it writes the
 //!   file's bytes back in place (no truncation, so a concurrent reader of
 //!   the shared corpus never sees it short) and reports the write.
+//!   `blocked-edit` is Stage 9's gate (`docs/incremental-lsp-plan.md`): it
+//!   rewrites the measured project's `.fsproj` with one more
+//!   `DefineConstants` symbol (no watch event), so the next fold re-evaluates
+//!   the project and re-parses every item, sends `semanticTokens L`, and,
+//!   while the server is in that request (held at its re-evaluation), queues
+//!   `didChange E` and `diagnostic E`. It reports the instructions from
+//!   `semanticTokens L` to the answer to `diagnostic E`, the instructions of
+//!   `didChange E` and `diagnostic E` on their own, and the difference: what
+//!   the edit waited for. Each round adds the symbol or takes it away again,
+//!   and the run puts the file back as it found it; it still writes the
+//!   project file, so point it at a copy of the project, not the shared
+//!   corpus cache.
 //! * `EDIT_COUNTS_UNRELATED`: the other project for those scripts. Default:
 //!   `WoofWare.Incremental.Test` beside the default project, which references
 //!   it rather than the other way round.
+//! * `EDIT_COUNTS_BURST` (keystroke script only): each round queues this many
+//!   keystrokes, each with the requests a pull client sends after it, while
+//!   the server is held between two messages, then lets it go: the whole
+//!   burst is waiting when the server next reads the connection. A round's
+//!   row is the whole burst, and the run prints how its requests were
+//!   answered (with a result, `ContentModified`, `RequestCancelled`).
 //!
 //! The **a.built** column counts the envs built (each a cold resolution of a
 //! project's references and a projection of every DLL they name), and
@@ -130,6 +148,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use borzoi::observed::{ENV_RESOLUTION_EVENT, EVALUATION_EVENT, GENERATION_EVENT};
@@ -470,6 +489,7 @@ impl tracing::Subscriber for FoldObserver {
                     Relaxed,
                 );
             }
+            hold_if_armed(Gate::AtEvaluation);
         } else if counted() && event.metadata().name() == ENV_RESOLUTION_EVENT {
             let mut fields = EventFields::new(ENV_RESOLUTION_FIELDS);
             event.record(&mut fields);
@@ -496,10 +516,75 @@ impl tracing::Subscriber for FoldObserver {
                     Relaxed,
                 );
             }
+            hold_if_armed(Gate::AtGeneration);
         }
     }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
+}
+
+// ---------------------------------------------------------------------------
+// Holding the server between messages.
+// ---------------------------------------------------------------------------
+
+/// Where the server thread stops, if anywhere: a burst is queued while it is
+/// held, so that the server reads all of it at once, and Stage 9's edit is
+/// queued while it is held inside a request. The server only reaches the
+/// gate through the observer's events ([`FoldObserver::event`]), so an
+/// unarmed gate costs it one uncontended lock per event.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Gate {
+    Open,
+    /// Hold the server at the end of its next generation, which follows the
+    /// reply to the message it handled.
+    AtGeneration,
+    /// Hold the server after its next MSBuild evaluation.
+    AtEvaluation,
+    /// The server is held, until the client opens the gate.
+    Held,
+}
+
+static GATE: Mutex<Gate> = Mutex::new(Gate::Open);
+static GATE_MOVED: Condvar = Condvar::new();
+
+/// On the server thread, at an event of kind `at`: wait while the gate is
+/// armed there, until the client opens it.
+fn hold_if_armed(at: Gate) {
+    let mut gate = GATE.lock().unwrap();
+    if *gate == at {
+        *gate = Gate::Held;
+        GATE_MOVED.notify_all();
+        while *gate == Gate::Held {
+            gate = GATE_MOVED.wait(gate).unwrap();
+        }
+    }
+}
+
+/// On the client: arm the gate at `at`.
+fn arm(at: Gate) {
+    let mut gate = GATE.lock().unwrap();
+    assert_eq!(*gate, Gate::Open, "the gate is armed once at a time");
+    *gate = at;
+}
+
+/// On the client: wait until the server is held.
+fn await_held(what: &str) {
+    let gate = GATE.lock().unwrap();
+    let (gate, timeout) = GATE_MOVED
+        .wait_timeout_while(gate, RECV_TIMEOUT, |gate| *gate != Gate::Held)
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "the server never reached {what}: {gate:?}"
+    );
+}
+
+/// On the client: let the server go.
+fn release() {
+    let mut gate = GATE.lock().unwrap();
+    assert_eq!(*gate, Gate::Held, "the server is held");
+    *gate = Gate::Open;
+    GATE_MOVED.notify_all();
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +848,13 @@ impl Client {
                 "{method} never reached the project fold, so its counts would measure a fallback"
             );
         }
+        self.check(&cost);
+        (cost, result)
+    }
+
+    /// What every measurement must hold: no fold of another project, no env
+    /// built from no DLLs, no deferral toast.
+    fn check(&self, cost: &Cost) {
         assert_eq!(
             cost.lookups.1, 0,
             "the server folded a project other than the measured one"
@@ -779,7 +871,115 @@ impl Client {
              its single-file fallback: {:?}",
             self.toasts
         );
-        (cost, result)
+    }
+
+    /// Send `step` without waiting for an answer: a request's id.
+    fn send_step(&mut self, step: &Step) -> Option<RequestId> {
+        match step {
+            Step::Notify { method, params } => {
+                self.send(Message::Notification(Notification {
+                    method: method.to_string(),
+                    params: params.clone(),
+                }));
+                None
+            }
+            Step::Request { method, params, .. } => {
+                let id = RequestId::from(format!("c{}", self.next_id));
+                self.next_id += 1;
+                self.send(Message::Request(Request {
+                    id: id.clone(),
+                    method: method.to_string(),
+                    params: params.clone(),
+                }));
+                Some(id)
+            }
+            Step::Barrier => None,
+        }
+    }
+
+    /// Wait for the answer to each of `ids`, answering any request the server
+    /// sends meanwhile as [`Self::request`] does.
+    fn collect(&mut self, ids: &[RequestId]) -> Vec<Response> {
+        let mut answers: Vec<Option<Response>> = vec![None; ids.len()];
+        while answers.iter().any(Option::is_none) {
+            let msg = self
+                .conn
+                .receiver
+                .recv_timeout(RECV_TIMEOUT)
+                .unwrap_or_else(|e| panic!("no answer to {ids:?}: {e}"));
+            match msg {
+                Message::Response(resp) => {
+                    let i = ids
+                        .iter()
+                        .position(|id| *id == resp.id)
+                        .unwrap_or_else(|| panic!("unsolicited response {resp:?}"));
+                    assert!(answers[i].is_none(), "{} answered twice", resp.id);
+                    answers[i] = Some(resp);
+                }
+                Message::Request(req) => {
+                    self.send(Message::Response(Response {
+                        id: req.id,
+                        response_result: Ok(Value::Null),
+                    }));
+                }
+                Message::Notification(not) if not.method == "window/showMessage" => {
+                    self.toasts.push(not.params["message"].to_string());
+                }
+                Message::Notification(_) => {}
+            }
+        }
+        answers.into_iter().map(Option::unwrap).collect()
+    }
+
+    /// Queue `steps` while the server is held between two messages, then let
+    /// it go, and wait for every answer and a settle: what handling them
+    /// cost when all of them were waiting at once, and the answers to the
+    /// requests among them, in order.
+    fn burst(&mut self, steps: &[Step]) -> (Cost, Vec<Response>) {
+        arm(Gate::AtGeneration);
+        let barrier = self
+            .send_step(&Step::Request {
+                method: "borzoi/editCounts/barrier",
+                params: Value::Null,
+                folds: false,
+            })
+            .expect("a request");
+        await_held("the end of a barrier's generation");
+        let ids: Vec<RequestId> = steps.iter().filter_map(|s| self.send_step(s)).collect();
+        let before = Reading::now();
+        release();
+        let mut all = ids.clone();
+        all.push(barrier);
+        let mut answers = self.collect(&all);
+        answers.pop();
+        self.settle();
+        let cost = before.since(&Reading::now());
+        self.check(&cost);
+        (cost, answers)
+    }
+
+    /// Stage 9's measurement: send `tokens`, and once the server is held at
+    /// the MSBuild evaluation it makes for it, queue `edit` and `pull`, let
+    /// it go, and wait for both answers and a settle. What that cost, from
+    /// before `tokens` was sent, and the two answers.
+    fn blocked(&mut self, tokens: &Step, edit: &Step, pull: &Step) -> (Cost, Response, Response) {
+        let before = Reading::now();
+        arm(Gate::AtEvaluation);
+        let tokens_id = self.send_step(tokens).expect("a request");
+        await_held("the evaluation semanticTokens L makes");
+        assert!(self.send_step(edit).is_none(), "the edit is a notification");
+        let pull_id = self.send_step(pull).expect("a request");
+        release();
+        let mut answers = self.collect(&[tokens_id, pull_id]);
+        self.settle();
+        let cost = before.since(&Reading::now());
+        assert!(
+            cost.lookups.0 > 0,
+            "semanticTokens L never reached the project fold"
+        );
+        self.check(&cost);
+        let pulled = answers.pop().expect("two answers");
+        (cost, answers.pop().expect("two answers"), pulled)
     }
 
     fn shut_down(mut self) {
@@ -872,6 +1072,8 @@ enum Script {
     UnrelatedSave,
     /// Write the measured project's `.fsproj` back unchanged, and report it.
     OwnSave,
+    /// Stage 9's gate: an edit queued behind a fold that must re-evaluate.
+    BlockedEdit,
 }
 
 /// The files a round of `script` reports changed in the project at
@@ -885,7 +1087,7 @@ fn unrelated_changes(script: Script, unrelated: &Path, project: &Path) -> Vec<Pa
         .to_string_lossy()
         .into_owned();
     match script {
-        Script::Keystroke => Vec::new(),
+        Script::Keystroke | Script::BlockedEdit => Vec::new(),
         Script::UnrelatedSave => vec![unrelated.to_path_buf()],
         Script::OwnSave => vec![project.to_path_buf()],
         Script::UnrelatedBuild => {
@@ -1003,6 +1205,14 @@ mod client_fs {
         file.sync_all()
     }
 
+    pub fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+
+    pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        std::fs::write(path, bytes)
+    }
+
     /// The file's text as a client holds it: without a byte-order mark.
     pub fn read_text(path: &Path) -> std::io::Result<String> {
         std::fs::read_to_string(path).map(borzoi::disk_text::without_bom)
@@ -1116,6 +1326,122 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
     (pick(u64::min), pick(u64::max))
 }
 
+/// How a burst's requests were answered.
+#[derive(Default)]
+struct Census {
+    results: usize,
+    content_modified: usize,
+    cancelled: usize,
+}
+
+impl Census {
+    fn record(&mut self, answer: &Response) {
+        match &answer.response_result {
+            Ok(_) => self.results += 1,
+            Err(e) if e.code == lsp_server::ErrorCode::ContentModified as i32 => {
+                self.content_modified += 1;
+            }
+            Err(e) if e.code == lsp_server::ErrorCode::RequestCanceled as i32 => {
+                self.cancelled += 1;
+            }
+            Err(e) => panic!("a burst's request failed: {e:?}"),
+        }
+    }
+}
+
+/// Longer than the racy window (`borzoi::vfs::RACY_WINDOW`), so a file
+/// written before it is read as settled after it.
+const PAST_THE_RACY_WINDOW: Duration = Duration::from_millis(2_500);
+
+/// Stage 9's `blocked-edit` script, `rounds` times (see the module docs).
+fn blocked_edit(
+    client: &mut Client,
+    project: &Path,
+    e: &mut Doc,
+    l: &Doc,
+    hover_at: (u32, u32),
+    rounds: usize,
+    result_ids: &mut BTreeMap<String, String>,
+) {
+    let original = client_fs::read_bytes(project).expect("read the project file");
+    let text = std::str::from_utf8(&original).expect("a UTF-8 project file");
+    let end = text
+        .rfind("</Project>")
+        .expect("the project file closes its <Project>");
+    let defined = format!(
+        "{}  <PropertyGroup>\n    <DefineConstants>$(DefineConstants);EDIT_COUNTS_BLOCKED</DefineConstants>\n  </PropertyGroup>\n{}",
+        &text[..end],
+        &text[end..]
+    );
+    let mut blocked = Vec::new();
+    let mut alone = Vec::new();
+    let mut version = 1;
+    e.text.push_str("\n// edit_counts ");
+    for k in 0..rounds {
+        let bytes = if k % 2 == 0 {
+            defined.as_bytes()
+        } else {
+            &original[..]
+        };
+        client_fs::write(project, bytes).expect("rewrite the project file");
+        e.text.push('x');
+        let (cost, tokens, report) = client.blocked(
+            &semantic_tokens(l),
+            &did_change(e, version),
+            &diagnostic(e, result_ids),
+        );
+        version += 1;
+        let tokens = tokens.response_result.expect("semanticTokens L answers");
+        assert!(
+            tokens["data"].as_array().is_some_and(|d| !d.is_empty()),
+            "semanticTokens L returned no tokens: {tokens}"
+        );
+        let report = report.response_result.expect("diagnostic E answers");
+        remember_result_id(result_ids, e, &report);
+        blocked.push(cost);
+
+        // The same edit on its own, once the rewritten project file is no
+        // longer racy (so it is not read again), and the fold warmed again
+        // for the next round.
+        std::thread::sleep(PAST_THE_RACY_WINDOW);
+        e.text.push('x');
+        let (change, _) = client.measure(&did_change(e, version));
+        version += 1;
+        let (pull, report) = client.measure(&diagnostic(e, result_ids));
+        remember_result_id(result_ids, e, &report);
+        alone.push(change.add(pull));
+        client.measure(&semantic_tokens(e));
+        client.measure(&semantic_tokens(l));
+        client.measure(&hover(l, hover_at));
+    }
+    client_fs::write(project, &original).expect("put the project file back");
+
+    println!("per round of BlockedEdit (min, then max, over {rounds}):");
+    for (label, costs) in [
+        ("semanticTokens L .. diagnostic E", &blocked),
+        ("didChange E + diagnostic E alone", &alone),
+    ] {
+        let (min, max) = min_max(costs);
+        println!("{:<34} {}", format!("{label} min"), columns(&min));
+        println!("{:<34} {}", format!("{label} max"), columns(&max));
+    }
+    let waited: Vec<Option<i128>> = blocked
+        .iter()
+        .zip(&alone)
+        .map(|(b, a)| Some(i128::from(b.instructions?) - i128::from(a.instructions?)))
+        .collect();
+    let min = waited.iter().copied().min().flatten();
+    let max = waited.iter().copied().max().flatten();
+    let show = |w: Option<i128>| w.map_or_else(|| "n/a".to_string(), |w| w.to_string());
+    println!(
+        "{:<34} {:>14}\n{:<34} {:>14}",
+        "the edit waited (difference) min",
+        show(min),
+        "the edit waited (difference) max",
+        show(max)
+    );
+}
+
 fn main() {
     CLIENT.set(true);
     let project = std::env::var_os("EDIT_COUNTS_PROJECT")
@@ -1139,10 +1465,20 @@ fn main() {
         Ok("unrelated-build") => Script::UnrelatedBuild,
         Ok("unrelated-save") => Script::UnrelatedSave,
         Ok("own-save") => Script::OwnSave,
+        Ok("blocked-edit") => Script::BlockedEdit,
         Ok(other) => panic!(
-            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build`, `unrelated-save` or `own-save`, not {other:?}"
+            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build`, `unrelated-save`, `own-save` or `blocked-edit`, not {other:?}"
         ),
     };
+    let burst = env_usize("EDIT_COUNTS_BURST");
+    assert!(
+        burst.is_none_or(|n| n > 0 && script == Script::Keystroke),
+        "EDIT_COUNTS_BURST is positive, and only for the keystroke script"
+    );
+    assert!(
+        script != Script::BlockedEdit || mode == Mode::Pull,
+        "blocked-edit pulls diagnostics, so it needs a pull client"
+    );
 
     // The Compile order, read by an evaluator of the client's own (the
     // server's is not shared, and evaluating here costs the server nothing).
@@ -1193,10 +1529,11 @@ fn main() {
     };
     println!("project {}", project.display());
     println!(
-        "{} Compile items, {bytes} bytes; E = [{early}] {}, L = [{late}] {}; {mode:?} client, {keystrokes} rounds of {script:?}",
+        "{} Compile items, {bytes} bytes; E = [{early}] {}, L = [{late}] {}; {mode:?} client, {keystrokes} rounds of {script:?}{}",
         compile.len(),
         relative(&compile[early]),
         relative(&compile[late]),
+        burst.map_or_else(String::new, |n| format!(", each a burst of {n}")),
     );
     println!();
 
@@ -1210,7 +1547,7 @@ fn main() {
         .unwrap_or_else(|| root.join("WoofWare.Incremental.Test/WoofWare.Incremental.Test.fsproj"));
     let unrelated = std::path::absolute(&unrelated).expect("an absolute project path");
     let changes = unrelated_changes(script, &unrelated, &project);
-    if script != Script::Keystroke {
+    if !matches!(script, Script::Keystroke | Script::BlockedEdit) {
         // `own-save` touches only the measured project.
         assert!(
             script == Script::OwnSave || client_fs::is_file(&unrelated),
@@ -1282,15 +1619,70 @@ fn main() {
     );
     println!();
 
+    if script == Script::BlockedEdit {
+        blocked_edit(
+            &mut client,
+            &project,
+            &mut e,
+            &l,
+            hover_at,
+            keystrokes,
+            &mut result_ids,
+        );
+        client.shut_down();
+        return;
+    }
+
     // One keystroke: what a pull client sends after it, in order. The barrier
     // row is a bare settle, the floor every other row includes; it is not
     // part of the keystroke's total.
     let mut barriers = Vec::new();
+    let mut census = Census::default();
     let mut rows: BTreeMap<usize, (&str, Vec<Cost>)> = BTreeMap::new();
     let mut totals = Vec::new();
     e.text.push_str("\n// edit_counts ");
     for k in 0..keystrokes {
         barriers.push(client.measure(&Step::Barrier).0);
+        if let Some(n) = burst {
+            let mut steps = Vec::new();
+            for j in 0..n {
+                e.text.push('x');
+                steps.push(did_change(&e, (k * n + j) as i32 + 1));
+                if mode == Mode::Pull {
+                    steps.push(diagnostic(&e, &result_ids));
+                    steps.push(diagnostic(&l, &result_ids));
+                }
+                steps.push(semantic_tokens(&e));
+                steps.push(semantic_tokens(&l));
+                steps.push(hover(&l, hover_at));
+            }
+            let (cost, answers) = client.burst(&steps);
+            assert!(
+                cost.lookups.0 > 0,
+                "no request of burst {k} reached the project fold"
+            );
+            for answer in &answers {
+                census.record(answer);
+            }
+            if mode == Mode::Pull {
+                // The last keystroke's reports, which the next burst echoes.
+                let last = &answers[answers.len() - 5..];
+                for (doc, answer) in [(&e, &last[0]), (&l, &last[1])] {
+                    if let Ok(report) = &answer.response_result {
+                        remember_result_id(&mut result_ids, doc, report);
+                    }
+                }
+            }
+            let last = answers.last().expect("a burst sends requests");
+            assert!(
+                last.response_result
+                    .as_ref()
+                    .is_ok_and(|hover| !hover.is_null()),
+                "the burst's last hover L found nothing: {last:?}"
+            );
+            totals.push(cost);
+            continue;
+        }
         if script == Script::Keystroke {
             e.text.push('x');
         }
@@ -1313,6 +1705,7 @@ fn main() {
             Script::Keystroke => {
                 next(&mut client, "didChange E", did_change(&e, k as i32 + 1));
             }
+            Script::BlockedEdit => unreachable!("blocked-edit returned above"),
             Script::UnrelatedBuild | Script::UnrelatedSave | Script::OwnSave => {
                 if script == Script::OwnSave {
                     client_fs::rewrite_in_place(&project).expect("rewrite the project file");
@@ -1351,8 +1744,18 @@ fn main() {
         println!("{:<34} {}", format!("{label} max"), columns(&max));
     }
     let (min, max) = min_max(&totals);
-    println!("{:<34} {}", "keystroke total min", columns(&min));
-    println!("{:<34} {}", "keystroke total max", columns(&max));
+    let total = burst.map_or_else(
+        || "keystroke total".to_string(),
+        |n| format!("burst of {n} total"),
+    );
+    println!("{:<34} {}", format!("{total} min"), columns(&min));
+    println!("{:<34} {}", format!("{total} max"), columns(&max));
+    if burst.is_some() {
+        println!(
+            "burst answers: {} with a result, {} ContentModified, {} RequestCancelled",
+            census.results, census.content_modified, census.cancelled
+        );
+    }
 
     client.shut_down();
 }

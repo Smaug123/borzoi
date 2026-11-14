@@ -11,13 +11,17 @@
 //!
 //! Every message is queued on the in-memory connection *before* the server
 //! thread starts, so the server sees the whole script at once and each
-//! ordering below is deterministic rather than a race against the sweep.
+//! ordering below is deterministic rather than a race against the sweep. A
+//! message the loop reads together with the sweep request is planned with it
+//! (`borzoi::batch`): a notification among them is handled before the sweep
+//! starts. A test whose subject is a message landing while the sweep is in
+//! flight drives a [`Dispatcher`] by hand instead ([`mid_sweep`]).
 
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use borzoi::server::{State, run};
+use borzoi::server::{Dispatcher, Progress, State, run};
 use borzoi::uri::UriExt as _;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
@@ -203,6 +207,37 @@ fn run_script(
     handle.join().expect("the server thread did not panic");
     sent.extend(client_receiver.try_iter());
     sent
+}
+
+/// Start the sweep `"sweep"` on a [`Dispatcher`] over `root`, take one step
+/// of it, so that it is in flight with work left, then hand over each of
+/// `then` on its own, as messages arriving mid-sweep, and step the sweep to
+/// its end.
+///
+/// Returns every message the server sent, in order.
+fn mid_sweep(root: &Path, caps: ClientCapabilities, then: Vec<Message>) -> Vec<Message> {
+    let (server, client) = Connection::memory();
+    let mut state = State::default();
+    state.set_client_capabilities(caps);
+    state.set_workspace_roots(vec![root.to_path_buf()]);
+    let mut dispatcher = Dispatcher::start(&server, state, None);
+    let deliver = |dispatcher: &mut Dispatcher, message: Message| {
+        dispatcher.admit([message]);
+        while dispatcher.step(&server).unwrap() == Progress::Handled {}
+    };
+    deliver(&mut dispatcher, sweep("sweep"));
+    dispatcher.step_sweep(&server).unwrap();
+    assert!(
+        dispatcher.sweep_in_flight(),
+        "one step does not finish the sweep"
+    );
+    for message in then {
+        deliver(&mut dispatcher, message);
+    }
+    while dispatcher.sweep_in_flight() {
+        dispatcher.step_sweep(&server).unwrap();
+    }
+    client.receiver.try_iter().collect()
 }
 
 /// The responses among `sent`, in order.
@@ -435,13 +470,7 @@ fn a_refresh_owed_mid_sweep_follows_the_reply() {
             typ: FileChangeType::CHANGED,
         }],
     });
-    let sent = run_script(
-        root.path(),
-        pull_refresh_caps(),
-        Vec::new(),
-        vec![sweep("sweep"), watched],
-        End::AfterReplyTo("sweep"),
-    );
+    let sent = mid_sweep(root.path(), pull_refresh_caps(), vec![watched]);
     let reply = sent
         .iter()
         .position(
@@ -472,12 +501,10 @@ fn a_refresh_held_for_a_cancelled_sweep_is_released() {
             typ: FileChangeType::CHANGED,
         }],
     });
-    let sent = run_script(
+    let sent = mid_sweep(
         root.path(),
         pull_refresh_caps(),
-        Vec::new(),
-        vec![sweep("sweep"), watched, cancel("sweep")],
-        End::AfterReplyTo("sweep"),
+        vec![watched, cancel("sweep"), shutdown("shutdown")],
     );
     let refresh = sent
         .iter()

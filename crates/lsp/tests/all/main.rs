@@ -14,6 +14,7 @@ mod csharp_ref_assembly_env_e2e;
 mod csharp_sidecar;
 mod csharp_sidecar_bundled_e2e;
 mod definition_availability_incomplete;
+mod dispatch_coalescing;
 mod env_read_set_soundness;
 mod env_validation;
 mod fcs_bridge;

@@ -1,0 +1,1559 @@
+//! Coalescing in the dispatch loop (`docs/incremental-lsp-plan.md`, Stage 8),
+//! held to the same messages handled one at a time.
+//!
+//! Two sessions over one world: **coalescing**, handed each generated batch
+//! of messages at once ([`Dispatcher::admit`], as the loop reads everything
+//! waiting before it handles anything), and **sequential**, handed the same
+//! messages one per batch, which is the loop as it behaved before Stage 8.
+//! After every batch:
+//!
+//! - **Exactly once.** Every request before an `exit` has exactly one answer,
+//!   and nothing else is answered.
+//! - **Its fate is the specification's.** A request a later `$/cancelRequest`
+//!   in the batch names is answered `RequestCancelled`; otherwise one whose
+//!   document a later text sync in the batch changes is answered
+//!   `ContentModified`; one after `shutdown` is refused `InvalidRequest`;
+//!   every other one is answered with a result. The model states this per
+//!   message by scanning the batch, from the file each URI names.
+//! - **A refusal runs nothing.** The coalescing session opens one
+//!   `lsp.request` span per request it answers with a result, and none for a
+//!   refusal.
+//! - **A superseded sync publishes nothing.** The coalescing session computes
+//!   a document's push diagnostics (`publish_diagnostics`) exactly as often as
+//!   the sequential one less once per `didOpen` or `didChange` that a later
+//!   sync of the same URI in the batch supersedes.
+//! - **No answer is computed against a superseded text.** Every answer with a
+//!   result equals the sequential session's answer to the same request asked
+//!   after the whole batch: the texts it read are the newest the client sent.
+//! - **The final state is the sequential one.** The diagnostics each session
+//!   last published per URI agree, and so does every handler's answer at
+//!   every identifier of every open document, every document's diagnostics,
+//!   and `workspace/symbol`.
+//!
+//! Some batches are instead handed to the coalescing session in chunks, with
+//! steps run between them, as the loop reads messages that arrive while it
+//! works: those batches are held to exactly once and to the final state.
+//!
+//! The world is one SDK-less project of three sources, each reading the one
+//! before it (`A.x`, `B.y`), so an edit to one changes what requests on the
+//! others answer; `A` is also opened under a second URI, path-equal to the
+//! first. Disk writes land between batches, seen by both sessions.
+//!
+//! The default run is a fixed seed and case count; set
+//! `BORZOI_COALESCING_CASES` and `BORZOI_COALESCING_SEED` for a soak.
+
+use crate::common::host_fs::HostPath as _;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use borzoi::sdk_discovery::SdkDiscoveryEnv;
+use borzoi::server::{Dispatcher, Progress, SERVER_STACK_BYTES, State};
+use borzoi::uri::UriExt as _;
+use borzoi::workspace::Workspace;
+use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
+use lsp_types::{ClientCapabilities, Uri};
+use proptest::prelude::*;
+use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestError, TestRng, TestRunner};
+use serde_json::{Value, json};
+
+// ---------------------------------------------------------------------------
+// The world.
+// ---------------------------------------------------------------------------
+
+/// A source of the project, in Compile order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Src {
+    A,
+    B,
+    C,
+}
+
+const SOURCES: [Src; 3] = [Src::A, Src::B, Src::C];
+
+impl Src {
+    fn file(self) -> &'static str {
+        match self {
+            Src::A => "A.fs",
+            Src::B => "B.fs",
+            Src::C => "C.fs",
+        }
+    }
+
+    /// The texts a source can hold, on disk or in a buffer. Each version of
+    /// `A` gives `x` another type or position, which moves what hover,
+    /// definition and references answer in `B` and `C`; some versions do not
+    /// parse, which moves the diagnostics.
+    fn versions(self) -> &'static [&'static str] {
+        match self {
+            Src::A => &[
+                "module A\n\nlet x = 1\n",
+                "module A\n\nlet x = \"one\"\n",
+                "module A\n\n// moved\n\nlet x = 1.0\n",
+                "module A\n\nlet x = [ 1 ]\nlet w = x\n",
+                "module A\n\nlet x = (\n",
+            ],
+            Src::B => &[
+                "module B\n\nlet y = A.x\n",
+                "module B\n\nlet y = A.x\nlet v = y\n",
+                "module B\n\n\nlet y = (A.x, 2)\n",
+                "module B\n\nlet y = A.x +\n",
+                "module B\n\nlet y = 1\n",
+            ],
+            Src::C => &[
+                "module C\n\nlet z = B.y\n",
+                "module C\n\nlet z = (B.y, A.x)\n",
+                "module C\n\nlet z = B.\n",
+                "module C\n\n// c\nlet z = B.y\n",
+            ],
+        }
+    }
+
+    fn text(self, version: usize) -> &'static str {
+        let versions = self.versions();
+        versions[version % versions.len()]
+    }
+}
+
+/// A document the client can open: each source, and `A` again under a second
+/// URI path-equal to the first (by case on a case-insensitive platform, by an
+/// escaped letter elsewhere).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Doc {
+    Src(Src),
+    AliasA,
+}
+
+const DOCS: [Doc; 4] = [
+    Doc::Src(Src::A),
+    Doc::Src(Src::B),
+    Doc::Src(Src::C),
+    Doc::AliasA,
+];
+
+impl Doc {
+    /// The source whose file this document names.
+    fn src(self) -> Src {
+        match self {
+            Doc::Src(src) => src,
+            Doc::AliasA => Src::A,
+        }
+    }
+}
+
+struct World {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+    /// What each source holds on disk.
+    disk: BTreeMap<Src, usize>,
+}
+
+impl World {
+    fn new() -> World {
+        let dir = tempfile::Builder::new()
+            .prefix("dispatch-coalescing")
+            .tempdir()
+            .expect("a temporary directory");
+        // Canonical, so the server's spelling of every path is the test's.
+        let root = dir.path().host_canonicalize().expect("canonical root");
+        let project = root.join("P");
+        std::fs::create_dir_all(&project).unwrap();
+        let includes: String = SOURCES
+            .iter()
+            .map(|s| format!("    <Compile Include=\"{}\" />\n", s.file()))
+            .collect();
+        std::fs::write(
+            project.join("P.fsproj"),
+            format!("<Project>\n  <ItemGroup>\n{includes}  </ItemGroup>\n</Project>\n"),
+        )
+        .unwrap();
+        let mut world = World {
+            _dir: dir,
+            root,
+            disk: BTreeMap::new(),
+        };
+        for src in SOURCES {
+            world.write(src, 0);
+        }
+        world
+    }
+
+    fn path(&self, src: Src) -> PathBuf {
+        self.root.join("P").join(src.file())
+    }
+
+    fn write(&mut self, src: Src, version: usize) {
+        std::fs::write(self.path(src), src.text(version)).unwrap();
+        self.disk.insert(src, version);
+    }
+
+    fn uri(&self, doc: Doc) -> String {
+        let uri = Uri::from_file_path(self.path(doc.src())).unwrap();
+        match doc {
+            Doc::Src(_) => uri.as_str().to_string(),
+            Doc::AliasA => {
+                let spelling = uri.as_str();
+                let (dir, file) = spelling.rsplit_once('/').unwrap();
+                assert_eq!(file, "A.fs");
+                if cfg!(any(windows, target_os = "macos")) {
+                    format!("{dir}/a.fs")
+                } else {
+                    format!("{dir}/%41.fs")
+                }
+            }
+        }
+    }
+
+    fn project_uri(&self) -> String {
+        Uri::from_file_path(self.root.join("P").join("P.fsproj"))
+            .unwrap()
+            .as_str()
+            .to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scripts.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Hover,
+    Definition,
+    References,
+    Completion,
+    SemanticTokens,
+    DocumentSymbol,
+    Diagnostic,
+}
+
+/// A client action. Each becomes one message when the script is played; what
+/// message depends on what the client holds then.
+#[derive(Clone, Debug)]
+enum Op {
+    /// `didOpen` if the client has the document closed, else `didChange`.
+    Sync(Doc, usize),
+    /// `didClose` if the client has the document open, else `didSave`.
+    Close(Doc),
+    /// `didSave`, which the server ignores.
+    Save(Doc),
+    /// A watched-file event naming a source, or the project file (`None`).
+    Watched(Option<Src>),
+    /// A request on a document, at its `n`-th identifier.
+    Request(Kind, Doc, usize),
+    WorkspaceSymbol,
+    /// `workspace/diagnostic`, which starts a sweep.
+    WorkspaceDiagnostic,
+    /// Cancel the `n`-th latest request this batch has sent so far, or, if
+    /// it has sent none, one an earlier batch sent.
+    CancelRecent(usize),
+    /// Cancel an id no request carries.
+    CancelUnknown,
+    Shutdown,
+    Exit,
+}
+
+#[derive(Clone, Debug)]
+struct Batch {
+    /// Disk writes before the batch.
+    writes: Vec<(Src, usize)>,
+    ops: Vec<Op>,
+    /// When non-empty, the coalescing session is handed the batch in chunks of
+    /// these sizes (the last takes the rest), each followed by this many steps.
+    chunks: Vec<(usize, usize)>,
+}
+
+#[derive(Clone)]
+struct Case {
+    push: bool,
+    batches: Vec<Batch>,
+}
+
+impl fmt::Debug for Case {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "push: {}", self.push)?;
+        for (i, batch) in self.batches.iter().enumerate() {
+            writeln!(f, "batch {i}: writes {:?}", batch.writes)?;
+            if !batch.chunks.is_empty() {
+                writeln!(f, "  chunks {:?}", batch.chunks)?;
+            }
+            for op in &batch.ops {
+                writeln!(f, "  {op:?}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn doc_strategy() -> impl Strategy<Value = Doc> {
+    prop_oneof![
+        3 => Just(Doc::Src(Src::A)),
+        3 => Just(Doc::Src(Src::B)),
+        2 => Just(Doc::Src(Src::C)),
+        1 => Just(Doc::AliasA),
+    ]
+}
+
+fn kind_strategy() -> impl Strategy<Value = Kind> {
+    prop_oneof![
+        3 => Just(Kind::Hover),
+        2 => Just(Kind::Definition),
+        1 => Just(Kind::References),
+        1 => Just(Kind::Completion),
+        2 => Just(Kind::SemanticTokens),
+        1 => Just(Kind::DocumentSymbol),
+        2 => Just(Kind::Diagnostic),
+    ]
+}
+
+fn op_strategy() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        8 => (doc_strategy(), 0usize..5).prop_map(|(d, v)| Op::Sync(d, v)),
+        2 => doc_strategy().prop_map(Op::Close),
+        1 => doc_strategy().prop_map(Op::Save),
+        1 => proptest::option::weighted(0.7, prop_oneof![Just(Src::A), Just(Src::B), Just(Src::C)])
+            .prop_map(Op::Watched),
+        10 => (kind_strategy(), doc_strategy(), 0usize..6).prop_map(|(k, d, n)| Op::Request(k, d, n)),
+        1 => Just(Op::WorkspaceSymbol),
+        1 => Just(Op::WorkspaceDiagnostic),
+        3 => (0usize..3).prop_map(Op::CancelRecent),
+        1 => Just(Op::CancelUnknown),
+    ]
+}
+
+fn batch_strategy(last: bool) -> impl Strategy<Value = Batch> {
+    let src = prop_oneof![Just(Src::A), Just(Src::B), Just(Src::C)];
+    let tail = if last {
+        // The last batch may end the session.
+        prop_oneof![
+            8 => Just(vec![]),
+            1 => proptest::collection::vec(op_strategy(), 0..3)
+                .prop_map(|mut after| { after.insert(0, Op::Shutdown); after }),
+            1 => proptest::collection::vec(op_strategy(), 0..3).prop_map(|mut after| {
+                after.insert(0, Op::Shutdown);
+                after.push(Op::Exit);
+                after.push(Op::WorkspaceSymbol);
+                after
+            }),
+            1 => Just(vec![Op::Exit, Op::WorkspaceSymbol]),
+        ]
+        .boxed()
+    } else {
+        Just(vec![]).boxed()
+    };
+    (
+        proptest::collection::vec((src, 0usize..5), 0..2),
+        proptest::collection::vec(op_strategy(), 1..14),
+        tail,
+        prop_oneof![
+            3 => Just(vec![]),
+            1 => proptest::collection::vec((1usize..5, 0usize..4), 1..4),
+        ],
+    )
+        .prop_map(|(writes, mut ops, tail, chunks)| {
+            ops.extend(tail);
+            Batch {
+                writes,
+                ops,
+                chunks,
+            }
+        })
+}
+
+fn case_strategy() -> impl Strategy<Value = Case> {
+    (any::<bool>(), 1usize..4).prop_flat_map(|(push, n)| {
+        let batches: Vec<_> = (0..n).map(|i| batch_strategy(i + 1 == n).boxed()).collect();
+        batches.prop_map(move |batches| Case { push, batches })
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The client, as a model.
+// ---------------------------------------------------------------------------
+
+/// What the client holds: the open documents' texts.
+#[derive(Default, Clone)]
+struct ClientModel {
+    open: BTreeMap<Doc, usize>,
+}
+
+/// The identifier positions of `text`, as (line, UTF-16 column).
+fn identifiers(text: &str) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    for (line, content) in text.lines().enumerate() {
+        let mut chars = content.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c.is_alphabetic() || c == '_' {
+                out.push((line as u32, content[..i].encode_utf16().count() as u32));
+                while chars
+                    .peek()
+                    .is_some_and(|(_, c)| c.is_alphanumeric() || *c == '_')
+                {
+                    chars.next();
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What the model knows of a played request.
+#[derive(Clone)]
+struct Req {
+    id: RequestId,
+    doc: Option<Src>,
+    shutdown: bool,
+    sweep: bool,
+}
+
+/// A played message, with what the model knows of it.
+struct Played {
+    message: Message,
+    /// For a request: its id, the document it names (by file), and whether
+    /// it is a `shutdown` or a `workspace/diagnostic`.
+    request: Option<Req>,
+    /// For a text sync: the URI and the file it changes, and whether it
+    /// publishes (an open or a change, not a close).
+    sync: Option<(String, Src, bool)>,
+    /// For a cancellation: the id it names.
+    cancels: Option<RequestId>,
+    exit: bool,
+}
+
+struct Player<'w> {
+    world: &'w World,
+    client: ClientModel,
+    next_id: u64,
+    /// Every request id sent, by earlier batches too.
+    sent: Vec<RequestId>,
+}
+
+impl Player<'_> {
+    fn text(&self, doc: Doc) -> &'static str {
+        match self.client.open.get(&doc) {
+            Some(&v) => doc.src().text(v),
+            None => doc.src().text(self.world.disk[&doc.src()]),
+        }
+    }
+
+    fn request(&mut self, method: &str, params: Value, doc: Option<Doc>) -> Played {
+        let id = RequestId::from(format!("q{}", self.next_id));
+        self.next_id += 1;
+        self.sent.push(id.clone());
+        Played {
+            message: Message::Request(Request {
+                id: id.clone(),
+                method: method.to_string(),
+                params,
+            }),
+            request: Some(Req {
+                id,
+                doc: doc.map(Doc::src),
+                shutdown: method == "shutdown",
+                sweep: method == "workspace/diagnostic",
+            }),
+            sync: None,
+            cancels: None,
+            exit: false,
+        }
+    }
+
+    fn notification(method: &str, params: Value) -> Played {
+        Played {
+            message: Message::Notification(Notification {
+                method: method.to_string(),
+                params,
+            }),
+            request: None,
+            sync: None,
+            cancels: None,
+            exit: method == "exit",
+        }
+    }
+
+    fn play(&mut self, op: &Op, batch_start: usize) -> Played {
+        let w = self.world;
+        match *op {
+            Op::Sync(doc, version) => {
+                let uri = w.uri(doc);
+                let text = doc.src().text(version);
+                let mut played = if self.client.open.contains_key(&doc) {
+                    Player::notification(
+                        "textDocument/didChange",
+                        json!({
+                            "textDocument": { "uri": uri, "version": 1 },
+                            "contentChanges": [{ "text": text }],
+                        }),
+                    )
+                } else {
+                    Player::notification(
+                        "textDocument/didOpen",
+                        json!({ "textDocument": {
+                            "uri": uri, "languageId": "fsharp", "version": 0, "text": text,
+                        }}),
+                    )
+                };
+                self.client.open.insert(doc, version);
+                played.sync = Some((uri, doc.src(), true));
+                played
+            }
+            Op::Close(doc) if self.client.open.remove(&doc).is_some() => {
+                let uri = w.uri(doc);
+                let mut played = Player::notification(
+                    "textDocument/didClose",
+                    json!({ "textDocument": { "uri": uri } }),
+                );
+                played.sync = Some((uri, doc.src(), false));
+                played
+            }
+            Op::Close(doc) | Op::Save(doc) => Player::notification(
+                "textDocument/didSave",
+                json!({ "textDocument": { "uri": w.uri(doc) } }),
+            ),
+            Op::Watched(src) => {
+                let uri = src.map_or_else(|| w.project_uri(), |s| w.uri(Doc::Src(s)));
+                Player::notification(
+                    "workspace/didChangeWatchedFiles",
+                    json!({ "changes": [{ "uri": uri, "type": 2 }] }),
+                )
+            }
+            Op::Request(kind, doc, n) => {
+                let uri = w.uri(doc);
+                let ids = identifiers(self.text(doc));
+                let (line, character) = ids[n % ids.len()];
+                let position = json!({ "line": line, "character": character });
+                let document = json!({ "uri": uri });
+                let (method, params) = match kind {
+                    Kind::Hover => (
+                        "textDocument/hover",
+                        json!({ "textDocument": document, "position": position }),
+                    ),
+                    Kind::Definition => (
+                        "textDocument/definition",
+                        json!({ "textDocument": document, "position": position }),
+                    ),
+                    Kind::References => (
+                        "textDocument/references",
+                        json!({
+                            "textDocument": document, "position": position,
+                            "context": { "includeDeclaration": true },
+                        }),
+                    ),
+                    Kind::Completion => (
+                        "textDocument/completion",
+                        json!({ "textDocument": document, "position": position }),
+                    ),
+                    Kind::SemanticTokens => (
+                        "textDocument/semanticTokens/full",
+                        json!({ "textDocument": document }),
+                    ),
+                    Kind::DocumentSymbol => (
+                        "textDocument/documentSymbol",
+                        json!({ "textDocument": document }),
+                    ),
+                    Kind::Diagnostic => (
+                        "textDocument/diagnostic",
+                        json!({ "textDocument": document }),
+                    ),
+                };
+                self.request(method, params, Some(doc))
+            }
+            Op::WorkspaceSymbol => self.request("workspace/symbol", json!({ "query": "" }), None),
+            Op::WorkspaceDiagnostic => self.request(
+                "workspace/diagnostic",
+                json!({ "previousResultIds": [] }),
+                None,
+            ),
+            Op::CancelRecent(n) => {
+                let recent = &self.sent[batch_start..];
+                let target = if recent.is_empty() {
+                    self.sent.iter().rev().nth(n)
+                } else {
+                    recent.iter().rev().nth(n % recent.len())
+                };
+                let id = target.cloned().unwrap_or_else(|| RequestId::from(-1));
+                let mut played = Player::notification(
+                    "$/cancelRequest",
+                    json!({ "id": serde_json::to_value(&id).unwrap() }),
+                );
+                played.cancels = Some(id);
+                played
+            }
+            Op::CancelUnknown => {
+                let mut played =
+                    Player::notification("$/cancelRequest", json!({ "id": "never-sent" }));
+                played.cancels = Some(RequestId::from("never-sent".to_string()));
+                played
+            }
+            Op::Shutdown => self.request("shutdown", Value::Null, None),
+            Op::Exit => Player::notification("exit", Value::Null),
+        }
+    }
+}
+
+/// A request's fate, as the specification states it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fate {
+    Answered,
+    Cancelled,
+    ContentModified,
+    AfterShutdown,
+    Shutdown,
+    /// A `workspace/diagnostic` that ran, and that a later one in the batch,
+    /// or the `shutdown` ending its live part, answered `ServerCancelled`.
+    Superseded,
+    /// A `workspace/diagnostic` that ran and that the `exit` ending the live
+    /// part abandons unanswered, as it abandons any sweep in flight.
+    Abandoned,
+    /// After `exit`: never read.
+    Unread,
+}
+
+impl Fate {
+    /// Whether the request runs (opens an `lsp.request` span).
+    fn runs(self) -> bool {
+        matches!(self, Fate::Answered | Fate::Superseded | Fate::Abandoned)
+    }
+
+    /// How many answers it gets.
+    fn answers(self) -> usize {
+        usize::from(!matches!(self, Fate::Abandoned | Fate::Unread))
+    }
+}
+
+/// The index of a batch's first `shutdown` or `exit`, from which the lifecycle
+/// rules apply; 0 once `shutdown` was acknowledged before it.
+fn barrier(batch: &[Played], shut_down: bool) -> usize {
+    if shut_down {
+        0
+    } else {
+        batch
+            .iter()
+            .position(|p| p.exit || p.request.as_ref().is_some_and(|r| r.shutdown))
+            .unwrap_or(batch.len())
+    }
+}
+
+/// Each request's fate in a batch handed over whole, by scanning the batch:
+/// `shut_down` is whether `shutdown` was acknowledged before it.
+fn fates(batch: &[Played], shut_down: bool) -> BTreeMap<RequestId, Fate> {
+    let barrier = barrier(batch, shut_down);
+    // The fate of a live request, sweeps aside.
+    let refused = |i: usize, req: &Req| {
+        let later = &batch[i + 1..barrier];
+        if later.iter().any(|p| p.cancels.as_ref() == Some(&req.id)) {
+            Some(Fate::Cancelled)
+        } else if req.doc.is_some_and(|doc| {
+            later
+                .iter()
+                .any(|p| p.sync.as_ref().is_some_and(|s| s.1 == doc))
+        }) {
+            Some(Fate::ContentModified)
+        } else {
+            None
+        }
+    };
+    let ends_with_exit = batch.get(barrier).is_some_and(|p| p.exit);
+    let mut out = BTreeMap::new();
+    let mut exited = false;
+    for (i, played) in batch.iter().enumerate() {
+        exited |= played.exit;
+        let Some(req) = &played.request else {
+            continue;
+        };
+        let fate = if exited {
+            Fate::Unread
+        } else if req.shutdown {
+            Fate::Shutdown
+        } else if i >= barrier {
+            Fate::AfterShutdown
+        } else if let Some(fate) = refused(i, req) {
+            fate
+        } else if req.sweep {
+            let superseded = batch[i + 1..barrier].iter().enumerate().any(|(j, p)| {
+                p.request
+                    .as_ref()
+                    .is_some_and(|r| r.sweep && refused(i + 1 + j, r).is_none())
+            });
+            if superseded || (barrier < batch.len() && !ends_with_exit) {
+                Fate::Superseded
+            } else if ends_with_exit {
+                Fate::Abandoned
+            } else {
+                Fate::Answered
+            }
+        } else {
+            Fate::Answered
+        };
+        out.insert(req.id.clone(), fate);
+    }
+    out
+}
+
+/// How many `publish_diagnostics` computations each URI is spared in a batch
+/// handed over whole: one per open or change a later live sync of the same URI
+/// supersedes.
+fn spared_publishes(batch: &[Played], shut_down: bool) -> BTreeMap<String, usize> {
+    let barrier = barrier(batch, shut_down);
+    let mut out = BTreeMap::new();
+    for (i, played) in batch[..barrier].iter().enumerate() {
+        if let Some((uri, _, true)) = &played.sync
+            && batch[i + 1..barrier]
+                .iter()
+                .any(|p| p.sync.as_ref().is_some_and(|s| &s.0 == uri))
+        {
+            *out.entry(uri.clone()).or_default() += 1;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// A session.
+// ---------------------------------------------------------------------------
+
+/// What a `tracing` subscriber saw the dispatcher do: requests run, and push
+/// diagnostics computed per URI.
+#[derive(Default, Debug)]
+struct Seen {
+    requests_run: usize,
+    publishes: BTreeMap<String, usize>,
+}
+
+struct Counter(Arc<Mutex<Seen>>);
+
+struct UriField(Option<String>);
+
+impl tracing::field::Visit for UriField {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "uri" {
+            self.0 = Some(value.to_string());
+        }
+    }
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn fmt::Debug) {}
+}
+
+impl tracing::Subscriber for Counter {
+    fn register_callsite(
+        &self,
+        metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        if self.enabled(metadata) {
+            tracing::subscriber::Interest::always()
+        } else {
+            tracing::subscriber::Interest::sometimes()
+        }
+    }
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.is_span() && matches!(metadata.name(), "lsp.request" | "publish_diagnostics")
+    }
+    fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        let mut seen = self.0.lock().unwrap();
+        if span.metadata().name() == "lsp.request" {
+            seen.requests_run += 1;
+        } else {
+            let mut uri = UriField(None);
+            span.record(&mut uri);
+            *seen
+                .publishes
+                .entry(uri.0.expect("publish_diagnostics names its uri"))
+                .or_default() += 1;
+        }
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+struct Session {
+    dispatcher: Dispatcher,
+    server: Connection,
+    client: Connection,
+    exited: bool,
+    next_probe: u64,
+    /// The diagnostics last published per URI, less the history-dependent
+    /// `version`.
+    published: BTreeMap<String, Value>,
+    /// The server's requests not yet acknowledged.
+    owed_acks: Vec<RequestId>,
+}
+
+impl Session {
+    fn start(root: &Path, push: bool) -> Session {
+        let (server, client) = Connection::memory();
+        let mut state = State::new();
+        // Hermetic: no `dotnet` is found, so no env is built from the host's
+        // packs. The project is SDK-less, so it evaluates and folds all the
+        // same.
+        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(root.join("no-dotnet")),
+            ..SdkDiscoveryEnv::default()
+        });
+        let mut caps = json!({
+            "workspace": { "semanticTokens": { "refreshSupport": true } },
+            "textDocument": {
+                "publishDiagnostics": {},
+                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+            },
+        });
+        if !push {
+            caps["textDocument"]["diagnostic"] = json!({});
+            caps["workspace"]["diagnostic"] = json!({ "refreshSupport": true });
+        }
+        let caps: ClientCapabilities = serde_json::from_value(caps).unwrap();
+        state.set_client_capabilities(caps);
+        state.set_workspace_roots(vec![root.to_path_buf()]);
+        let dispatcher = Dispatcher::start(&server, state, None);
+        Session {
+            dispatcher,
+            server,
+            client,
+            exited: false,
+            next_probe: 0,
+            published: BTreeMap::new(),
+            owed_acks: Vec::new(),
+        }
+    }
+
+    /// Hand `messages` over as one batch, unless the session has ended, and
+    /// run until nothing read is left to handle (or `exit`), then the sweep
+    /// in flight to its end. Returns the answers to the client's requests.
+    fn deliver(&mut self, messages: Vec<Message>) -> BTreeMap<RequestId, Vec<Response>> {
+        self.deliver_in(messages, &[])
+    }
+
+    /// As [`Self::deliver`], handing `messages` over in chunks of the given
+    /// sizes, each followed by the given number of steps.
+    fn deliver_in(
+        &mut self,
+        messages: Vec<Message>,
+        chunks: &[(usize, usize)],
+    ) -> BTreeMap<RequestId, Vec<Response>> {
+        if !self.exited {
+            let mut rest = messages.into_iter();
+            for &(size, steps) in chunks {
+                self.dispatcher.admit(rest.by_ref().take(size));
+                for _ in 0..steps {
+                    if self.step() != Progress::Handled {
+                        break;
+                    }
+                }
+                if self.exited {
+                    break;
+                }
+            }
+            if !self.exited {
+                self.dispatcher.admit(rest);
+                while self.step() == Progress::Handled {}
+            }
+            while !self.exited && self.dispatcher.sweep_in_flight() {
+                self.dispatcher.step_sweep(&self.server).unwrap();
+            }
+        }
+        self.absorb()
+    }
+
+    fn step(&mut self) -> Progress {
+        let progress = self.dispatcher.step(&self.server).unwrap();
+        if progress == Progress::Exit {
+            self.exited = true;
+        }
+        progress
+    }
+
+    /// Read everything the server sent: answers are returned, diagnostics
+    /// recorded, the server's own requests queued for acknowledgement.
+    fn absorb(&mut self) -> BTreeMap<RequestId, Vec<Response>> {
+        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
+        for message in self.client.receiver.try_iter().collect::<Vec<_>>() {
+            match message {
+                Message::Response(response) => {
+                    answers
+                        .entry(response.id.clone())
+                        .or_default()
+                        .push(response);
+                }
+                Message::Request(request) => self.owed_acks.push(request.id),
+                Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                    let uri = n.params["uri"].as_str().unwrap().to_string();
+                    let mut view = n.params.clone();
+                    view.as_object_mut().unwrap().remove("version");
+                    self.published.insert(uri, view);
+                }
+                Message::Notification(_) => {}
+            }
+        }
+        answers
+    }
+
+    /// Acknowledge every request the server sent, one per batch, until it
+    /// sends no more.
+    fn settle(&mut self) {
+        for _ in 0..8 {
+            if self.owed_acks.is_empty() || self.exited {
+                return;
+            }
+            let acks: Vec<Message> = self
+                .owed_acks
+                .drain(..)
+                .map(|id| {
+                    Message::Response(Response {
+                        id,
+                        response_result: Ok(Value::Null),
+                    })
+                })
+                .collect();
+            for ack in acks {
+                let stray = self.deliver(vec![ack]);
+                assert!(
+                    stray.is_empty(),
+                    "an acknowledgement was answered: {stray:?}"
+                );
+            }
+        }
+        panic!("the server kept sending requests");
+    }
+
+    /// Ask one request on its own and return its answer.
+    fn ask(&mut self, method: &str, params: Value) -> Value {
+        let id = RequestId::from(format!("probe{}", self.next_probe));
+        self.next_probe += 1;
+        let mut answers = self.deliver(vec![Message::Request(Request {
+            id: id.clone(),
+            method: method.to_string(),
+            params,
+        })]);
+        let mut answer = answers.remove(&id).expect("a probe is answered");
+        assert_eq!(answer.len(), 1, "a probe is answered once");
+        assert!(answers.is_empty(), "only the probe is answered");
+        serde_json::to_value(
+            answer
+                .remove(0)
+                .response_result
+                .map_err(|e| (e.code, e.message)),
+        )
+        .unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The property.
+// ---------------------------------------------------------------------------
+
+/// What the generated cases exercised, so the run can show it was not
+/// vacuous.
+#[derive(Default, Debug)]
+struct Coverage {
+    answered: usize,
+    cancelled: usize,
+    content_modified: usize,
+    after_shutdown: usize,
+    /// Answers with a result that a later text sync of another document in
+    /// the same batch moved: the case the reordering exists for.
+    moved_by_a_later_sync: usize,
+    spared_publishes: usize,
+    superseded_sweeps: usize,
+    chunked_batches: usize,
+}
+
+fn fail(message: String) -> TestCaseError {
+    TestCaseError::fail(message)
+}
+
+fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseError> {
+    let mut world = World::new();
+    let mut coalescing = Session::start(&world.root, case.push);
+    let mut sequential = Session::start(&world.root, case.push);
+    let mut client = ClientModel::default();
+    let mut next_id = 0;
+    let mut sent = Vec::new();
+    let mut shut_down = false;
+    for (b, batch) in case.batches.iter().enumerate() {
+        for &(src, version) in &batch.writes {
+            world.write(src, version);
+        }
+        let mut player = Player {
+            world: &world,
+            client: client.clone(),
+            next_id,
+            sent: std::mem::take(&mut sent),
+        };
+        let batch_start = player.sent.len();
+        let played: Vec<Played> = batch
+            .ops
+            .iter()
+            .map(|op| player.play(op, batch_start))
+            .collect();
+        client = player.client;
+        next_id = player.next_id;
+        sent = player.sent;
+        let messages = |played: &[Played]| -> Vec<Message> {
+            played.iter().map(|p| p.message.clone()).collect()
+        };
+        let whole = batch.chunks.is_empty();
+        let expected = fates(&played, shut_down);
+
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let answers = tracing::subscriber::with_default(Counter(Arc::clone(&seen)), || {
+            coalescing.deliver_in(messages(&played), &batch.chunks)
+        });
+        let seen_coalescing = std::mem::take(&mut *seen.lock().unwrap());
+        let mut sequential_answers = BTreeMap::new();
+        tracing::subscriber::with_default(Counter(Arc::clone(&seen)), || {
+            for message in messages(&played) {
+                sequential_answers.extend(sequential.deliver(vec![message]));
+            }
+        });
+        let seen_sequential = std::mem::take(&mut *seen.lock().unwrap());
+
+        // Exactly once, in both sessions.
+        for (session, answers) in [
+            ("coalescing", &answers),
+            ("sequential", &sequential_answers),
+        ] {
+            for (id, fate) in &expected {
+                let n = answers.get(id).map_or(0, Vec::len);
+                let want = if session == "coalescing" {
+                    fate.answers()
+                } else {
+                    usize::from(*fate != Fate::Unread)
+                };
+                if n != want {
+                    return Err(fail(format!(
+                        "batch {b}: the {session} session answered {id} {n} times, not {want}: {:?}",
+                        answers.get(id)
+                    )));
+                }
+            }
+            if let Some(stray) = answers.keys().find(|id| !expected.contains_key(id)) {
+                return Err(fail(format!(
+                    "batch {b}: the {session} session answered {stray}, which no request in the batch carries"
+                )));
+            }
+        }
+
+        if whole {
+            // Each request's fate is the specification's.
+            for (id, fate) in &expected {
+                let Some(answer) = answers.get(id).map(|a| &a[0]) else {
+                    continue;
+                };
+                let code = answer.response_result.as_ref().err().map(|e| e.code);
+                let want = match fate {
+                    Fate::Answered | Fate::Shutdown => None,
+                    Fate::Cancelled => Some(lsp_server::ErrorCode::RequestCanceled as i32),
+                    Fate::ContentModified => Some(lsp_server::ErrorCode::ContentModified as i32),
+                    Fate::AfterShutdown => Some(lsp_server::ErrorCode::InvalidRequest as i32),
+                    Fate::Superseded => Some(lsp_server::ErrorCode::ServerCancelled as i32),
+                    Fate::Abandoned | Fate::Unread => {
+                        unreachable!("an abandoned or unread request is not answered")
+                    }
+                };
+                if code != want {
+                    return Err(fail(format!(
+                        "batch {b}: {id} should be {fate:?}, but was answered {answer:?}"
+                    )));
+                }
+                let mut c = coverage.borrow_mut();
+                match fate {
+                    Fate::Answered => c.answered += 1,
+                    Fate::Cancelled => c.cancelled += 1,
+                    Fate::ContentModified => c.content_modified += 1,
+                    Fate::AfterShutdown => c.after_shutdown += 1,
+                    Fate::Superseded => c.superseded_sweeps += 1,
+                    Fate::Shutdown | Fate::Abandoned | Fate::Unread => {}
+                }
+            }
+            let ran = expected.values().filter(|f| f.runs()).count();
+            // A refusal runs nothing.
+            if seen_coalescing.requests_run != ran {
+                return Err(fail(format!(
+                    "batch {b}: the coalescing session ran {} requests, but the specification runs {ran}",
+                    seen_coalescing.requests_run
+                )));
+            }
+            // A superseded sync publishes nothing; every other one does.
+            let spared = spared_publishes(&played, shut_down);
+            coverage.borrow_mut().spared_publishes += spared.values().sum::<usize>();
+            let uris: BTreeSet<&String> = seen_sequential
+                .publishes
+                .keys()
+                .chain(seen_coalescing.publishes.keys())
+                .collect();
+            for uri in uris {
+                let got = seen_coalescing.publishes.get(uri).copied().unwrap_or(0);
+                let sequential = seen_sequential.publishes.get(uri).copied().unwrap_or(0);
+                let want = sequential.checked_sub(spared.get(uri).copied().unwrap_or(0));
+                if Some(got) != want {
+                    return Err(fail(format!(
+                        "batch {b}: the coalescing session diagnosed {uri} {got} times; \
+                         the sequential one {sequential} times, spared {:?}",
+                        spared.get(uri)
+                    )));
+                }
+            }
+        }
+        shut_down |= expected.values().any(|f| *f == Fate::Shutdown);
+
+        coalescing.settle();
+        sequential.settle();
+        if coalescing.exited != sequential.exited {
+            return Err(fail(format!("batch {b}: only one session exited")));
+        }
+        if coalescing.published != sequential.published {
+            return Err(fail(format!(
+                "batch {b}: the published diagnostics differ:\ncoalescing {:#?}\nsequential {:#?}",
+                coalescing.published, sequential.published
+            )));
+        }
+        if shut_down || coalescing.exited {
+            break;
+        }
+
+        // No answer with a result was computed against a superseded text: it
+        // is the answer to the same request asked after the whole batch.
+        if whole {
+            for played in &played {
+                let (Message::Request(request), Some(Req { id, .. })) =
+                    (&played.message, &played.request)
+                else {
+                    continue;
+                };
+                let Some(Ok(result)) = answers.get(id).map(|a| &a[0].response_result) else {
+                    continue;
+                };
+                let now = sequential.ask(&request.method, request.params.clone());
+                if now != json!({ "Ok": result }) {
+                    return Err(fail(format!(
+                        "batch {b}: {id} ({}) was answered {result} against superseded text; \
+                         after the batch it is {now}",
+                        request.method
+                    )));
+                }
+                let at_its_place = sequential_answers.get(id).map(|a| &a[0].response_result);
+                if !matches!(at_its_place, Some(Ok(at)) if at == result) {
+                    coverage.borrow_mut().moved_by_a_later_sync += 1;
+                }
+            }
+        } else {
+            coverage.borrow_mut().chunked_batches += 1;
+        }
+
+        // The final state is the sequential one.
+        let probes = probes(&world, &client);
+        for (method, params) in probes {
+            let got = coalescing.ask(&method, params.clone());
+            let want = sequential.ask(&method, params.clone());
+            if got != want {
+                return Err(fail(format!(
+                    "batch {b}: after the batch, {method} {params} answers {got} in the \
+                     coalescing session and {want} in the sequential one"
+                )));
+            }
+        }
+        coalescing.settle();
+        sequential.settle();
+    }
+    Ok(())
+}
+
+/// Every request worth comparing after a batch: each document's diagnostics,
+/// each open document's tokens and symbols, hover, definition and references
+/// at each of its identifiers, and `workspace/symbol`.
+fn probes(world: &World, client: &ClientModel) -> Vec<(String, Value)> {
+    let mut out = vec![("workspace/symbol".to_string(), json!({ "query": "" }))];
+    for doc in DOCS {
+        let document = json!({ "uri": world.uri(doc) });
+        out.push((
+            "textDocument/diagnostic".to_string(),
+            json!({ "textDocument": document }),
+        ));
+        let Some(&version) = client.open.get(&doc) else {
+            continue;
+        };
+        for method in [
+            "textDocument/semanticTokens/full",
+            "textDocument/documentSymbol",
+        ] {
+            out.push((method.to_string(), json!({ "textDocument": document })));
+        }
+        for (line, character) in identifiers(doc.src().text(version)) {
+            let position = json!({ "line": line, "character": character });
+            for method in ["textDocument/hover", "textDocument/definition"] {
+                out.push((
+                    method.to_string(),
+                    json!({ "textDocument": document, "position": position }),
+                ));
+            }
+            out.push((
+                "textDocument/references".to_string(),
+                json!({
+                    "textDocument": document, "position": position,
+                    "context": { "includeDeclaration": true },
+                }),
+            ));
+        }
+    }
+    out
+}
+
+const DEFAULT_CASES: u32 = 48;
+const DEFAULT_SEED: u64 = 0xc0a1_e5ce;
+
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.parse().unwrap_or_else(|_| panic!("{name} is a number")))
+}
+
+fn runner(cases: u32, seed: u64) -> TestRunner {
+    let config = Config {
+        cases,
+        failure_persistence: None,
+        ..Config::default()
+    };
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&seed.to_le_bytes());
+    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes))
+}
+
+/// Run `f` on a thread with the dispatch loop's stack, as the server runs.
+fn on_server_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(SERVER_STACK_BYTES)
+        .spawn(f)
+        .expect("spawn")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// For all generated interleavings of text syncs, requests and
+/// cancellations, each batch handed over at once is answered as the
+/// specification says, against the newest texts, and leaves the state the
+/// same messages handled one at a time leave (see the module docs).
+#[test]
+fn a_coalesced_batch_agrees_with_its_messages_one_at_a_time() {
+    on_server_stack(|| {
+        let cases = env_u64("BORZOI_COALESCING_CASES").map_or(DEFAULT_CASES, |n| n as u32);
+        let seed = env_u64("BORZOI_COALESCING_SEED").unwrap_or(DEFAULT_SEED);
+        let coverage = RefCell::new(Coverage::default());
+        let result = runner(cases, seed).run(&case_strategy(), |case| run_case(&case, &coverage));
+        let coverage = coverage.into_inner();
+        eprintln!("seed {seed}: {coverage:#?}");
+        match result {
+            Ok(()) => {}
+            Err(TestError::Fail(message, case)) => {
+                panic!("seed {seed}: {message}\n\nminimal script:\n{case:?}")
+            }
+            Err(err) => panic!("seed {seed}: {err}"),
+        }
+        // Non-vacuity: every fate occurred, an answer moved because a later
+        // sync of another document ran before it, a superseded sync was
+        // spared its diagnostics, and some batch arrived in chunks.
+        assert!(
+            coverage.answered > 0
+                && coverage.cancelled > 0
+                && coverage.content_modified > 0
+                && coverage.after_shutdown > 0
+                && coverage.moved_by_a_later_sync > 0
+                && coverage.spared_publishes > 0
+                && coverage.chunked_batches > 0,
+            "the generated cases left a property unexercised: {coverage:#?}"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Pinned cases.
+// ---------------------------------------------------------------------------
+
+fn request(id: &str, method: &str, params: Value) -> Message {
+    Message::Request(Request {
+        id: RequestId::from(id.to_string()),
+        method: method.to_string(),
+        params,
+    })
+}
+
+fn notification(method: &str, params: Value) -> Message {
+    Message::Notification(Notification {
+        method: method.to_string(),
+        params,
+    })
+}
+
+fn did_open(uri: &str, text: &str) -> Message {
+    notification(
+        "textDocument/didOpen",
+        json!({ "textDocument": {
+            "uri": uri, "languageId": "fsharp", "version": 0, "text": text,
+        }}),
+    )
+}
+
+fn did_change(uri: &str, text: &str) -> Message {
+    notification(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "contentChanges": [{ "text": text }],
+        }),
+    )
+}
+
+/// A hover on `B`'s use of `A.x` (line 2, column 10 of every version that
+/// has one).
+fn hover_b(world: &World, id: &str) -> Message {
+    request(
+        id,
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": world.uri(Doc::Src(Src::B)) },
+            "position": { "line": 2, "character": 10 },
+        }),
+    )
+}
+
+fn error_code(answers: &BTreeMap<RequestId, Vec<Response>>, id: &str) -> Option<i32> {
+    let answer = &answers[&RequestId::from(id.to_string())];
+    assert_eq!(answer.len(), 1, "{id} is answered once: {answer:?}");
+    answer[0].response_result.as_ref().err().map(|e| e.code)
+}
+
+const CANCELLED: Option<i32> = Some(lsp_server::ErrorCode::RequestCanceled as i32);
+const CONTENT_MODIFIED: Option<i32> = Some(lsp_server::ErrorCode::ContentModified as i32);
+
+/// The loop reads every message waiting before it handles one: queued before
+/// the loop starts, a request cancelled after it and one whose document then
+/// changes are refused without running, as one message at a time could not
+/// refuse them.
+#[test]
+fn the_loop_reads_every_waiting_message_before_it_handles_one() {
+    on_server_stack(|| {
+        let world = World::new();
+        let b = world.uri(Doc::Src(Src::B));
+        let (server, client) = Connection::memory();
+        for message in [
+            did_open(&b, Src::B.text(0)),
+            hover_b(&world, "h1"),
+            notification("$/cancelRequest", json!({ "id": "h1" })),
+            hover_b(&world, "h2"),
+            did_change(&b, Src::B.text(1)),
+            hover_b(&world, "h3"),
+            request("s", "shutdown", Value::Null),
+            notification("exit", Value::Null),
+        ] {
+            client.sender.send(message).unwrap();
+        }
+        let mut state = State::new();
+        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(world.root.join("no-dotnet")),
+            ..SdkDiscoveryEnv::default()
+        });
+        borzoi::server::run_with_fetcher(server, state, None).expect("the loop ends cleanly");
+        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
+        for message in client.receiver.try_iter() {
+            if let Message::Response(response) = message {
+                answers
+                    .entry(response.id.clone())
+                    .or_default()
+                    .push(response);
+            }
+        }
+        assert_eq!(error_code(&answers, "h1"), CANCELLED);
+        assert_eq!(error_code(&answers, "h2"), CONTENT_MODIFIED);
+        assert_eq!(error_code(&answers, "h3"), None);
+        assert_eq!(error_code(&answers, "s"), None);
+        assert_eq!(answers.len(), 4, "{answers:?}");
+    });
+}
+
+/// A text sync the loop has already applied still refuses an earlier request
+/// it superseded when the plan is made again for a message read later.
+#[test]
+fn a_handled_change_still_refuses_the_request_it_superseded() {
+    on_server_stack(|| {
+        let world = World::new();
+        let b = world.uri(Doc::Src(Src::B));
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![did_open(&b, Src::B.text(0))]);
+        session
+            .dispatcher
+            .admit([hover_b(&world, "h1"), did_change(&b, Src::B.text(1))]);
+        // Notifications come first: this applies the change.
+        assert_eq!(session.step(), Progress::Handled);
+        let answers = session.deliver(vec![request(
+            "h2",
+            "workspace/symbol",
+            json!({ "query": "" }),
+        )]);
+        assert_eq!(error_code(&answers, "h1"), CONTENT_MODIFIED);
+        assert_eq!(error_code(&answers, "h2"), None);
+    });
+}
+
+/// A change read while earlier messages are still being handled refuses a
+/// pending request on its document.
+#[test]
+fn a_change_read_mid_epoch_refuses_a_pending_request() {
+    on_server_stack(|| {
+        let world = World::new();
+        let b = world.uri(Doc::Src(Src::B));
+        let mut session = Session::start(&world.root, false);
+        session
+            .dispatcher
+            .admit([did_open(&b, Src::B.text(0)), hover_b(&world, "h1")]);
+        assert_eq!(session.step(), Progress::Handled);
+        let answers = session.deliver(vec![did_change(&b, Src::B.text(1))]);
+        assert_eq!(error_code(&answers, "h1"), CONTENT_MODIFIED);
+    });
+}
+
+/// A request on one document runs after a later change to another that its
+/// answer reads: the hover on `B`'s `A.x` reports the type the newest `A`
+/// gives it, not the one `A` had when the hover was sent.
+#[test]
+fn a_request_reads_the_newest_text_of_every_other_document() {
+    on_server_stack(|| {
+        let world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let b = world.uri(Doc::Src(Src::B));
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&b, Src::B.text(0)),
+        ]);
+        let before = session.ask(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": b },
+                "position": { "line": 2, "character": 10 },
+            }),
+        );
+        assert!(before.to_string().contains("int"), "{before}");
+        let answers = session.deliver(vec![hover_b(&world, "h1"), did_change(&a, Src::A.text(1))]);
+        let hover = answers[&RequestId::from("h1".to_string())][0]
+            .response_result
+            .as_ref()
+            .expect("the hover runs")
+            .to_string();
+        assert!(hover.contains("string"), "{hover}");
+    });
+}
+
+/// A push client is sent the diagnostics of the text that stands, once: the
+/// change a later one supersedes is applied and publishes nothing.
+#[test]
+fn a_superseded_change_publishes_nothing() {
+    on_server_stack(|| {
+        let world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let mut session = Session::start(&world.root, true);
+        session.deliver(vec![did_open(&a, Src::A.text(0))]);
+        session.settle();
+        session.client.receiver.try_iter().for_each(drop);
+        session.dispatcher.admit([
+            did_change(&a, Src::A.text(4)),
+            did_change(&a, Src::A.text(1)),
+        ]);
+        while session.step() == Progress::Handled {}
+        let published: Vec<Value> = session
+            .client
+            .receiver
+            .try_iter()
+            .filter_map(|m| match m {
+                Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                    Some(n.params)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(published.len(), 1, "{published:#?}");
+        assert_eq!(published[0]["uri"], json!(a));
+        assert_eq!(published[0]["diagnostics"], json!([]), "{published:#?}");
+    });
+}
+
+/// Sends messages on the connection (the closure it holds) when the server
+/// ends its first generation: as a client's messages arrive while the loop is
+/// handling one.
+type Sending = Box<dyn FnOnce() + Send>;
+
+struct SendAtFirstGeneration(Mutex<Option<Sending>>);
+
+impl tracing::Subscriber for SendAtFirstGeneration {
+    fn register_callsite(
+        &self,
+        metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        if self.enabled(metadata) {
+            tracing::subscriber::Interest::always()
+        } else {
+            tracing::subscriber::Interest::sometimes()
+        }
+    }
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.is_event() && metadata.name() == borzoi::observed::GENERATION_EVENT
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        if let Some(send) = self.0.lock().unwrap().take() {
+            send();
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// The loop reads the connection again before each message it handles: a
+/// change that arrives while it handles an earlier message refuses a request
+/// it had read before the change arrived.
+#[test]
+fn the_loop_reads_again_before_each_message_it_handles() {
+    on_server_stack(|| {
+        let world = World::new();
+        let b = world.uri(Doc::Src(Src::B));
+        let (server, client) = Connection::memory();
+        client.sender.send(did_open(&b, Src::B.text(0))).unwrap();
+        client.sender.send(hover_b(&world, "h1")).unwrap();
+        let late = vec![
+            did_change(&b, Src::B.text(1)),
+            request("s", "shutdown", Value::Null),
+            notification("exit", Value::Null),
+        ];
+        let sender = client.sender.clone();
+        let subscriber = SendAtFirstGeneration(Mutex::new(Some(Box::new(move || {
+            for message in late {
+                sender.send(message).unwrap();
+            }
+        }))));
+        let mut state = State::new();
+        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(world.root.join("no-dotnet")),
+            ..SdkDiscoveryEnv::default()
+        });
+        tracing::subscriber::with_default(subscriber, || {
+            borzoi::server::run_with_fetcher(server, state, None).expect("the loop ends cleanly")
+        });
+        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
+        for message in client.receiver.try_iter() {
+            if let Message::Response(response) = message {
+                answers
+                    .entry(response.id.clone())
+                    .or_default()
+                    .push(response);
+            }
+        }
+        assert_eq!(error_code(&answers, "h1"), CONTENT_MODIFIED);
+        assert_eq!(error_code(&answers, "s"), None);
+    });
+}
