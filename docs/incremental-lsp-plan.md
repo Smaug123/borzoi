@@ -4250,6 +4250,16 @@ Planted, each caught, then removed (each run against the `read_checks`,
 | a package version trusted without its commit marker | `a_package_is_trusted_only_once_committed_before_the_evaluation` |
 | a version shown by a read that failed | `a_version_installed_after_the_evaluation_is_seen` |
 | a failed read inside a version exempt | `a_failed_read_inside_a_version_is_confirmed` |
+| an alias found by bytes under a root not spelt as its components (Codex) | both reference properties, once the references found their own aliases and a root could end in a separator |
+
+Codex found that an install root ending in a separator lost every alias of
+its versions (so their contents were confirmed in every generation rather
+than trusted): the alias search placed a canonicalisation by its bytes
+without asking whether the roots were spelt as their components. The
+reference properties had passed it because the placement reference took
+its aliases from the code under test, and no generated root of the alias
+was spelt otherwise; now the references find their own aliases, and the
+roots vary.
 
 The first version of the path-only plant changed only the match, inside
 buckets keyed by the whole read, and so changed nothing; it was replanted to

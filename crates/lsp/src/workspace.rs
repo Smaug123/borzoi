@@ -735,6 +735,10 @@ impl ImmutableRoots {
     /// canonicalisation names its other spelling: a symlink below a version
     /// can lead anywhere.
     fn versions<'r>(&self, reads: impl IntoIterator<Item = &'r Read>) -> VersionDirs<'_> {
+        let spelt = |path: &Path| spelt_as_components(path.as_os_str().as_encoded_bytes());
+        // A path is placed among the roots by its bytes only when they are
+        // all spelt as their components too.
+        let roots_spelt = self.dotnet.iter().chain(&self.nuget).all(|root| spelt(root));
         let aliases: Vec<PathBuf> = reads
             .into_iter()
             .filter_map(|read| {
@@ -742,7 +746,7 @@ impl ImmutableRoots {
                     return None;
                 };
                 let bytes = read.path.as_os_str().as_encoded_bytes();
-                let (dir, below) = if spelt_as_components(bytes) {
+                let (dir, below) = if roots_spelt && spelt_as_components(bytes) {
                     let (len, below) = self.version_of_spelt(bytes)?;
                     (PathBuf::from(name_of(&bytes[..len])), below)
                 } else {
@@ -752,15 +756,9 @@ impl ImmutableRoots {
                 (below == 0 && installed && *canonical != dir).then(|| canonical.clone())
             })
             .collect();
-        let spelt = |path: &Path| spelt_as_components(path.as_os_str().as_encoded_bytes());
         VersionDirs {
             roots: self,
-            bytes: self
-                .dotnet
-                .iter()
-                .chain(&self.nuget)
-                .all(|root| spelt(root))
-                && aliases.iter().all(|alias| spelt(alias)),
+            bytes: roots_spelt && aliases.iter().all(|alias| spelt(alias)),
             aliases,
         }
     }
@@ -7586,11 +7584,9 @@ mod tests {
             assert_ne!(ws.projects_generation(), generation);
         }
 
-        /// [`VersionDirs::containing`] as it was first written: every path
+        /// [`ImmutableRoots::version_of`] as it was first written: `path`
         /// spelt lexically normal, its names below each root collected.
-        /// The reference [`a_version_is_found_as_the_reference_finds_it`]
-        /// holds the allocation-free one to.
-        fn containing_reference(versions: &VersionDirs, path: &Path) -> Option<PathBuf> {
+        fn version_of_reference(roots: &ImmutableRoots, path: &Path) -> Option<(PathBuf, usize)> {
             let path = lexically_normalize(path);
             let version = |name: &std::ffi::OsStr| {
                 name.as_encoded_bytes()
@@ -7607,8 +7603,7 @@ mod tests {
                     })
                     .collect()
             };
-            let roots = versions.roots;
-            let found = roots
+            roots
                 .dotnet
                 .iter()
                 .find_map(|root| {
@@ -7634,14 +7629,41 @@ mod tests {
                             }
                             _ => None,
                         })
-                });
-            if let Some((version, below)) = found
+                })
+        }
+
+        /// [`ImmutableRoots::versions`]' aliases as they were first found.
+        fn aliases_reference(roots: &ImmutableRoots, reads: &[Read]) -> Vec<PathBuf> {
+            reads
+                .iter()
+                .filter_map(|read| {
+                    let Observation::Canonical(Ok(canonical)) = &read.observation else {
+                        return None;
+                    };
+                    let (dir, below) = version_of_reference(roots, &read.path)?;
+                    let installed = roots.dotnet.iter().any(|root| dir.starts_with(root));
+                    (below == 0 && installed && *canonical != dir).then(|| canonical.clone())
+                })
+                .collect()
+        }
+
+        /// [`VersionDirs::containing`] as it was first written, among
+        /// `roots` and the reference's `aliases`. The references
+        /// [`a_version_is_found_as_the_reference_finds_it`] and
+        /// [`reads_are_partitioned_as_the_reference_partitions_them`] hold
+        /// the allocation-free ones to.
+        fn containing_reference(
+            roots: &ImmutableRoots,
+            aliases: &[PathBuf],
+            path: &Path,
+        ) -> Option<PathBuf> {
+            if let Some((version, below)) = version_of_reference(roots, path)
                 && below > 0
             {
                 return Some(version);
             }
-            versions
-                .aliases
+            let path = lexically_normalize(path);
+            aliases
                 .iter()
                 .find(|alias| path.starts_with(alias) && path != **alias)
                 .cloned()
@@ -7672,13 +7694,17 @@ mod tests {
                     0..8,
                 ),
                 trailing in any::<bool>(),
-                root_spelt_otherwise in any::<bool>(),
+                root_spelt_otherwise in 0..3usize,
             ) {
                 // A root not spelt as its components places every path by
                 // its components.
-                let second = if root_spelt_otherwise { "/n/./d/" } else { "/n/d" };
+                let (first, second) = match root_spelt_otherwise {
+                    0 => ("/d", "/n/d"),
+                    1 => ("/d", "/n/./d/"),
+                    _ => ("/d/", "/n/d"),
+                };
                 let roots = ImmutableRoots {
-                    dotnet: vec![PathBuf::from("/d"), PathBuf::from(second)],
+                    dotnet: vec![PathBuf::from(first), PathBuf::from(second)],
                     nuget: vec![PathBuf::from("/n")],
                 };
                 let alias = Read {
@@ -7686,6 +7712,8 @@ mod tests {
                     observation: Observation::Canonical(Ok(PathBuf::from("/real/sdk/1.0"))),
                 };
                 let versions = roots.versions(std::slice::from_ref(&alias));
+                let aliases = aliases_reference(&roots, std::slice::from_ref(&alias));
+                prop_assert_eq!(&versions.aliases, &aliases);
                 let path = PathBuf::from(format!(
                     "{prefix}/{}{}",
                     names.join("/"),
@@ -7693,7 +7721,7 @@ mod tests {
                 ));
                 prop_assert_eq!(
                     versions.containing(&path).map(std::borrow::Cow::into_owned),
-                    containing_reference(&versions, &path),
+                    containing_reference(&roots, &aliases, &path),
                     "{:?}",
                     path
                 );
@@ -7708,8 +7736,8 @@ mod tests {
             immutable: &ImmutableRoots,
             committed: impl Fn(&Path) -> bool,
         ) -> (Vec<Read>, Vec<Read>) {
-            let versions = immutable.versions(reads);
-            let containing = |path: &Path| containing_reference(&versions, path);
+            let aliases = aliases_reference(immutable, reads);
+            let containing = |path: &Path| containing_reference(immutable, &aliases, path);
             let is_package =
                 |version: &Path| immutable.nuget.iter().any(|root| version.starts_with(root));
             let shown: std::collections::BTreeSet<PathBuf> = reads
@@ -7747,7 +7775,8 @@ mod tests {
             /// is the reference's for every read set: reads inside and
             /// outside versions, under every spelling, answered, absent and
             /// failed, under package versions committed or not, and through
-            /// a version alias.
+            /// a version alias, with an install root spelt as its components
+            /// or otherwise.
             #[test]
             fn reads_are_partitioned_as_the_reference_partitions_them(
                 reads in prop::collection::vec(
@@ -7766,6 +7795,7 @@ mod tests {
                 ),
                 uncommitted in prop::sample::subsequence(vec!["/n/pkg/1.0", "/n/pkg/2.0", "/n/other/1.5"], 0..=3),
                 aliased in any::<bool>(),
+                dotnet_root in prop::sample::select(vec!["/d", "/d/", "/./d"]),
             ) {
                 let failure = |kind: std::io::ErrorKind| {
                     msbuild_observed::Failure::of(&std::io::Error::from(kind))
@@ -7795,7 +7825,7 @@ mod tests {
                 }
                 let reads: ReadSet = reads.into_iter().collect();
                 let immutable = ImmutableRoots {
-                    dotnet: vec![PathBuf::from("/d")],
+                    dotnet: vec![PathBuf::from(dotnet_root)],
                     nuget: vec![PathBuf::from("/n")],
                 };
                 let committed = |version: &Path| !uncommitted.iter().any(|u| Path::new(u) == version);
