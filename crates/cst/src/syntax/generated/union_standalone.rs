@@ -2,7 +2,7 @@
 //! Regenerate with `cargo run -p borzoi-astgen --example generate`; kept honest
 //! by borzoi-astgen's `tests/up_to_date.rs` staleness test.
 //!
-//! The **standalone** nodes, which no dispatch enum holds (`ImplFile`, `Binding`, `LongIdent`, …), and the value enums the accessors return.
+//! The **standalone** nodes, which no category's dispatch enum holds (`ImplFile`, `Binding`, `LongIdent`, …), the `ParsedInput` enum over the two file roots, and the value enums the accessors return.
 //!
 //! Boilerplate only — bespoke accessors stay hand-written in
 //! `crate::syntax`, re-exported from there as the real facade (plan PR D).
@@ -562,6 +562,30 @@ impl AstNode for StaticOptCondition {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ParsedInput {
+    ImplFile(ImplFile),
+    SigFile(SigFile),
+}
+
+impl AstNode for ParsedInput {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(kind, SyntaxKind::IMPL_FILE | SyntaxKind::SIG_FILE)
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::IMPL_FILE => ImplFile::cast(node).map(ParsedInput::ImplFile),
+            SyntaxKind::SIG_FILE => SigFile::cast(node).map(ParsedInput::SigFile),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            ParsedInput::ImplFile(n) => n.syntax(),
+            ParsedInput::SigFile(n) => n.syntax(),
+        }
+    }
+}
 /// `SynModuleOrNamespaceKind` — the four shapes a top-level
 /// [`ModuleOrNamespace`] can take. [`Anon`](ModuleOrNamespaceKind::Anon) is
 /// the implicit module wrapping a script-style body (no header keyword);

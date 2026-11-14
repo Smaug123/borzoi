@@ -257,6 +257,8 @@ enum	ModuleDecl	ModuleAbbrev	ModuleAbbrevDecl
 enum	ModuleDecl	NestedModule	NestedModuleDecl
 enum	ModuleDecl	Open	OpenDecl
 enum	ModuleDecl	Types	TypeDefnsDecl
+enum	ParsedInput	ImplFile	ImplFile
+enum	ParsedInput	SigFile	SigFile
 enum	Pat	Ands	AndsPat
 enum	Pat	ArrayOrList	ArrayOrListPat
 enum	Pat	As	AsPat

@@ -24,8 +24,13 @@
 //! signatures and the tables make up the union's lock, `crates/cst/facades/
 //! union.lock` ([`lock`]): the surface one fact per line.
 //!
-//! Output is checked in (one file per [`Category`], under
-//! `crates/cst/src/syntax/generated/`, and the lock) and kept honest by a
+//! From the union's lock and the feature table, [`facade`] derives a lock per
+//! language version and generates that version's facade from it: a module
+//! owning every node type and enum of the version's surface, whose accessors
+//! re-cast the union's.
+//!
+//! Output is checked in (one file per [`Category`], the facades, under
+//! `crates/cst/src/syntax/generated/`, and the locks) and kept honest by a
 //! staleness test (`tests/up_to_date.rs`): regenerate with
 //! `cargo run -p borzoi-astgen --example generate`. (The generator is an *example*, not
 //! a binary, so it does not make root `cargo run` ambiguous with the LSP.)
@@ -41,11 +46,11 @@ use std::process::Command;
 use borzoi_spawn::BoundedCommand;
 
 pub mod accessors;
+pub mod facade;
 pub mod features;
 pub mod lock;
 pub mod shape;
 
-use features::FeatureRow;
 use lock::{Line, Lock, Payload};
 use shape::{Elem, Names};
 
@@ -119,10 +124,6 @@ pub struct Category {
     /// Value enums: plain Rust enums the hand-written accessors compute
     /// (`TyparDeclsForm`, `TupleSegment`, …), declared here with their docs.
     pub value_enums: &'static [ValueEnum],
-    /// Whether the per-version facades ([`SURFACES`]) re-export this category.
-    /// They re-export the dispatch-enum categories only, so the standalone
-    /// nodes and value enums are reachable through the union alone.
-    pub in_facades: bool,
 }
 
 /// Every category, in swap order (types → patterns → …). Each entry is one
@@ -134,7 +135,6 @@ pub const CATEGORIES: &[Category] = &[
         nodes: TYPE_NODES,
         enums: TYPE_ENUMS,
         value_enums: &[],
-        in_facades: true,
     },
     Category {
         path: "crates/cst/src/syntax/generated/union_pats.rs",
@@ -142,7 +142,6 @@ pub const CATEGORIES: &[Category] = &[
         nodes: PAT_NODES,
         enums: PAT_ENUMS,
         value_enums: &[],
-        in_facades: true,
     },
     Category {
         path: "crates/cst/src/syntax/generated/union_exprs.rs",
@@ -150,7 +149,6 @@ pub const CATEGORIES: &[Category] = &[
         nodes: EXPR_NODES,
         enums: EXPR_ENUMS,
         value_enums: &[],
-        in_facades: true,
     },
     Category {
         path: "crates/cst/src/syntax/generated/union_decls.rs",
@@ -160,16 +158,15 @@ pub const CATEGORIES: &[Category] = &[
         nodes: DECL_NODES,
         enums: DECL_ENUMS,
         value_enums: &[],
-        in_facades: true,
     },
     Category {
         path: "crates/cst/src/syntax/generated/union_standalone.rs",
-        summary: "The **standalone** nodes, which no dispatch enum holds (`ImplFile`, \
-                  `Binding`, `LongIdent`, …), and the value enums the accessors return.",
+        summary: "The **standalone** nodes, which no category's dispatch enum holds \
+                  (`ImplFile`, `Binding`, `LongIdent`, …), the `ParsedInput` enum over \
+                  the two file roots, and the value enums the accessors return.",
         nodes: STANDALONE_NODES,
-        enums: &[],
+        enums: STANDALONE_ENUMS,
         value_enums: VALUE_ENUMS,
-        in_facades: false,
     },
 ];
 
@@ -1088,6 +1085,13 @@ pub const STANDALONE_NODES: &[Node] = &[
     },
 ];
 
+/// The standalone category's one dispatch enum: a parse's root, FCS's
+/// `ParsedInput`. A facade's is what `Parse::view` returns.
+pub const STANDALONE_ENUMS: &[Enum] = &[Enum {
+    name: "ParsedInput",
+    variants: &[("ImplFile", "ImplFile"), ("SigFile", "SigFile")],
+}];
+
 /// Derives of a fieldless value enum that is also hashed.
 const COPY_HASH: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "Hash"];
 /// Derives of a fieldless value enum.
@@ -1467,7 +1471,7 @@ pub fn screaming_snake(camel: &str) -> String {
 
 /// The `SyntaxKind` names a node's `can_cast` accepts — its explicit `kinds`, or
 /// the single derived kind.
-fn node_kinds(node: &Node) -> Vec<String> {
+pub(crate) fn node_kinds(node: &Node) -> Vec<String> {
     if node.kinds.is_empty() {
         vec![screaming_snake(node.name)]
     } else {
@@ -1511,21 +1515,34 @@ fn gen_enum(e: &Enum, nodes: &[Node], out: &mut String) {
 }
 
 /// Emit a dispatch enum `name` over the given `variants` (`(variant, node)`
-/// pairs). Factored out so per-version facades can pass a *subset* of an enum's
-/// variants — e.g. `v8::Type` with the F# 9.0 `WithNull` variant removed. The
-/// `cast` arm for any kind not in `variants` falls through to `None`, which is
-/// exactly the projection's out-of-surface behaviour.
+/// pairs), reading each node's kinds from the tables.
 fn gen_enum_impl(name: &str, variants: &[(&str, &str)], nodes: &[Node], out: &mut String) {
+    let variants: Vec<(&str, &str, Vec<String>)> = variants
+        .iter()
+        .map(|(variant, node)| (*variant, *node, node_kinds(find_node(nodes, node))))
+        .collect();
+    gen_enum_with_kinds(name, &variants, out);
+}
+
+/// Emit a dispatch enum `name` whose variants are `(variant, node, the kinds
+/// the node casts from)`, with its `AstNode` impl. The `cast` arm for any kind
+/// not in `variants` falls through to `None`, which is how a facade's
+/// narrower enum reads a node outside its surface.
+pub(crate) fn gen_enum_with_kinds(
+    name: &str,
+    variants: &[(&str, &str, Vec<String>)],
+    out: &mut String,
+) {
     let mut variant_decls = String::new();
     let mut all_kinds: Vec<String> = Vec::new();
     let mut cast_arms = String::new();
     let mut syntax_arms = String::new();
-    for (variant, node_name) in variants {
+    for (variant, node_name, kinds) in variants {
         variant_decls.push_str(&format!("    {variant}({node_name}),\n"));
         syntax_arms.push_str(&format!(
             "            {name}::{variant}(n) => n.syntax(),\n"
         ));
-        for kind in node_kinds(find_node(nodes, node_name)) {
+        for kind in kinds.iter().cloned() {
             cast_arms.push_str(&format!(
                 "            SyntaxKind::{kind} => {node_name}::cast(node).map({name}::{variant}),\n",
             ));
@@ -1776,6 +1793,7 @@ pub fn lock_from(union_source: &str) -> Lock {
             owner: accessor.owner,
             name: accessor.name,
             shape: accessor.shape,
+            delegate: None,
         });
     }
     let lock = Lock { lines };
@@ -1788,49 +1806,6 @@ pub fn lock_from(union_source: &str) -> Lock {
     lock
 }
 
-/// A frozen, published per-version typed surface (`docs/ast-versioning-plan.md`
-/// D4). Each is a projection of the union: nodes/variants introduced after the
-/// surface's version are dropped, the rest re-exported. `v9` equals the union
-/// today (nothing is introduced after 9.0); `v8` drops the F# 9.0 nullness node.
-pub struct Surface {
-    /// Repo-root-relative output path.
-    pub path: &'static str,
-    /// The F# language version this surface freezes, as a decimal.
-    pub lang: f64,
-    /// One-line description for the generated file's module-doc header.
-    pub summary: &'static str,
-}
-
-/// The published surfaces, ascending. (`v8`/`v9` are the two with/without the
-/// one post-floor typed delta; 4.6–7.0 resolve to the nearest, D3.)
-pub const SURFACES: &[Surface] = &[
-    Surface {
-        path: "crates/cst/src/syntax/generated/v8.rs",
-        lang: 8.0,
-        summary: "The frozen **F# 8.0** typed surface — the union minus post-8.0 \
-                  nodes. Today that is exactly the 9.0 nullness type, so only `Type` \
-                  is a distinct (exhaustive, `WithNull`-free) enum; the rest re-exports \
-                  the union.",
-    },
-    Surface {
-        path: "crates/cst/src/syntax/generated/v9.rs",
-        lang: 9.0,
-        summary: "The frozen **F# 9.0** typed surface. Identical to the union today \
-                  (nothing is introduced after 9.0), so it re-exports the union \
-                  wholesale; it becomes a distinct projection only when a post-9.0 \
-                  typed node is modelled.",
-    },
-];
-
-/// Whether a node is in `lang`'s surface — i.e. all of its kinds are legal at
-/// `lang`, by the feature table's live `Kind` rows
-/// ([`features::live_kind_introduced`]), the rows cst's parser gates on.
-fn node_in_surface(rows: &[FeatureRow], node: &Node, lang: f64) -> bool {
-    node_kinds(node)
-        .iter()
-        .all(|k| features::live_kind_introduced(rows, k).is_none_or(|intro| lang >= intro))
-}
-
 /// The generated-module name for a category path, e.g. `union_types`.
 fn module_of(path: &str) -> &str {
     path.rsplit('/')
@@ -1839,96 +1814,23 @@ fn module_of(path: &str) -> &str {
         .expect("category path is `…/<module>.rs`")
 }
 
-/// Generate one [`Surface`]'s frozen facade file: a projection of the union that
-/// re-exports the in-surface nodes/enums and emits a distinct enum for any whose
-/// variant set the surface narrows.
-pub fn generate_facade(rows: &[FeatureRow], surface: &Surface) -> String {
-    let lang = surface.lang;
-    let header = format!(
-        "//! GENERATED by `tools/astgen` — do not edit by hand.\n\
-         //! Regenerate with `cargo run -p borzoi-astgen --example generate`; kept honest\n\
-         //! by borzoi-astgen's `tests/up_to_date.rs` staleness test.\n\
-         //!\n\
-         //! {summary}\n\
-         //!\n\
-         //! A frozen, exhaustive surface (`docs/ast-versioning-plan.md` D4): matching\n\
-         //! a distinct enum here is total over that version's syntax, and a node\n\
-         //! introduced later casts to `None`. Bespoke accessors live on the union\n\
-         //! nodes (`crate::syntax`); a `Type` here is re-cast on demand.\n\n",
-        summary = surface.summary,
-    );
-    // Body first, so we can tell whether any distinct enum was emitted (and thus
-    // whether the `AstNode`/`SyntaxKind`/`SyntaxNode` import is needed — a
-    // pure-re-export surface like `v9` uses none of them).
-    let mut out = String::new();
-    let mut emitted_enum = false;
-    for category in CATEGORIES {
-        if !category.in_facades {
-            continue;
-        }
-        let module = module_of(category.path);
-        let nodes_in: Vec<&str> = category
-            .nodes
-            .iter()
-            .filter(|n| node_in_surface(rows, n, lang))
-            .map(|n| n.name)
-            .collect();
-        let all_nodes_in = nodes_in.len() == category.nodes.len();
-
-        let mut unchanged_enums: Vec<&str> = Vec::new();
-        let mut narrowed_enums: Vec<(&str, Vec<(&str, &str)>)> = Vec::new();
-        for e in category.enums {
-            let in_variants: Vec<(&str, &str)> = e
-                .variants
-                .iter()
-                .filter(|(_, node)| node_in_surface(rows, find_node(category.nodes, node), lang))
-                .map(|(v, node)| (*v, *node))
-                .collect();
-            if in_variants.len() == e.variants.len() {
-                unchanged_enums.push(e.name);
-            } else {
-                narrowed_enums.push((e.name, in_variants));
-            }
-        }
-
-        if all_nodes_in && narrowed_enums.is_empty() {
-            // Whole category unchanged at this version — re-export it wholesale.
-            out.push_str(&format!("pub use super::{module}::*;\n\n"));
-            continue;
-        }
-        let mut reexports: Vec<&str> = nodes_in;
-        reexports.extend(unchanged_enums);
-        if !reexports.is_empty() {
-            out.push_str(&format!(
-                "pub use super::{module}::{{{}}};\n\n",
-                reexports.join(", "),
-            ));
-        }
-        for (name, in_variants) in &narrowed_enums {
-            gen_enum_impl(name, in_variants, category.nodes, &mut out);
-            out.push('\n');
-            emitted_enum = true;
-        }
-    }
-    let imports = if emitted_enum {
-        "use crate::syntax::{AstNode, SyntaxKind, SyntaxNode};\n\n"
-    } else {
-        ""
-    };
-    reformat(&format!("{header}{imports}{out}"))
-}
-
 /// Every generated file as `(repo-relative path, contents)` — the union
-/// categories, the feature module, the per-version surface facades, and the
-/// union's lock. The
-/// single source the generator binary writes and the staleness test checks.
-pub fn all_outputs() -> Vec<(&'static str, String)> {
+/// categories, the feature module, the union's lock, and every per-version
+/// facade's lock and code ([`facade::outputs`]). The single source the
+/// generator binary writes and the staleness test checks.
+pub fn all_outputs() -> Vec<(String, String)> {
     let rows = features::feature_table();
-    let mut out: Vec<(&'static str, String)> =
-        CATEGORIES.iter().map(|c| (c.path, generate(c))).collect();
-    out.push((features::OUTPUT_PATH, features::generate_features(&rows)));
-    out.extend(SURFACES.iter().map(|s| (s.path, generate_facade(&rows, s))));
-    out.push((UNION_LOCK_PATH, lock::render("union", &union_lock())));
+    let mut out: Vec<(String, String)> = CATEGORIES
+        .iter()
+        .map(|c| (c.path.to_string(), generate(c)))
+        .collect();
+    out.push((
+        features::OUTPUT_PATH.to_string(),
+        features::generate_features(&rows),
+    ));
+    let union = union_lock();
+    out.push((UNION_LOCK_PATH.to_string(), lock::render("union", &union)));
+    out.extend(facade::outputs(&rows, &union));
     out
 }
 

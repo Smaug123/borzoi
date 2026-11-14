@@ -1,10 +1,10 @@
 //! Versioned typed-AST **gate** — the language-version surface check
 //! ([`docs/ast-versioning-plan.md`] D3/P2), the runtime-grounded companion to the
-//! generated per-version facades (`v8` / `v9`).
+//! generated per-version facades (`syntax::v4_6` … `syntax::preview`).
 //!
-//! The frozen `vN` *facades* (the distinct, exhaustive dispatch enums, e.g.
-//! `v8::Type` = the union [`Type`](super::Type) minus the F# 9.0 `WithNull`) are
-//! **generated** by `tools/astgen` from the feature table
+//! The `vN` *facades* (each owning every node type and enum of its version's
+//! surface, e.g. `v8::Type`, the union [`Type`](super::Type) less the F# 9.0
+//! `WithNull`) are **generated** by `tools/astgen` from the feature table
 //! (`crates/cst/language-features.tsv`) and live in `super::generated`. What
 //! stays here is the *gate*: given a parsed tree and a pinned
 //! [`LanguageVersion`], find a node outside that surface. This is the
