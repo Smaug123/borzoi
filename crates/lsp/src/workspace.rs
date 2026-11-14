@@ -471,10 +471,12 @@ pub struct EnvChecks {
     /// Every directory the resolution listed, as [`path_key`] spells it.
     listed: HashSet<String>,
     /// The installed version directories whose contents the env trusts
-    /// rather than confirms, lexically normal, in every spelling the reads
-    /// reached them by: those whose contents its own reads exempt, and
-    /// those whose existence a confirmed evaluation it consulted checks.
-    trusted: Vec<PathBuf>,
+    /// rather than confirms, in every spelling the reads reached them by:
+    /// those whose contents its own reads exempt, and those whose existence
+    /// a confirmed evaluation it consulted checks. Each is spelt as
+    /// [`path_key`] spells it, with a trailing separator, so that a path
+    /// strictly inside one starts with it under the platform's case rules.
+    trusted: Vec<String>,
 }
 
 impl EnvChecks {
@@ -491,14 +493,12 @@ impl EnvChecks {
     /// do not move (D1's "not covered").
     pub fn named_by(&self, path: &Path) -> bool {
         let path = lexically_normalize(path);
-        self.read.contains(&path_key(&path))
+        let key = path_key(&path);
+        self.read.contains(&key)
             || path
                 .parent()
                 .is_some_and(|dir| self.listed.contains(&path_key(dir)))
-            || self
-                .trusted
-                .iter()
-                .any(|version| path.starts_with(version) && path != *version)
+            || self.trusted.iter().any(|version| key.starts_with(version))
     }
 }
 
@@ -893,9 +893,16 @@ impl Workspace {
         );
         let checker = &self.checker;
         let reads = reads.reads();
+        // The commit markers' stamps are the env's to pay for, not the
+        // evaluations'.
+        let before = checker.counts_so_far();
         let confirming = confirming_reads(reads, &immutable, |version| {
             nuget_committed_before(checker, version, started)
         });
+        if checker.generation().is_some() {
+            let spent = minus(checker.counts_so_far(), before);
+            self.env_counts.set(self.env_counts.get() + spent);
+        }
         // A confirmed evaluation the resolution consulted contributes the
         // existence of each version it trusts, rather than its contents.
         let consulted = reads.iter().filter_map(|read| {
@@ -915,7 +922,10 @@ impl Workspace {
                 .filter(|read| matches!(read.observation, Observation::Listing(_)))
                 .map(|read| path_key(&read.path))
                 .collect(),
-            trusted,
+            trusted: trusted
+                .iter()
+                .map(|version| format!("{}/", path_key(version)))
+                .collect(),
         }
     }
 

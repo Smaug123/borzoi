@@ -753,8 +753,10 @@ impl SemanticState {
     }
 
     /// Drop every assembly env and every fold against one: for a change of
-    /// a setting the envs are not keyed on.
-    fn drop_every_env(&mut self) {
+    /// a setting the envs are not keyed on, or of an input none of them
+    /// records (NuGet's settings, which SDK discovery reads directly:
+    /// [`crate::server::State::apply_watched_changes`]).
+    pub fn drop_every_env(&mut self) {
         self.resolved_projects.clear();
         self.inferred_projects.clear();
         self.prev_resolved.clear();
@@ -3675,8 +3677,12 @@ fn enumerate_dll_type_defs_cached(
             }
         }
     });
-    if !read {
-        observer.absorb(before.finish());
+    let (stamped, counts) = before.finish();
+    if read {
+        // The `stat` was made all the same.
+        observer.absorb((std::iter::empty().collect(), counts));
+    } else {
+        observer.absorb((stamped, counts));
     }
     match hit {
         Some(projection) => Ok(projection),

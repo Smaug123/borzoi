@@ -366,3 +366,27 @@ fn an_env_made_under_another_workspace_is_built_again() {
     });
     assert!(!Arc::ptr_eq(&other, &generation(&mut state)));
 }
+
+/// On a file system that folds case, a watch event naming a file inside a
+/// trusted installed version under another spelling of the version's
+/// directory names it all the same.
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn a_watch_event_inside_a_trusted_version_matches_under_the_platform_case_rules() {
+    let fixture = fixture();
+    let mut state = state(&fixture);
+    outwait_racy_stamps();
+    state.begin_generation();
+    let app = env_of(&mut state, &fixture.app);
+    state.end_generation();
+    let respelt = fixture
+        .root
+        .join(format!("nuget/FOO/1.0.0/lib/{TFM}/Foo.xml"));
+    state.apply_watched_changes(&[changed(&respelt)]);
+    state.begin_generation();
+    assert!(
+        !Arc::ptr_eq(&app, &env_of(&mut state, &fixture.app)),
+        "an event naming the trusted version under another case left App's env standing"
+    );
+    state.end_generation();
+}

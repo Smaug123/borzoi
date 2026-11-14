@@ -472,6 +472,12 @@ impl State {
         self.docs.hint(hinted.iter().map(PathBuf::as_path));
         self.workspace.hint(hinted.iter().map(PathBuf::as_path));
         self.semantic.hint_assembly_paths(&hinted);
+        // NuGet's settings choose the packages folder SDK discovery resolves
+        // versioned SDKs from, and nothing records reading them, so no env's
+        // read set can say whether one moved it: every env goes.
+        if hinted.iter().any(|path| is_nuget_config(path)) {
+            self.semantic.drop_every_env();
+        }
         for change in changes {
             match classify_change(&change.uri, change.typ) {
                 ChangeClass::Structural => structural = true,
@@ -561,6 +567,14 @@ fn watched_files_registration_entry() -> Registration {
             serde_json::to_value(options).expect("watcher registration options serialise"),
         ),
     }
+}
+
+/// Whether `path` names a NuGet settings file (`nuget.config`, in any
+/// casing), as [`classify_change`] matches one.
+fn is_nuget_config(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("nuget.config"))
 }
 
 /// What a `workspace/didChangeWatchedFiles` change affects.
@@ -2943,9 +2957,18 @@ mod tests {
         );
 
         state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        let second = env(&mut state);
         assert!(
-            !Arc::ptr_eq(&first, &env(&mut state)),
+            !Arc::ptr_eq(&first, &second),
             "the env must be re-resolved after a watched change to a path it read"
+        );
+
+        // NuGet's settings are read by no recorded reader, so a change to any
+        // of them drops every env, wherever it is.
+        state.apply_watched_changes(&[changed(url("file:///elsewhere/NuGet.Config"))]);
+        assert!(
+            !Arc::ptr_eq(&second, &env(&mut state)),
+            "a NuGet settings change left an env standing"
         );
     }
 
