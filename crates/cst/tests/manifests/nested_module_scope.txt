@@ -322,6 +322,42 @@
 [<A>] let w = 1 | single begin +type | `type V`: FCS in A, ours in M
 [<A>] let w = 1 | single begin | `let x`: FCS in A, ours in M
 [<A>] let w = 1 | single | `let x`: FCS in A, ours in M
+[<A>] let w = 1 } | double +indented +type | `let x`: FCS in O, ours in M
+[<A>] let w = 1 } | double +indented +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double +indented +type | `let z`: FCS in O, ours in M
+[<A>] let w = 1 } | double +indented +type | `type V`: FCS in O, ours in M
+[<A>] let w = 1 } | double +indented | `let x`: FCS in O, ours in M
+[<A>] let w = 1 } | double +indented | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double +indented | `let z`: FCS in O, ours in M
+[<A>] let w = 1 } | double +type | `let x`: FCS in O, ours in M
+[<A>] let w = 1 } | double +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double +type | `let z`: FCS in O, ours in M
+[<A>] let w = 1 } | double +type | `type V`: FCS in O, ours in nowhere
+[<A>] let w = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double begin +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double begin | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double | `let y`: FCS in O, ours in M
+[<A>] let w = 1 } | double | `let z`: FCS in O, ours in M
+[<A>] let w = 1 } | single +type | `type V`: FCS in M, ours in nowhere
+[<A>] let w = 1) | double +indented +type | `let x`: FCS in O, ours in M
+[<A>] let w = 1) | double +indented +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double +indented +type | `let z`: FCS in O, ours in M
+[<A>] let w = 1) | double +indented +type | `type V`: FCS in O, ours in M
+[<A>] let w = 1) | double +indented | `let x`: FCS in O, ours in M
+[<A>] let w = 1) | double +indented | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double +indented | `let z`: FCS in O, ours in M
+[<A>] let w = 1) | double +type | `let x`: FCS in O, ours in M
+[<A>] let w = 1) | double +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double +type | `let z`: FCS in O, ours in M
+[<A>] let w = 1) | double +type | `type V`: FCS in O, ours in nowhere
+[<A>] let w = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double begin +indented | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double begin +type | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double begin | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double | `let y`: FCS in O, ours in M
+[<A>] let w = 1) | double | `let z`: FCS in O, ours in M
+[<A>] let w = 1) | single +type | `type V`: FCS in M, ours in nowhere
 [<A>] let w = : | double +indented +type | `let x`: FCS in O, ours in M
 [<A>] let w = : | double +indented +type | `let y`: FCS in O, ours in M
 [<A>] let w = : | double +indented +type | `let z`: FCS in O, ours in M
@@ -1658,6 +1694,58 @@
 [<A>] type T = 1 | single begin +indented +type | `let x`: FCS in A, ours in M
 [<A>] type T = 1 | single begin +indented +type | `type V`: FCS in A, ours in M
 [<A>] type T = 1 | single begin +indented | `let x`: FCS in A, ours in M
+[<A>] type T = 1 } | double +indented +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1 } | double +indented +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1 } | double +indented +type | `type V`: FCS in A, ours in O
+[<A>] type T = 1 } | double +indented | `let x`: FCS in A, ours in O
+[<A>] type T = 1 } | double +indented | `let y`: FCS in O, ours in M
+[<A>] type T = 1 } | double +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1 } | double +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1 } | double +type | `type V`: FCS in A, ours in nowhere
+[<A>] type T = 1 } | double begin +indented +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1 } | double begin +indented +type | `type V`: FCS in A, ours in O
+[<A>] type T = 1 } | double begin +indented | `let x`: FCS in A, ours in O
+[<A>] type T = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+[<A>] type T = 1 } | double begin +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1 } | double begin +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1 } | double begin +type | `type V`: FCS in A, ours in nowhere
+[<A>] type T = 1 } | single +indented +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1 } | single +indented +type | `type V`: FCS in A, ours in M
+[<A>] type T = 1 } | single +indented | `let x`: FCS in A, ours in M
+[<A>] type T = 1 } | single +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1 } | single +type | `type V`: FCS in A, ours in nowhere
+[<A>] type T = 1 } | single begin +indented +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1 } | single begin +indented +type | `type V`: FCS in A, ours in M
+[<A>] type T = 1 } | single begin +indented | `let x`: FCS in A, ours in M
+[<A>] type T = 1 } | single begin +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1 } | single begin +type | `type V`: FCS in A, ours in nowhere
+[<A>] type T = 1) | double +indented +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1) | double +indented +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1) | double +indented +type | `type V`: FCS in A, ours in O
+[<A>] type T = 1) | double +indented | `let x`: FCS in A, ours in O
+[<A>] type T = 1) | double +indented | `let y`: FCS in O, ours in M
+[<A>] type T = 1) | double +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1) | double +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1) | double +type | `type V`: FCS in A, ours in nowhere
+[<A>] type T = 1) | double begin +indented +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1) | double begin +indented +type | `type V`: FCS in A, ours in O
+[<A>] type T = 1) | double begin +indented | `let x`: FCS in A, ours in O
+[<A>] type T = 1) | double begin +indented | `let y`: FCS in O, ours in M
+[<A>] type T = 1) | double begin +type | `let x`: FCS in A, ours in O
+[<A>] type T = 1) | double begin +type | `let y`: FCS in O, ours in M
+[<A>] type T = 1) | double begin +type | `type V`: FCS in A, ours in nowhere
+[<A>] type T = 1) | single +indented +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1) | single +indented +type | `type V`: FCS in A, ours in M
+[<A>] type T = 1) | single +indented | `let x`: FCS in A, ours in M
+[<A>] type T = 1) | single +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1) | single +type | `type V`: FCS in A, ours in nowhere
+[<A>] type T = 1) | single begin +indented +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1) | single begin +indented +type | `type V`: FCS in A, ours in M
+[<A>] type T = 1) | single begin +indented | `let x`: FCS in A, ours in M
+[<A>] type T = 1) | single begin +type | `let x`: FCS in A, ours in M
+[<A>] type T = 1) | single begin +type | `type V`: FCS in A, ours in nowhere
 [<A>] type T = : | double +indented +type | `let x`: FCS in O, ours in M
 [<A>] type T = : | double +indented +type | `type V`: FCS in O, ours in M
 [<A>] type T = : | double +indented | `let x`: FCS in O, ours in M
@@ -2593,6 +2681,10 @@
 [<A>]⏎let w = 1 | single begin +indented +type | `let x`: FCS in A, ours in M
 [<A>]⏎let w = 1 | single begin +indented +type | `type V`: FCS in A, ours in M
 [<A>]⏎let w = 1 | single begin +indented | `let x`: FCS in A, ours in M
+[<A>]⏎let w = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>]⏎let w = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+[<A>]⏎let w = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>]⏎let w = 1) | double begin +indented | `let y`: FCS in O, ours in M
 [<A>]⏎let w = : | double begin +indented +type | `let y`: FCS in O, ours in M
 [<A>]⏎let w = : | double begin +indented | `let y`: FCS in O, ours in M
 [<A>]⏎let w = :> | double begin +indented +type | `let y`: FCS in O, ours in M
@@ -3172,6 +3264,62 @@
 [<A>]⏎type T = 1 | single begin +indented +type | `let x`: FCS in A, ours in M
 [<A>]⏎type T = 1 | single begin +indented +type | `type V`: FCS in A, ours in M
 [<A>]⏎type T = 1 | single begin +indented | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | double +indented +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double +indented +type | `let y`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | double +indented +type | `let z`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | double +indented +type | `type V`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double +indented | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double +indented | `let y`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | double +indented | `let z`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | double +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double +type | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1 } | double +type | `type V`: FCS in A, ours in nowhere
+[<A>]⏎type T = 1 } | double begin +indented +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1 } | double begin +indented +type | `type V`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double begin +indented | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1 } | double begin +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1 } | double begin +type | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1 } | double begin +type | `type V`: FCS in A, ours in nowhere
+[<A>]⏎type T = 1 } | single +indented +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single +indented +type | `type V`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single +indented | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single +type | `type V`: FCS in A, ours in nowhere
+[<A>]⏎type T = 1 } | single begin +indented +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single begin +indented +type | `type V`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single begin +indented | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single begin +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1 } | single begin +type | `type V`: FCS in A, ours in nowhere
+[<A>]⏎type T = 1) | double +indented +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double +indented +type | `let y`: FCS in A, ours in M
+[<A>]⏎type T = 1) | double +indented +type | `let z`: FCS in A, ours in M
+[<A>]⏎type T = 1) | double +indented +type | `type V`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double +indented | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double +indented | `let y`: FCS in A, ours in M
+[<A>]⏎type T = 1) | double +indented | `let z`: FCS in A, ours in M
+[<A>]⏎type T = 1) | double +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double +type | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1) | double +type | `type V`: FCS in A, ours in nowhere
+[<A>]⏎type T = 1) | double begin +indented +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1) | double begin +indented +type | `type V`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double begin +indented | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double begin +indented | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1) | double begin +type | `let x`: FCS in A, ours in O
+[<A>]⏎type T = 1) | double begin +type | `let y`: FCS in O, ours in M
+[<A>]⏎type T = 1) | double begin +type | `type V`: FCS in A, ours in nowhere
+[<A>]⏎type T = 1) | single +indented +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single +indented +type | `type V`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single +indented | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single +type | `type V`: FCS in A, ours in nowhere
+[<A>]⏎type T = 1) | single begin +indented +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single begin +indented +type | `type V`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single begin +indented | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single begin +type | `let x`: FCS in A, ours in M
+[<A>]⏎type T = 1) | single begin +type | `type V`: FCS in A, ours in nowhere
 [<A>]⏎type T = : | double +indented +type | `let x`: FCS in O, ours in M
 [<A>]⏎type T = : | double +indented +type | `let y`: FCS in O, ours in M
 [<A>]⏎type T = : | double +indented +type | `let z`: FCS in O, ours in M
@@ -4081,44 +4229,419 @@
 [<A>]⏎type T = } | single +type | `let x`: FCS in M, ours in A
 [<A>]⏎type T = } | single +type | `type V`: FCS in M, ours in A
 [<A>]⏎type T = } | single | `let x`: FCS in M, ours in A
-let w = "s" | double +indented +type | `let x`: FCS in A, ours in O
-let w = "s" | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = "s" | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = "s" | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = "s" | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = "s" | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = # | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = # | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = 'a | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = 'a | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = 'a | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = 'a | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = ( | double +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | double +indented | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | double +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | double begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | double begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | double | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | single +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | single +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | single begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ( | single begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ) | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = ) | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = * | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = * | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = * | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = * | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = + | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = + | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = , | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = , | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = - | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = - | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = -> | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = -> | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = -> | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = -> | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = -> | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = -> | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = -> | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = -> | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = -> | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = -> | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = . | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = . | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = .Foo | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = .Foo | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = .Foo.Bar | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = .Foo.Bar | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = 1 | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = 1 | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = 1 | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = 1 | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = 1) | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = : | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = : | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = :> | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = :> | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = ; | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = ; | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = ;; | double +indented +type | `type V`: FCS in M, ours in nowhere
+let rec v = 1⏎and w = ;; | double +type | `let x`: FCS in M, ours in nowhere
+let rec v = 1⏎and w = ;; | single +indented +type | `type V`: FCS in M, ours in nowhere
+let rec v = 1⏎and w = ;; | single +type | `let x`: FCS in M, ours in nowhere
+let rec v = 1⏎and w = <- | double +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = <- | double +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = <- | double +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = <- | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = <- | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = <- | double begin +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = <- | double begin +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = <- | double begin +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = <- | double begin | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = <- | double begin | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = <- | double | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = <- | double | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = <- | single +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = <- | single +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = <- | single begin +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = <- | single begin +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = <- | single begin | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = <- | single | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = = | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = = | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = A. | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = A. | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = A. | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = A. | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = A. | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = A. | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = A. | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = A. | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = A. | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = A. | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = A.B | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = A.B | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = A.B | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = A.B | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = Foo | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = Foo | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = Foo | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = Foo | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = [ | double +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | double +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | double begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | double begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | double | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | single +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | single +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | single begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [ | single begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [<A> | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = [<A> | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = [| | double +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | double +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | double begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | double begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | double | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | single +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | single +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | single begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = [| | single begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = ] | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = ] | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = _ | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = _ | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = _ | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = _ | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = _ | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = _ | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = _ | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = _ | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = _ | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = _ | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = abstract member | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = abstract member | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = abstract | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = abstract | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = and | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = and | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = and | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = and | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = and | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = and | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = and | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = and | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = and | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = and | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = and | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = and | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = and | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = and | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = and | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = and | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = and | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = and | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = as | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = as | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = begin | double +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | double begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | double begin +indented | `let y`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | double begin +indented | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | double begin +type | `let y`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | double begin +type | `let z`: FCS in O, ours in nowhere
+let rec v = 1⏎and w = begin | double begin | `let y`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | double begin | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | single +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = begin | single begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin +indented +type | `let y`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin +indented +type | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin +indented | `let y`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin +indented | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin +type | `let y`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin +type | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin | `let y`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = class | double begin | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = default | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = default | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = delegate | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = delegate | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = else | double +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = else | double +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = else | double +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = else | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = else | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = else | double begin +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = else | double begin +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = else | double begin +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = else | double begin | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = else | double begin | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = else | double | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = else | double | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = else | single +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = else | single +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = else | single begin +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = else | single begin +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = else | single begin | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = else | single | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = end | double begin +indented +type | `let x`: FCS in O, ours in nowhere
+let rec v = 1⏎and w = end | double begin +indented +type | `type V`: FCS in O, ours in nowhere
+let rec v = 1⏎and w = end | double begin +indented | `let x`: FCS in O, ours in nowhere
+let rec v = 1⏎and w = end | double begin +type | `let x`: FCS in O, ours in nowhere
+let rec v = 1⏎and w = end | double begin +type | `type V`: FCS in O, ours in nowhere
+let rec v = 1⏎and w = end | double begin | `let x`: FCS in O, ours in nowhere
+let rec v = 1⏎and w = end | single begin +indented +type | `let x`: FCS in M, ours in nowhere
+let rec v = 1⏎and w = end | single begin +type | `type V`: FCS in M, ours in nowhere
+let rec v = 1⏎and w = end | single begin | `let x`: FCS in M, ours in nowhere
+let rec v = 1⏎and w = exception | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = exception | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = fun | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = fun | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = fun | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = fun | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = fun | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = fun | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = fun | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = fun | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = fun | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = fun | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = in | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = inherit | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = inherit | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = int * | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int * | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = int * | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int * | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int * | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = int * | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = int * | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int * | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = int * | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = int * | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int . | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = int . | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int . | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int . | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = int . | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = int . | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = int . | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = int . | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = int . | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = int | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = int | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = int | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = int | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = interface | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = interface | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = let | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = let | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = let | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = let | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = let | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = let | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = let | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = let | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = let | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = let | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = let | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = let | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = let | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = let | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = let | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = let | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = let | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = let | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = match | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = match | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = member | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = member | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = module | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = module | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = new | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = new | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = new | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = new | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = new | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = new | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = new | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = new | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = new | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = new | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = new | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = new | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = new | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = new | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = new | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = new | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = new | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = new | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = null | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = null | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = null | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = null | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = of | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = of | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = open | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = open | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = override | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = override | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = private .Foo | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = private .Foo | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = private | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = private | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = static member | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = static member | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = static | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = static | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = struct | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = struct | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = type | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = type | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = val | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = val | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = when | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = when | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = x | double +indented +type | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = x | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = x | double +indented | `let y`: FCS in A, ours in O
+let rec v = 1⏎and w = x | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | double +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = { F : .Foo } | double +indented +type | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | double +indented +type | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | double +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = { F : .Foo } | double +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = { F : .Foo } | double +indented | `let y`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | double +indented | `let z`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | double begin +indented +type | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = { F : .Foo } | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = { F : .Foo } | double begin +indented +type | `type V`: FCS in A, ours in O
+let rec v = 1⏎and w = { F : .Foo } | double begin +indented | `let x`: FCS in A, ours in O
+let rec v = 1⏎and w = { F : .Foo } | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = { F : .Foo } | single +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | single +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | single +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | single begin +indented +type | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | single begin +indented +type | `type V`: FCS in A, ours in M
+let rec v = 1⏎and w = { F : .Foo } | single begin +indented | `let x`: FCS in A, ours in M
+let rec v = 1⏎and w = { | double +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | double +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | double begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | double begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | double | `let z`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | single +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | single +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | single begin +indented +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = { | single begin +type | `type V`: FCS in A, ours in nowhere
+let rec v = 1⏎and w = | | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = | | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = |] | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = |] | double begin +indented | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = } | double begin +indented +type | `let y`: FCS in O, ours in M
+let rec v = 1⏎and w = } | double begin +indented | `let y`: FCS in O, ours in M
+let w = "s" | double +indented +type | `let y`: FCS in A, ours in O
 let w = "s" | double +indented +type | `let z`: FCS in A, ours in M
-let w = "s" | double +indented +type | `type V`: FCS in A, ours in O
-let w = "s" | double +indented | `let x`: FCS in A, ours in O
-let w = "s" | double +indented | `let y`: FCS in A, ours in M
+let w = "s" | double +indented | `let y`: FCS in A, ours in O
 let w = "s" | double +indented | `let z`: FCS in A, ours in M
-let w = "s" | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = "s" | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = "s" | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = "s" | double begin +indented | `let x`: FCS in A, ours in O
-let w = "s" | double begin +indented | `let y`: FCS in O, ours in M
-let w = "s" | single +indented +type | `let x`: FCS in A, ours in M
-let w = "s" | single +indented +type | `type V`: FCS in A, ours in M
-let w = "s" | single +indented | `let x`: FCS in A, ours in M
-let w = "s" | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = "s" | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = "s" | single begin +indented | `let x`: FCS in A, ours in M
 let w = # | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = # | double begin +indented | `let y`: FCS in O, ours in M
-let w = 'a | double +indented +type | `let x`: FCS in A, ours in O
-let w = 'a | double +indented +type | `let y`: FCS in A, ours in M
+let w = 'a | double +indented +type | `let y`: FCS in A, ours in O
 let w = 'a | double +indented +type | `let z`: FCS in A, ours in M
-let w = 'a | double +indented +type | `type V`: FCS in A, ours in O
-let w = 'a | double +indented | `let x`: FCS in A, ours in O
-let w = 'a | double +indented | `let y`: FCS in A, ours in M
+let w = 'a | double +indented | `let y`: FCS in A, ours in O
 let w = 'a | double +indented | `let z`: FCS in A, ours in M
-let w = 'a | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = 'a | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = 'a | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = 'a | double begin +indented | `let x`: FCS in A, ours in O
-let w = 'a | double begin +indented | `let y`: FCS in O, ours in M
-let w = 'a | single +indented +type | `let x`: FCS in A, ours in M
-let w = 'a | single +indented +type | `type V`: FCS in A, ours in M
-let w = 'a | single +indented | `let x`: FCS in A, ours in M
-let w = 'a | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = 'a | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = 'a | single begin +indented | `let x`: FCS in A, ours in M
 let w = ( | double +indented +type | `type V`: FCS in A, ours in nowhere
 let w = ( | double +indented | `let z`: FCS in A, ours in nowhere
 let w = ( | double +type | `type V`: FCS in A, ours in nowhere
@@ -4131,24 +4654,10 @@ let w = ( | single begin +indented +type | `type V`: FCS in A, ours in nowhere
 let w = ( | single begin +type | `type V`: FCS in A, ours in nowhere
 let w = ) | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = ) | double begin +indented | `let y`: FCS in O, ours in M
-let w = * | double +indented +type | `let x`: FCS in A, ours in O
-let w = * | double +indented +type | `let y`: FCS in A, ours in M
+let w = * | double +indented +type | `let y`: FCS in A, ours in O
 let w = * | double +indented +type | `let z`: FCS in A, ours in M
-let w = * | double +indented +type | `type V`: FCS in A, ours in O
-let w = * | double +indented | `let x`: FCS in A, ours in O
-let w = * | double +indented | `let y`: FCS in A, ours in M
+let w = * | double +indented | `let y`: FCS in A, ours in O
 let w = * | double +indented | `let z`: FCS in A, ours in M
-let w = * | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = * | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = * | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = * | double begin +indented | `let x`: FCS in A, ours in O
-let w = * | double begin +indented | `let y`: FCS in O, ours in M
-let w = * | single +indented +type | `let x`: FCS in A, ours in M
-let w = * | single +indented +type | `type V`: FCS in A, ours in M
-let w = * | single +indented | `let x`: FCS in A, ours in M
-let w = * | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = * | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = * | single begin +indented | `let x`: FCS in A, ours in M
 let w = + | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = + | double begin +indented | `let y`: FCS in O, ours in M
 let w = , | double begin +indented +type | `let y`: FCS in O, ours in M
@@ -4179,24 +4688,14 @@ let w = .Foo | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = .Foo | double begin +indented | `let y`: FCS in O, ours in M
 let w = .Foo.Bar | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = .Foo.Bar | double begin +indented | `let y`: FCS in O, ours in M
-let w = 1 | double +indented +type | `let x`: FCS in A, ours in O
-let w = 1 | double +indented +type | `let y`: FCS in A, ours in M
+let w = 1 | double +indented +type | `let y`: FCS in A, ours in O
 let w = 1 | double +indented +type | `let z`: FCS in A, ours in M
-let w = 1 | double +indented +type | `type V`: FCS in A, ours in O
-let w = 1 | double +indented | `let x`: FCS in A, ours in O
-let w = 1 | double +indented | `let y`: FCS in A, ours in M
+let w = 1 | double +indented | `let y`: FCS in A, ours in O
 let w = 1 | double +indented | `let z`: FCS in A, ours in M
-let w = 1 | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = 1 | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = 1 | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = 1 | double begin +indented | `let x`: FCS in A, ours in O
-let w = 1 | double begin +indented | `let y`: FCS in O, ours in M
-let w = 1 | single +indented +type | `let x`: FCS in A, ours in M
-let w = 1 | single +indented +type | `type V`: FCS in A, ours in M
-let w = 1 | single +indented | `let x`: FCS in A, ours in M
-let w = 1 | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = 1 | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = 1 | single begin +indented | `let x`: FCS in A, ours in M
+let w = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+let w = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+let w = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+let w = 1) | double begin +indented | `let y`: FCS in O, ours in M
 let w = : | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = : | double begin +indented | `let y`: FCS in O, ours in M
 let w = :> | double begin +indented +type | `let y`: FCS in O, ours in M
@@ -4245,42 +4744,14 @@ let w = A. | single +indented | `let x`: FCS in A, ours in M
 let w = A. | single begin +indented +type | `let x`: FCS in A, ours in M
 let w = A. | single begin +indented +type | `type V`: FCS in A, ours in M
 let w = A. | single begin +indented | `let x`: FCS in A, ours in M
-let w = A.B | double +indented +type | `let x`: FCS in A, ours in O
-let w = A.B | double +indented +type | `let y`: FCS in A, ours in M
+let w = A.B | double +indented +type | `let y`: FCS in A, ours in O
 let w = A.B | double +indented +type | `let z`: FCS in A, ours in M
-let w = A.B | double +indented +type | `type V`: FCS in A, ours in O
-let w = A.B | double +indented | `let x`: FCS in A, ours in O
-let w = A.B | double +indented | `let y`: FCS in A, ours in M
+let w = A.B | double +indented | `let y`: FCS in A, ours in O
 let w = A.B | double +indented | `let z`: FCS in A, ours in M
-let w = A.B | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = A.B | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = A.B | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = A.B | double begin +indented | `let x`: FCS in A, ours in O
-let w = A.B | double begin +indented | `let y`: FCS in O, ours in M
-let w = A.B | single +indented +type | `let x`: FCS in A, ours in M
-let w = A.B | single +indented +type | `type V`: FCS in A, ours in M
-let w = A.B | single +indented | `let x`: FCS in A, ours in M
-let w = A.B | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = A.B | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = A.B | single begin +indented | `let x`: FCS in A, ours in M
-let w = Foo | double +indented +type | `let x`: FCS in A, ours in O
-let w = Foo | double +indented +type | `let y`: FCS in A, ours in M
+let w = Foo | double +indented +type | `let y`: FCS in A, ours in O
 let w = Foo | double +indented +type | `let z`: FCS in A, ours in M
-let w = Foo | double +indented +type | `type V`: FCS in A, ours in O
-let w = Foo | double +indented | `let x`: FCS in A, ours in O
-let w = Foo | double +indented | `let y`: FCS in A, ours in M
+let w = Foo | double +indented | `let y`: FCS in A, ours in O
 let w = Foo | double +indented | `let z`: FCS in A, ours in M
-let w = Foo | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = Foo | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = Foo | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = Foo | double begin +indented | `let x`: FCS in A, ours in O
-let w = Foo | double begin +indented | `let y`: FCS in O, ours in M
-let w = Foo | single +indented +type | `let x`: FCS in A, ours in M
-let w = Foo | single +indented +type | `type V`: FCS in A, ours in M
-let w = Foo | single +indented | `let x`: FCS in A, ours in M
-let w = Foo | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = Foo | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = Foo | single begin +indented | `let x`: FCS in A, ours in M
 let w = [ | double +indented +type | `type V`: FCS in A, ours in nowhere
 let w = [ | double +type | `type V`: FCS in A, ours in nowhere
 let w = [ | double begin +indented +type | `type V`: FCS in A, ours in nowhere
@@ -4335,6 +4806,10 @@ let w = [<A>] .Foo.Bar | double begin +indented +type | `let y`: FCS in O, ours 
 let w = [<A>] .Foo.Bar | double begin +indented | `let y`: FCS in O, ours in M
 let w = [<A>] 1 | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] 1 | double begin +indented | `let y`: FCS in O, ours in M
+let w = [<A>] 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+let w = [<A>] 1 } | double begin +indented | `let y`: FCS in O, ours in M
+let w = [<A>] 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+let w = [<A>] 1) | double begin +indented | `let y`: FCS in O, ours in M
 let w = [<A>] : | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = [<A>] : | double begin +indented | `let y`: FCS in O, ours in M
 let w = [<A>] :> | double begin +indented +type | `let y`: FCS in O, ours in M
@@ -4739,24 +5214,10 @@ let w = int . | single +indented | `let x`: FCS in A, ours in M
 let w = int . | single begin +indented +type | `let x`: FCS in A, ours in M
 let w = int . | single begin +indented +type | `type V`: FCS in A, ours in M
 let w = int . | single begin +indented | `let x`: FCS in A, ours in M
-let w = int | double +indented +type | `let x`: FCS in A, ours in O
-let w = int | double +indented +type | `let y`: FCS in A, ours in M
+let w = int | double +indented +type | `let y`: FCS in A, ours in O
 let w = int | double +indented +type | `let z`: FCS in A, ours in M
-let w = int | double +indented +type | `type V`: FCS in A, ours in O
-let w = int | double +indented | `let x`: FCS in A, ours in O
-let w = int | double +indented | `let y`: FCS in A, ours in M
+let w = int | double +indented | `let y`: FCS in A, ours in O
 let w = int | double +indented | `let z`: FCS in A, ours in M
-let w = int | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = int | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = int | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = int | double begin +indented | `let x`: FCS in A, ours in O
-let w = int | double begin +indented | `let y`: FCS in O, ours in M
-let w = int | single +indented +type | `let x`: FCS in A, ours in M
-let w = int | single +indented +type | `type V`: FCS in A, ours in M
-let w = int | single +indented | `let x`: FCS in A, ours in M
-let w = int | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = int | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = int | single begin +indented | `let x`: FCS in A, ours in M
 let w = interface | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = interface | double begin +indented | `let y`: FCS in O, ours in M
 let w = let | double +indented +type | `let x`: FCS in A, ours in O
@@ -4801,24 +5262,10 @@ let w = new | single +indented | `let x`: FCS in A, ours in M
 let w = new | single begin +indented +type | `let x`: FCS in A, ours in M
 let w = new | single begin +indented +type | `type V`: FCS in A, ours in M
 let w = new | single begin +indented | `let x`: FCS in A, ours in M
-let w = null | double +indented +type | `let x`: FCS in A, ours in O
-let w = null | double +indented +type | `let y`: FCS in A, ours in M
+let w = null | double +indented +type | `let y`: FCS in A, ours in O
 let w = null | double +indented +type | `let z`: FCS in A, ours in M
-let w = null | double +indented +type | `type V`: FCS in A, ours in O
-let w = null | double +indented | `let x`: FCS in A, ours in O
-let w = null | double +indented | `let y`: FCS in A, ours in M
+let w = null | double +indented | `let y`: FCS in A, ours in O
 let w = null | double +indented | `let z`: FCS in A, ours in M
-let w = null | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = null | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = null | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = null | double begin +indented | `let x`: FCS in A, ours in O
-let w = null | double begin +indented | `let y`: FCS in O, ours in M
-let w = null | single +indented +type | `let x`: FCS in A, ours in M
-let w = null | single +indented +type | `type V`: FCS in A, ours in M
-let w = null | single +indented | `let x`: FCS in A, ours in M
-let w = null | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = null | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = null | single begin +indented | `let x`: FCS in A, ours in M
 let w = of | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = of | double begin +indented | `let y`: FCS in O, ours in M
 let w = open | double begin +indented +type | `let y`: FCS in O, ours in M
@@ -4841,24 +5288,10 @@ let w = val | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = val | double begin +indented | `let y`: FCS in O, ours in M
 let w = when | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = when | double begin +indented | `let y`: FCS in O, ours in M
-let w = x | double +indented +type | `let x`: FCS in A, ours in O
-let w = x | double +indented +type | `let y`: FCS in A, ours in M
+let w = x | double +indented +type | `let y`: FCS in A, ours in O
 let w = x | double +indented +type | `let z`: FCS in A, ours in M
-let w = x | double +indented +type | `type V`: FCS in A, ours in O
-let w = x | double +indented | `let x`: FCS in A, ours in O
-let w = x | double +indented | `let y`: FCS in A, ours in M
+let w = x | double +indented | `let y`: FCS in A, ours in O
 let w = x | double +indented | `let z`: FCS in A, ours in M
-let w = x | double begin +indented +type | `let x`: FCS in A, ours in O
-let w = x | double begin +indented +type | `let y`: FCS in O, ours in M
-let w = x | double begin +indented +type | `type V`: FCS in A, ours in O
-let w = x | double begin +indented | `let x`: FCS in A, ours in O
-let w = x | double begin +indented | `let y`: FCS in O, ours in M
-let w = x | single +indented +type | `let x`: FCS in A, ours in M
-let w = x | single +indented +type | `type V`: FCS in A, ours in M
-let w = x | single +indented | `let x`: FCS in A, ours in M
-let w = x | single begin +indented +type | `let x`: FCS in A, ours in M
-let w = x | single begin +indented +type | `type V`: FCS in A, ours in M
-let w = x | single begin +indented | `let x`: FCS in A, ours in M
 let w = { F : .Foo } | double +indented +type | `let x`: FCS in A, ours in O
 let w = { F : .Foo } | double +indented +type | `let y`: FCS in A, ours in M
 let w = { F : .Foo } | double +indented +type | `let z`: FCS in A, ours in M
@@ -4892,6 +5325,1203 @@ let w = |] | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = |] | double begin +indented | `let y`: FCS in O, ours in M
 let w = } | double begin +indented +type | `let y`: FCS in O, ours in M
 let w = } | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = "s" | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = "s" | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = "s" | double +indented | `let y`: FCS in A, ours in O
+open System; let w = "s" | double +indented | `let z`: FCS in A, ours in M
+open System; let w = "s" | double +type | `let y`: FCS in A, ours in O
+open System; let w = "s" | double +type | `let z`: FCS in A, ours in M
+open System; let w = "s" | double | `let y`: FCS in A, ours in O
+open System; let w = "s" | double | `let z`: FCS in A, ours in M
+open System; let w = # | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = # | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = # | double +indented | `let y`: FCS in O, ours in M
+open System; let w = # | double +indented | `let z`: FCS in O, ours in M
+open System; let w = # | double +type | `let y`: FCS in O, ours in M
+open System; let w = # | double +type | `let z`: FCS in O, ours in M
+open System; let w = # | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = # | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = # | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = # | double begin | `let y`: FCS in O, ours in M
+open System; let w = # | double | `let y`: FCS in O, ours in M
+open System; let w = # | double | `let z`: FCS in O, ours in M
+open System; let w = 'a | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = 'a | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = 'a | double +indented | `let y`: FCS in A, ours in O
+open System; let w = 'a | double +indented | `let z`: FCS in A, ours in M
+open System; let w = 'a | double +type | `let y`: FCS in A, ours in O
+open System; let w = 'a | double +type | `let z`: FCS in A, ours in M
+open System; let w = 'a | double | `let y`: FCS in A, ours in O
+open System; let w = 'a | double | `let z`: FCS in A, ours in M
+open System; let w = ( | double +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | double +indented +type | `let y`: FCS in A, ours in nowhere
+open System; let w = ( | double +indented +type | `let z`: FCS in A, ours in nowhere
+open System; let w = ( | double +indented | `let y`: FCS in A, ours in nowhere
+open System; let w = ( | double +indented | `let z`: FCS in A, ours in nowhere
+open System; let w = ( | double +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | double +type | `let y`: FCS in A, ours in nowhere
+open System; let w = ( | double +type | `let z`: FCS in A, ours in nowhere
+open System; let w = ( | double +type | `type V`: FCS in A, ours in nowhere
+open System; let w = ( | double begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | double begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = ( | double begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = ( | double begin | `let y`: FCS in O, ours in M
+open System; let w = ( | double | `let z`: FCS in A, ours in nowhere
+open System; let w = ( | single +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | single +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | single +type | `type V`: FCS in A, ours in nowhere
+open System; let w = ( | single begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | single begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = ( | single begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = ) | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = ) | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = ) | double +indented | `let y`: FCS in O, ours in M
+open System; let w = ) | double +indented | `let z`: FCS in O, ours in M
+open System; let w = ) | double +type | `let y`: FCS in O, ours in M
+open System; let w = ) | double +type | `let z`: FCS in O, ours in M
+open System; let w = ) | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = ) | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = ) | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = ) | double begin | `let y`: FCS in O, ours in M
+open System; let w = ) | double | `let y`: FCS in O, ours in M
+open System; let w = ) | double | `let z`: FCS in O, ours in M
+open System; let w = * | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = * | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = * | double +indented | `let y`: FCS in A, ours in O
+open System; let w = * | double +indented | `let z`: FCS in A, ours in M
+open System; let w = * | double +type | `let y`: FCS in A, ours in O
+open System; let w = * | double +type | `let z`: FCS in A, ours in M
+open System; let w = * | double | `let y`: FCS in A, ours in O
+open System; let w = * | double | `let z`: FCS in A, ours in M
+open System; let w = + | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = + | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = + | double +indented | `let y`: FCS in O, ours in M
+open System; let w = + | double +indented | `let z`: FCS in O, ours in M
+open System; let w = + | double +type | `let y`: FCS in O, ours in M
+open System; let w = + | double +type | `let z`: FCS in O, ours in M
+open System; let w = + | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = + | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = + | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = + | double begin | `let y`: FCS in O, ours in M
+open System; let w = + | double | `let y`: FCS in O, ours in M
+open System; let w = + | double | `let z`: FCS in O, ours in M
+open System; let w = , | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = , | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = , | double +indented | `let y`: FCS in O, ours in M
+open System; let w = , | double +indented | `let z`: FCS in O, ours in M
+open System; let w = , | double +type | `let y`: FCS in O, ours in M
+open System; let w = , | double +type | `let z`: FCS in O, ours in M
+open System; let w = , | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = , | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = , | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = , | double begin | `let y`: FCS in O, ours in M
+open System; let w = , | double | `let y`: FCS in O, ours in M
+open System; let w = , | double | `let z`: FCS in O, ours in M
+open System; let w = - | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = - | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = - | double +indented | `let y`: FCS in O, ours in M
+open System; let w = - | double +indented | `let z`: FCS in O, ours in M
+open System; let w = - | double +type | `let y`: FCS in O, ours in M
+open System; let w = - | double +type | `let z`: FCS in O, ours in M
+open System; let w = - | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = - | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = - | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = - | double begin | `let y`: FCS in O, ours in M
+open System; let w = - | double | `let y`: FCS in O, ours in M
+open System; let w = - | double | `let z`: FCS in O, ours in M
+open System; let w = -> | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = -> | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = -> | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = -> | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = -> | double +indented | `let x`: FCS in A, ours in O
+open System; let w = -> | double +indented | `let y`: FCS in A, ours in M
+open System; let w = -> | double +indented | `let z`: FCS in A, ours in M
+open System; let w = -> | double +type | `let x`: FCS in A, ours in O
+open System; let w = -> | double +type | `let y`: FCS in A, ours in M
+open System; let w = -> | double +type | `let z`: FCS in A, ours in M
+open System; let w = -> | double +type | `type V`: FCS in A, ours in O
+open System; let w = -> | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = -> | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = -> | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = -> | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = -> | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = -> | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = -> | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = -> | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = -> | double begin | `let x`: FCS in A, ours in O
+open System; let w = -> | double begin | `let y`: FCS in O, ours in M
+open System; let w = -> | double | `let x`: FCS in A, ours in O
+open System; let w = -> | double | `let y`: FCS in A, ours in M
+open System; let w = -> | double | `let z`: FCS in A, ours in M
+open System; let w = -> | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = -> | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = -> | single +indented | `let x`: FCS in A, ours in M
+open System; let w = -> | single +type | `let x`: FCS in A, ours in M
+open System; let w = -> | single +type | `type V`: FCS in A, ours in M
+open System; let w = -> | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = -> | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = -> | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = -> | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = -> | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = -> | single begin | `let x`: FCS in A, ours in M
+open System; let w = -> | single | `let x`: FCS in A, ours in M
+open System; let w = . | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = . | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = . | double +indented | `let y`: FCS in O, ours in M
+open System; let w = . | double +indented | `let z`: FCS in O, ours in M
+open System; let w = . | double +type | `let y`: FCS in O, ours in M
+open System; let w = . | double +type | `let z`: FCS in O, ours in M
+open System; let w = . | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = . | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = . | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = . | double begin | `let y`: FCS in O, ours in M
+open System; let w = . | double | `let y`: FCS in O, ours in M
+open System; let w = . | double | `let z`: FCS in O, ours in M
+open System; let w = .Foo | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = .Foo | double +indented | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double +indented | `let z`: FCS in O, ours in M
+open System; let w = .Foo | double +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double +type | `let z`: FCS in O, ours in M
+open System; let w = .Foo | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double begin | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double | `let y`: FCS in O, ours in M
+open System; let w = .Foo | double | `let z`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double +indented | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double +indented | `let z`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double +type | `let z`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double begin | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double | `let y`: FCS in O, ours in M
+open System; let w = .Foo.Bar | double | `let z`: FCS in O, ours in M
+open System; let w = 1 | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = 1 | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = 1 | double +indented | `let y`: FCS in A, ours in O
+open System; let w = 1 | double +indented | `let z`: FCS in A, ours in M
+open System; let w = 1 | double +type | `let y`: FCS in A, ours in O
+open System; let w = 1 | double +type | `let z`: FCS in A, ours in M
+open System; let w = 1 | double | `let y`: FCS in A, ours in O
+open System; let w = 1 | double | `let z`: FCS in A, ours in M
+open System; let w = 1 } | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = 1 } | double +indented | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double +indented | `let z`: FCS in O, ours in M
+open System; let w = 1 } | double +type | `let x`: FCS in O, ours in M
+open System; let w = 1 } | double +type | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double +type | `let z`: FCS in O, ours in M
+open System; let w = 1 } | double +type | `type V`: FCS in O, ours in nowhere
+open System; let w = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double begin | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double | `let y`: FCS in O, ours in M
+open System; let w = 1 } | double | `let z`: FCS in O, ours in M
+open System; let w = 1 } | single +type | `type V`: FCS in M, ours in nowhere
+open System; let w = 1) | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = 1) | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = 1) | double +indented | `let y`: FCS in O, ours in M
+open System; let w = 1) | double +indented | `let z`: FCS in O, ours in M
+open System; let w = 1) | double +type | `let x`: FCS in O, ours in M
+open System; let w = 1) | double +type | `let y`: FCS in O, ours in M
+open System; let w = 1) | double +type | `let z`: FCS in O, ours in M
+open System; let w = 1) | double +type | `type V`: FCS in O, ours in nowhere
+open System; let w = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = 1) | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = 1) | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = 1) | double begin | `let y`: FCS in O, ours in M
+open System; let w = 1) | double | `let y`: FCS in O, ours in M
+open System; let w = 1) | double | `let z`: FCS in O, ours in M
+open System; let w = 1) | single +type | `type V`: FCS in M, ours in nowhere
+open System; let w = : | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = : | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = : | double +indented | `let y`: FCS in O, ours in M
+open System; let w = : | double +indented | `let z`: FCS in O, ours in M
+open System; let w = : | double +type | `let y`: FCS in O, ours in M
+open System; let w = : | double +type | `let z`: FCS in O, ours in M
+open System; let w = : | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = : | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = : | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = : | double begin | `let y`: FCS in O, ours in M
+open System; let w = : | double | `let y`: FCS in O, ours in M
+open System; let w = : | double | `let z`: FCS in O, ours in M
+open System; let w = :> | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = :> | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = :> | double +indented | `let y`: FCS in O, ours in M
+open System; let w = :> | double +indented | `let z`: FCS in O, ours in M
+open System; let w = :> | double +type | `let y`: FCS in O, ours in M
+open System; let w = :> | double +type | `let z`: FCS in O, ours in M
+open System; let w = :> | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = :> | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = :> | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = :> | double begin | `let y`: FCS in O, ours in M
+open System; let w = :> | double | `let y`: FCS in O, ours in M
+open System; let w = :> | double | `let z`: FCS in O, ours in M
+open System; let w = ; | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = ; | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = ; | double +indented | `let y`: FCS in O, ours in M
+open System; let w = ; | double +indented | `let z`: FCS in O, ours in M
+open System; let w = ; | double +type | `let y`: FCS in O, ours in M
+open System; let w = ; | double +type | `let z`: FCS in O, ours in M
+open System; let w = ; | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = ; | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = ; | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = ; | double begin | `let y`: FCS in O, ours in M
+open System; let w = ; | double | `let y`: FCS in O, ours in M
+open System; let w = ; | double | `let z`: FCS in O, ours in M
+open System; let w = <- | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = <- | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = <- | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = <- | double begin | `let y`: FCS in O, ours in M
+open System; let w = = | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = = | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = = | double +indented | `let y`: FCS in O, ours in M
+open System; let w = = | double +indented | `let z`: FCS in O, ours in M
+open System; let w = = | double +type | `let y`: FCS in O, ours in M
+open System; let w = = | double +type | `let z`: FCS in O, ours in M
+open System; let w = = | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = = | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = = | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = = | double begin | `let y`: FCS in O, ours in M
+open System; let w = = | double | `let y`: FCS in O, ours in M
+open System; let w = = | double | `let z`: FCS in O, ours in M
+open System; let w = A. | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = A. | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = A. | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = A. | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = A. | double +indented | `let x`: FCS in A, ours in O
+open System; let w = A. | double +indented | `let y`: FCS in A, ours in M
+open System; let w = A. | double +indented | `let z`: FCS in A, ours in M
+open System; let w = A. | double +type | `let x`: FCS in A, ours in O
+open System; let w = A. | double +type | `let y`: FCS in A, ours in M
+open System; let w = A. | double +type | `let z`: FCS in A, ours in M
+open System; let w = A. | double +type | `type V`: FCS in A, ours in O
+open System; let w = A. | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = A. | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = A. | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = A. | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = A. | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = A. | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = A. | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = A. | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = A. | double begin | `let x`: FCS in A, ours in O
+open System; let w = A. | double begin | `let y`: FCS in O, ours in M
+open System; let w = A. | double | `let x`: FCS in A, ours in O
+open System; let w = A. | double | `let y`: FCS in A, ours in M
+open System; let w = A. | double | `let z`: FCS in A, ours in M
+open System; let w = A. | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = A. | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = A. | single +indented | `let x`: FCS in A, ours in M
+open System; let w = A. | single +type | `let x`: FCS in A, ours in M
+open System; let w = A. | single +type | `type V`: FCS in A, ours in M
+open System; let w = A. | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = A. | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = A. | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = A. | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = A. | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = A. | single begin | `let x`: FCS in A, ours in M
+open System; let w = A. | single | `let x`: FCS in A, ours in M
+open System; let w = A.B | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = A.B | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = A.B | double +indented | `let y`: FCS in A, ours in O
+open System; let w = A.B | double +indented | `let z`: FCS in A, ours in M
+open System; let w = A.B | double +type | `let y`: FCS in A, ours in O
+open System; let w = A.B | double +type | `let z`: FCS in A, ours in M
+open System; let w = A.B | double | `let y`: FCS in A, ours in O
+open System; let w = A.B | double | `let z`: FCS in A, ours in M
+open System; let w = Foo | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = Foo | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = Foo | double +indented | `let y`: FCS in A, ours in O
+open System; let w = Foo | double +indented | `let z`: FCS in A, ours in M
+open System; let w = Foo | double +type | `let y`: FCS in A, ours in O
+open System; let w = Foo | double +type | `let z`: FCS in A, ours in M
+open System; let w = Foo | double | `let y`: FCS in A, ours in O
+open System; let w = Foo | double | `let z`: FCS in A, ours in M
+open System; let w = [ | double +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | double +indented +type | `let y`: FCS in A, ours in nowhere
+open System; let w = [ | double +indented +type | `let z`: FCS in A, ours in nowhere
+open System; let w = [ | double +indented | `let y`: FCS in A, ours in nowhere
+open System; let w = [ | double +indented | `let z`: FCS in A, ours in nowhere
+open System; let w = [ | double +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | double +type | `let y`: FCS in A, ours in nowhere
+open System; let w = [ | double +type | `let z`: FCS in A, ours in nowhere
+open System; let w = [ | double +type | `type V`: FCS in A, ours in nowhere
+open System; let w = [ | double begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | double begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = [ | double begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = [ | double begin | `let y`: FCS in O, ours in M
+open System; let w = [ | double | `let z`: FCS in A, ours in nowhere
+open System; let w = [ | single +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | single +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | single +type | `type V`: FCS in A, ours in nowhere
+open System; let w = [ | single begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | single begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [ | single begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = [<A> | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = [<A> | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = [<A> | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = [<A> | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = [<A> | double +indented | `let x`: FCS in A, ours in O
+open System; let w = [<A> | double +indented | `let y`: FCS in A, ours in M
+open System; let w = [<A> | double +indented | `let z`: FCS in A, ours in M
+open System; let w = [<A> | double +type | `let x`: FCS in A, ours in O
+open System; let w = [<A> | double +type | `let y`: FCS in A, ours in M
+open System; let w = [<A> | double +type | `let z`: FCS in A, ours in M
+open System; let w = [<A> | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = [<A> | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = [<A> | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = [<A> | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = [<A> | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = [<A> | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = [<A> | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = [<A> | double begin | `let y`: FCS in O, ours in M
+open System; let w = [<A> | double | `let y`: FCS in A, ours in M
+open System; let w = [<A> | double | `let z`: FCS in A, ours in M
+open System; let w = [<A> | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = [<A> | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = [<A> | single +indented | `let x`: FCS in A, ours in M
+open System; let w = [<A> | single +type | `let x`: FCS in A, ours in M
+open System; let w = [<A> | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = [<A> | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = [<A> | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = [<A> | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = [| | double +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | double +indented +type | `let y`: FCS in A, ours in nowhere
+open System; let w = [| | double +indented +type | `let z`: FCS in A, ours in nowhere
+open System; let w = [| | double +indented | `let y`: FCS in A, ours in nowhere
+open System; let w = [| | double +indented | `let z`: FCS in A, ours in nowhere
+open System; let w = [| | double +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | double +type | `let y`: FCS in A, ours in nowhere
+open System; let w = [| | double +type | `let z`: FCS in A, ours in nowhere
+open System; let w = [| | double +type | `type V`: FCS in A, ours in nowhere
+open System; let w = [| | double begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | double begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = [| | double begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = [| | double begin | `let y`: FCS in O, ours in M
+open System; let w = [| | double | `let z`: FCS in A, ours in nowhere
+open System; let w = [| | single +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | single +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | single +type | `type V`: FCS in A, ours in nowhere
+open System; let w = [| | single begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | single begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = [| | single begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = ] | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = ] | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = ] | double +indented | `let y`: FCS in O, ours in M
+open System; let w = ] | double +indented | `let z`: FCS in O, ours in M
+open System; let w = ] | double +type | `let y`: FCS in O, ours in M
+open System; let w = ] | double +type | `let z`: FCS in O, ours in M
+open System; let w = ] | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = ] | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = ] | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = ] | double begin | `let y`: FCS in O, ours in M
+open System; let w = ] | double | `let y`: FCS in O, ours in M
+open System; let w = ] | double | `let z`: FCS in O, ours in M
+open System; let w = _ | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = _ | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = _ | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = _ | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = _ | double +indented | `let x`: FCS in A, ours in O
+open System; let w = _ | double +indented | `let y`: FCS in A, ours in M
+open System; let w = _ | double +indented | `let z`: FCS in A, ours in M
+open System; let w = _ | double +type | `let x`: FCS in A, ours in O
+open System; let w = _ | double +type | `let y`: FCS in A, ours in M
+open System; let w = _ | double +type | `let z`: FCS in A, ours in M
+open System; let w = _ | double +type | `type V`: FCS in A, ours in O
+open System; let w = _ | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = _ | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = _ | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = _ | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = _ | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = _ | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = _ | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = _ | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = _ | double begin | `let x`: FCS in A, ours in O
+open System; let w = _ | double begin | `let y`: FCS in O, ours in M
+open System; let w = _ | double | `let x`: FCS in A, ours in O
+open System; let w = _ | double | `let y`: FCS in A, ours in M
+open System; let w = _ | double | `let z`: FCS in A, ours in M
+open System; let w = _ | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = _ | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = _ | single +indented | `let x`: FCS in A, ours in M
+open System; let w = _ | single +type | `let x`: FCS in A, ours in M
+open System; let w = _ | single +type | `type V`: FCS in A, ours in M
+open System; let w = _ | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = _ | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = _ | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = _ | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = _ | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = _ | single begin | `let x`: FCS in A, ours in M
+open System; let w = _ | single | `let x`: FCS in A, ours in M
+open System; let w = abstract member | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = abstract member | double +indented | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double +indented | `let z`: FCS in O, ours in M
+open System; let w = abstract member | double +type | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double +type | `let z`: FCS in O, ours in M
+open System; let w = abstract member | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double begin | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double | `let y`: FCS in O, ours in M
+open System; let w = abstract member | double | `let z`: FCS in O, ours in M
+open System; let w = abstract | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = abstract | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = abstract | double +indented | `let y`: FCS in O, ours in M
+open System; let w = abstract | double +indented | `let z`: FCS in O, ours in M
+open System; let w = abstract | double +type | `let y`: FCS in O, ours in M
+open System; let w = abstract | double +type | `let z`: FCS in O, ours in M
+open System; let w = abstract | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = abstract | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = abstract | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = abstract | double begin | `let y`: FCS in O, ours in M
+open System; let w = abstract | double | `let y`: FCS in O, ours in M
+open System; let w = abstract | double | `let z`: FCS in O, ours in M
+open System; let w = and | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = and | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = and | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = and | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = and | double +indented | `let x`: FCS in A, ours in O
+open System; let w = and | double +indented | `let y`: FCS in A, ours in M
+open System; let w = and | double +indented | `let z`: FCS in A, ours in M
+open System; let w = and | double +type | `let x`: FCS in A, ours in O
+open System; let w = and | double +type | `let y`: FCS in A, ours in M
+open System; let w = and | double +type | `let z`: FCS in A, ours in M
+open System; let w = and | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = and | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = and | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = and | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = and | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = and | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = and | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = and | double begin | `let y`: FCS in O, ours in M
+open System; let w = and | double | `let y`: FCS in A, ours in M
+open System; let w = and | double | `let z`: FCS in A, ours in M
+open System; let w = and | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = and | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = and | single +indented | `let x`: FCS in A, ours in M
+open System; let w = and | single +type | `let x`: FCS in A, ours in M
+open System; let w = and | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = and | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = and | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = and | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = as | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = as | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = as | double +indented | `let y`: FCS in O, ours in M
+open System; let w = as | double +indented | `let z`: FCS in O, ours in M
+open System; let w = as | double +type | `let y`: FCS in O, ours in M
+open System; let w = as | double +type | `let z`: FCS in O, ours in M
+open System; let w = as | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = as | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = as | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = as | double begin | `let y`: FCS in O, ours in M
+open System; let w = as | double | `let y`: FCS in O, ours in M
+open System; let w = as | double | `let z`: FCS in O, ours in M
+open System; let w = begin | double begin +indented +type | `let y`: FCS in A, ours in nowhere
+open System; let w = begin | double begin +indented +type | `let z`: FCS in A, ours in nowhere
+open System; let w = begin | double begin +indented | `let y`: FCS in A, ours in nowhere
+open System; let w = begin | double begin +indented | `let z`: FCS in A, ours in nowhere
+open System; let w = begin | double begin +type | `let y`: FCS in A, ours in nowhere
+open System; let w = begin | double begin +type | `let z`: FCS in O, ours in nowhere
+open System; let w = begin | double begin | `let y`: FCS in A, ours in nowhere
+open System; let w = begin | double begin | `let z`: FCS in A, ours in nowhere
+open System; let w = class | double +indented +type | `let x`: FCS in O, ours in nowhere
+open System; let w = class | double +indented +type | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double +indented +type | `let z`: FCS in O, ours in nowhere
+open System; let w = class | double +indented +type | `type V`: FCS in O, ours in nowhere
+open System; let w = class | double +indented | `let x`: FCS in O, ours in nowhere
+open System; let w = class | double +indented | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double +indented | `let z`: FCS in O, ours in nowhere
+open System; let w = class | double +type | `let x`: FCS in O, ours in nowhere
+open System; let w = class | double +type | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double +type | `let z`: FCS in O, ours in nowhere
+open System; let w = class | double +type | `type V`: FCS in O, ours in nowhere
+open System; let w = class | double begin +indented +type | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double begin +indented +type | `let z`: FCS in O, ours in nowhere
+open System; let w = class | double begin +indented | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double begin +indented | `let z`: FCS in O, ours in nowhere
+open System; let w = class | double begin +type | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double begin +type | `let z`: FCS in O, ours in nowhere
+open System; let w = class | double begin | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double begin | `let z`: FCS in O, ours in nowhere
+open System; let w = class | double | `let x`: FCS in O, ours in nowhere
+open System; let w = class | double | `let y`: FCS in O, ours in nowhere
+open System; let w = class | double | `let z`: FCS in O, ours in nowhere
+open System; let w = class | single +indented +type | `let x`: FCS in M, ours in nowhere
+open System; let w = class | single +indented | `let x`: FCS in M, ours in nowhere
+open System; let w = class | single +type | `let x`: FCS in M, ours in nowhere
+open System; let w = class | single +type | `type V`: FCS in M, ours in nowhere
+open System; let w = class | single | `let x`: FCS in M, ours in nowhere
+open System; let w = default | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = default | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = default | double +indented | `let y`: FCS in O, ours in M
+open System; let w = default | double +indented | `let z`: FCS in O, ours in M
+open System; let w = default | double +type | `let y`: FCS in O, ours in M
+open System; let w = default | double +type | `let z`: FCS in O, ours in M
+open System; let w = default | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = default | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = default | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = default | double begin | `let y`: FCS in O, ours in M
+open System; let w = default | double | `let y`: FCS in O, ours in M
+open System; let w = default | double | `let z`: FCS in O, ours in M
+open System; let w = delegate | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = delegate | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = delegate | double +indented | `let y`: FCS in O, ours in M
+open System; let w = delegate | double +indented | `let z`: FCS in O, ours in M
+open System; let w = delegate | double +type | `let y`: FCS in O, ours in M
+open System; let w = delegate | double +type | `let z`: FCS in O, ours in M
+open System; let w = delegate | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = delegate | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = delegate | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = delegate | double begin | `let y`: FCS in O, ours in M
+open System; let w = delegate | double | `let y`: FCS in O, ours in M
+open System; let w = delegate | double | `let z`: FCS in O, ours in M
+open System; let w = do | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = do | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = do | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = do | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = do | double +indented | `let x`: FCS in A, ours in O
+open System; let w = do | double +indented | `let y`: FCS in A, ours in M
+open System; let w = do | double +indented | `let z`: FCS in A, ours in M
+open System; let w = do | double +type | `let x`: FCS in A, ours in O
+open System; let w = do | double +type | `let y`: FCS in A, ours in M
+open System; let w = do | double +type | `let z`: FCS in A, ours in M
+open System; let w = do | double +type | `type V`: FCS in A, ours in O
+open System; let w = do | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = do | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = do | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = do | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = do | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = do | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = do | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = do | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = do | double begin | `let x`: FCS in A, ours in O
+open System; let w = do | double begin | `let y`: FCS in O, ours in M
+open System; let w = do | double | `let x`: FCS in A, ours in O
+open System; let w = do | double | `let y`: FCS in A, ours in M
+open System; let w = do | double | `let z`: FCS in A, ours in M
+open System; let w = do | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = do | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = do | single +indented | `let x`: FCS in A, ours in M
+open System; let w = do | single +type | `let x`: FCS in A, ours in M
+open System; let w = do | single +type | `type V`: FCS in A, ours in M
+open System; let w = do | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = do | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = do | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = do | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = do | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = do | single begin | `let x`: FCS in A, ours in M
+open System; let w = do | single | `let x`: FCS in A, ours in M
+open System; let w = else | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = else | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = else | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = else | double begin | `let y`: FCS in O, ours in M
+open System; let w = end | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = end | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = end | double +indented | `let y`: FCS in O, ours in M
+open System; let w = end | double +indented | `let z`: FCS in O, ours in M
+open System; let w = end | double +type | `let y`: FCS in O, ours in M
+open System; let w = end | double +type | `let z`: FCS in O, ours in M
+open System; let w = end | double begin +indented +type | `let x`: FCS in O, ours in nowhere
+open System; let w = end | double begin +indented +type | `type V`: FCS in O, ours in M
+open System; let w = end | double begin +indented | `let x`: FCS in O, ours in nowhere
+open System; let w = end | double begin +type | `let x`: FCS in O, ours in nowhere
+open System; let w = end | double begin +type | `type V`: FCS in O, ours in nowhere
+open System; let w = end | double begin | `let x`: FCS in O, ours in nowhere
+open System; let w = end | double | `let y`: FCS in O, ours in M
+open System; let w = end | double | `let z`: FCS in O, ours in M
+open System; let w = end | single begin +indented +type | `let x`: FCS in M, ours in nowhere
+open System; let w = end | single begin +type | `type V`: FCS in M, ours in nowhere
+open System; let w = end | single begin | `let x`: FCS in M, ours in nowhere
+open System; let w = exception | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = exception | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = exception | double +indented | `let y`: FCS in O, ours in M
+open System; let w = exception | double +indented | `let z`: FCS in O, ours in M
+open System; let w = exception | double +type | `let y`: FCS in O, ours in M
+open System; let w = exception | double +type | `let z`: FCS in O, ours in M
+open System; let w = exception | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = exception | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = exception | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = exception | double | `let z`: FCS in O, ours in M
+open System; let w = fun | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = fun | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = fun | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = fun | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = fun | double +indented | `let x`: FCS in A, ours in O
+open System; let w = fun | double +indented | `let y`: FCS in A, ours in M
+open System; let w = fun | double +indented | `let z`: FCS in A, ours in M
+open System; let w = fun | double +type | `let x`: FCS in A, ours in O
+open System; let w = fun | double +type | `let y`: FCS in A, ours in M
+open System; let w = fun | double +type | `let z`: FCS in A, ours in M
+open System; let w = fun | double +type | `type V`: FCS in A, ours in O
+open System; let w = fun | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = fun | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = fun | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = fun | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = fun | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = fun | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = fun | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = fun | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = fun | double begin | `let x`: FCS in A, ours in O
+open System; let w = fun | double begin | `let y`: FCS in O, ours in M
+open System; let w = fun | double | `let x`: FCS in A, ours in O
+open System; let w = fun | double | `let y`: FCS in A, ours in M
+open System; let w = fun | double | `let z`: FCS in A, ours in M
+open System; let w = fun | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = fun | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = fun | single +indented | `let x`: FCS in A, ours in M
+open System; let w = fun | single +type | `let x`: FCS in A, ours in M
+open System; let w = fun | single +type | `type V`: FCS in A, ours in M
+open System; let w = fun | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = fun | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = fun | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = fun | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = fun | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = fun | single begin | `let x`: FCS in A, ours in M
+open System; let w = fun | single | `let x`: FCS in A, ours in M
+open System; let w = in | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = inherit | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = inherit | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = inherit | double +indented | `let y`: FCS in O, ours in M
+open System; let w = inherit | double +indented | `let z`: FCS in O, ours in M
+open System; let w = inherit | double +type | `let y`: FCS in O, ours in M
+open System; let w = inherit | double +type | `let z`: FCS in O, ours in M
+open System; let w = inherit | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = inherit | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = inherit | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = inherit | double begin | `let y`: FCS in O, ours in M
+open System; let w = inherit | double | `let y`: FCS in O, ours in M
+open System; let w = inherit | double | `let z`: FCS in O, ours in M
+open System; let w = int * | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = int * | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = int * | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = int * | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = int * | double +indented | `let x`: FCS in A, ours in O
+open System; let w = int * | double +indented | `let y`: FCS in A, ours in M
+open System; let w = int * | double +indented | `let z`: FCS in A, ours in M
+open System; let w = int * | double +type | `let x`: FCS in A, ours in O
+open System; let w = int * | double +type | `let y`: FCS in A, ours in M
+open System; let w = int * | double +type | `let z`: FCS in A, ours in M
+open System; let w = int * | double +type | `type V`: FCS in A, ours in O
+open System; let w = int * | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = int * | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = int * | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = int * | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = int * | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = int * | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = int * | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = int * | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = int * | double begin | `let x`: FCS in A, ours in O
+open System; let w = int * | double begin | `let y`: FCS in O, ours in M
+open System; let w = int * | double | `let x`: FCS in A, ours in O
+open System; let w = int * | double | `let y`: FCS in A, ours in M
+open System; let w = int * | double | `let z`: FCS in A, ours in M
+open System; let w = int * | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = int * | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = int * | single +indented | `let x`: FCS in A, ours in M
+open System; let w = int * | single +type | `let x`: FCS in A, ours in M
+open System; let w = int * | single +type | `type V`: FCS in A, ours in M
+open System; let w = int * | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = int * | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = int * | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = int * | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = int * | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = int * | single begin | `let x`: FCS in A, ours in M
+open System; let w = int * | single | `let x`: FCS in A, ours in M
+open System; let w = int . | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = int . | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = int . | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = int . | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = int . | double +indented | `let x`: FCS in A, ours in O
+open System; let w = int . | double +indented | `let y`: FCS in A, ours in M
+open System; let w = int . | double +indented | `let z`: FCS in A, ours in M
+open System; let w = int . | double +type | `let x`: FCS in A, ours in O
+open System; let w = int . | double +type | `let y`: FCS in A, ours in M
+open System; let w = int . | double +type | `let z`: FCS in A, ours in M
+open System; let w = int . | double +type | `type V`: FCS in A, ours in O
+open System; let w = int . | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = int . | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = int . | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = int . | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = int . | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = int . | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = int . | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = int . | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = int . | double begin | `let x`: FCS in A, ours in O
+open System; let w = int . | double begin | `let y`: FCS in O, ours in M
+open System; let w = int . | double | `let x`: FCS in A, ours in O
+open System; let w = int . | double | `let y`: FCS in A, ours in M
+open System; let w = int . | double | `let z`: FCS in A, ours in M
+open System; let w = int . | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = int . | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = int . | single +indented | `let x`: FCS in A, ours in M
+open System; let w = int . | single +type | `let x`: FCS in A, ours in M
+open System; let w = int . | single +type | `type V`: FCS in A, ours in M
+open System; let w = int . | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = int . | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = int . | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = int . | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = int . | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = int . | single begin | `let x`: FCS in A, ours in M
+open System; let w = int . | single | `let x`: FCS in A, ours in M
+open System; let w = int | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = int | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = int | double +indented | `let y`: FCS in A, ours in O
+open System; let w = int | double +indented | `let z`: FCS in A, ours in M
+open System; let w = int | double +type | `let y`: FCS in A, ours in O
+open System; let w = int | double +type | `let z`: FCS in A, ours in M
+open System; let w = int | double | `let y`: FCS in A, ours in O
+open System; let w = int | double | `let z`: FCS in A, ours in M
+open System; let w = interface | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = interface | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = interface | double +indented | `let y`: FCS in O, ours in M
+open System; let w = interface | double +indented | `let z`: FCS in O, ours in M
+open System; let w = interface | double +type | `let y`: FCS in O, ours in M
+open System; let w = interface | double +type | `let z`: FCS in O, ours in M
+open System; let w = interface | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = interface | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = interface | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = interface | double begin | `let y`: FCS in O, ours in M
+open System; let w = interface | double | `let y`: FCS in O, ours in M
+open System; let w = interface | double | `let z`: FCS in O, ours in M
+open System; let w = let | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = let | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = let | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = let | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = let | double +indented | `let x`: FCS in A, ours in O
+open System; let w = let | double +indented | `let y`: FCS in A, ours in M
+open System; let w = let | double +indented | `let z`: FCS in A, ours in M
+open System; let w = let | double +type | `let x`: FCS in A, ours in O
+open System; let w = let | double +type | `let y`: FCS in A, ours in M
+open System; let w = let | double +type | `let z`: FCS in A, ours in M
+open System; let w = let | double +type | `type V`: FCS in A, ours in O
+open System; let w = let | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = let | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = let | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = let | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = let | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = let | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = let | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = let | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = let | double begin | `let x`: FCS in A, ours in O
+open System; let w = let | double begin | `let y`: FCS in O, ours in M
+open System; let w = let | double | `let x`: FCS in A, ours in O
+open System; let w = let | double | `let y`: FCS in A, ours in M
+open System; let w = let | double | `let z`: FCS in A, ours in M
+open System; let w = let | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = let | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = let | single +indented | `let x`: FCS in A, ours in M
+open System; let w = let | single +type | `let x`: FCS in A, ours in M
+open System; let w = let | single +type | `type V`: FCS in A, ours in M
+open System; let w = let | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = let | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = let | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = let | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = let | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = let | single begin | `let x`: FCS in A, ours in M
+open System; let w = let | single | `let x`: FCS in A, ours in M
+open System; let w = match | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = match | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = match | double +indented | `let y`: FCS in O, ours in M
+open System; let w = match | double +indented | `let z`: FCS in O, ours in M
+open System; let w = match | double +type | `let y`: FCS in O, ours in M
+open System; let w = match | double +type | `let z`: FCS in O, ours in M
+open System; let w = match | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = match | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = match | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = match | double begin | `let y`: FCS in O, ours in M
+open System; let w = match | double | `let y`: FCS in O, ours in M
+open System; let w = match | double | `let z`: FCS in O, ours in M
+open System; let w = member | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = member | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = member | double +indented | `let y`: FCS in O, ours in M
+open System; let w = member | double +indented | `let z`: FCS in O, ours in M
+open System; let w = member | double +type | `let y`: FCS in O, ours in M
+open System; let w = member | double +type | `let z`: FCS in O, ours in M
+open System; let w = member | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = member | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = member | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = member | double begin | `let y`: FCS in O, ours in M
+open System; let w = member | double | `let y`: FCS in O, ours in M
+open System; let w = member | double | `let z`: FCS in O, ours in M
+open System; let w = module | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = module | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = module | double +indented | `let y`: FCS in O, ours in M
+open System; let w = module | double +indented | `let z`: FCS in O, ours in M
+open System; let w = module | double +type | `let y`: FCS in O, ours in M
+open System; let w = module | double +type | `let z`: FCS in O, ours in M
+open System; let w = module | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = module | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = module | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = module | double begin | `let y`: FCS in O, ours in M
+open System; let w = module | double | `let y`: FCS in O, ours in M
+open System; let w = module | double | `let z`: FCS in O, ours in M
+open System; let w = new | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = new | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = new | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = new | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = new | double +indented | `let x`: FCS in A, ours in O
+open System; let w = new | double +indented | `let y`: FCS in A, ours in M
+open System; let w = new | double +indented | `let z`: FCS in A, ours in M
+open System; let w = new | double +type | `let x`: FCS in A, ours in O
+open System; let w = new | double +type | `let y`: FCS in A, ours in M
+open System; let w = new | double +type | `let z`: FCS in A, ours in M
+open System; let w = new | double +type | `type V`: FCS in A, ours in O
+open System; let w = new | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = new | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = new | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = new | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = new | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = new | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = new | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = new | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = new | double begin | `let x`: FCS in A, ours in O
+open System; let w = new | double begin | `let y`: FCS in O, ours in M
+open System; let w = new | double | `let x`: FCS in A, ours in O
+open System; let w = new | double | `let y`: FCS in A, ours in M
+open System; let w = new | double | `let z`: FCS in A, ours in M
+open System; let w = new | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = new | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = new | single +indented | `let x`: FCS in A, ours in M
+open System; let w = new | single +type | `let x`: FCS in A, ours in M
+open System; let w = new | single +type | `type V`: FCS in A, ours in M
+open System; let w = new | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = new | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = new | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = new | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = new | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = new | single begin | `let x`: FCS in A, ours in M
+open System; let w = new | single | `let x`: FCS in A, ours in M
+open System; let w = null | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = null | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = null | double +indented | `let y`: FCS in A, ours in O
+open System; let w = null | double +indented | `let z`: FCS in A, ours in M
+open System; let w = null | double +type | `let y`: FCS in A, ours in O
+open System; let w = null | double +type | `let z`: FCS in A, ours in M
+open System; let w = null | double | `let y`: FCS in A, ours in O
+open System; let w = null | double | `let z`: FCS in A, ours in M
+open System; let w = of | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = of | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = of | double +indented | `let y`: FCS in O, ours in M
+open System; let w = of | double +indented | `let z`: FCS in O, ours in M
+open System; let w = of | double +type | `let y`: FCS in O, ours in M
+open System; let w = of | double +type | `let z`: FCS in O, ours in M
+open System; let w = of | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = of | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = of | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = of | double begin | `let y`: FCS in O, ours in M
+open System; let w = of | double | `let y`: FCS in O, ours in M
+open System; let w = of | double | `let z`: FCS in O, ours in M
+open System; let w = open | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = open | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = open | double +indented | `let y`: FCS in O, ours in M
+open System; let w = open | double +indented | `let z`: FCS in O, ours in M
+open System; let w = open | double +type | `let x`: FCS in M, ours in O
+open System; let w = open | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = open | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = open | double begin | `let y`: FCS in O, ours in M
+open System; let w = open | double | `let y`: FCS in O, ours in M
+open System; let w = open | double | `let z`: FCS in O, ours in M
+open System; let w = override | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = override | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = override | double +indented | `let y`: FCS in O, ours in M
+open System; let w = override | double +indented | `let z`: FCS in O, ours in M
+open System; let w = override | double +type | `let y`: FCS in O, ours in M
+open System; let w = override | double +type | `let z`: FCS in O, ours in M
+open System; let w = override | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = override | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = override | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = override | double begin | `let y`: FCS in O, ours in M
+open System; let w = override | double | `let y`: FCS in O, ours in M
+open System; let w = override | double | `let z`: FCS in O, ours in M
+open System; let w = private .Foo | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = private .Foo | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = private .Foo | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = private .Foo | double +indented | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double +indented | `let y`: FCS in A, ours in M
+open System; let w = private .Foo | double +indented | `let z`: FCS in A, ours in M
+open System; let w = private .Foo | double +type | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double +type | `let y`: FCS in A, ours in M
+open System; let w = private .Foo | double +type | `let z`: FCS in A, ours in M
+open System; let w = private .Foo | double +type | `type V`: FCS in A, ours in O
+open System; let w = private .Foo | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = private .Foo | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = private .Foo | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = private .Foo | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = private .Foo | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = private .Foo | double begin | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double begin | `let y`: FCS in O, ours in M
+open System; let w = private .Foo | double | `let x`: FCS in A, ours in O
+open System; let w = private .Foo | double | `let y`: FCS in A, ours in M
+open System; let w = private .Foo | double | `let z`: FCS in A, ours in M
+open System; let w = private .Foo | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = private .Foo | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = private .Foo | single +indented | `let x`: FCS in A, ours in M
+open System; let w = private .Foo | single +type | `let x`: FCS in A, ours in M
+open System; let w = private .Foo | single +type | `type V`: FCS in A, ours in M
+open System; let w = private .Foo | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = private .Foo | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = private .Foo | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = private .Foo | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = private .Foo | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = private .Foo | single begin | `let x`: FCS in A, ours in M
+open System; let w = private .Foo | single | `let x`: FCS in A, ours in M
+open System; let w = private | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = private | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = private | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = private | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = private | double +indented | `let x`: FCS in A, ours in O
+open System; let w = private | double +indented | `let y`: FCS in A, ours in M
+open System; let w = private | double +indented | `let z`: FCS in A, ours in M
+open System; let w = private | double +type | `let x`: FCS in A, ours in O
+open System; let w = private | double +type | `let y`: FCS in A, ours in M
+open System; let w = private | double +type | `let z`: FCS in A, ours in M
+open System; let w = private | double +type | `type V`: FCS in A, ours in O
+open System; let w = private | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = private | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = private | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = private | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = private | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = private | double begin +type | `let x`: FCS in A, ours in O
+open System; let w = private | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = private | double begin +type | `type V`: FCS in A, ours in O
+open System; let w = private | double begin | `let x`: FCS in A, ours in O
+open System; let w = private | double begin | `let y`: FCS in O, ours in M
+open System; let w = private | double | `let x`: FCS in A, ours in O
+open System; let w = private | double | `let y`: FCS in A, ours in M
+open System; let w = private | double | `let z`: FCS in A, ours in M
+open System; let w = private | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = private | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = private | single +indented | `let x`: FCS in A, ours in M
+open System; let w = private | single +type | `let x`: FCS in A, ours in M
+open System; let w = private | single +type | `type V`: FCS in A, ours in M
+open System; let w = private | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = private | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = private | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = private | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = private | single begin +type | `type V`: FCS in A, ours in M
+open System; let w = private | single begin | `let x`: FCS in A, ours in M
+open System; let w = private | single | `let x`: FCS in A, ours in M
+open System; let w = static member | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = static member | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = static member | double +indented | `let y`: FCS in O, ours in M
+open System; let w = static member | double +indented | `let z`: FCS in O, ours in M
+open System; let w = static member | double +type | `let y`: FCS in O, ours in M
+open System; let w = static member | double +type | `let z`: FCS in O, ours in M
+open System; let w = static member | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = static member | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = static member | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = static member | double begin | `let y`: FCS in O, ours in M
+open System; let w = static member | double | `let y`: FCS in O, ours in M
+open System; let w = static member | double | `let z`: FCS in O, ours in M
+open System; let w = static | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = static | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = static | double +indented | `let y`: FCS in O, ours in M
+open System; let w = static | double +indented | `let z`: FCS in O, ours in M
+open System; let w = static | double +type | `let y`: FCS in O, ours in M
+open System; let w = static | double +type | `let z`: FCS in O, ours in M
+open System; let w = static | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = static | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = static | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = static | double begin | `let y`: FCS in O, ours in M
+open System; let w = static | double | `let y`: FCS in O, ours in M
+open System; let w = static | double | `let z`: FCS in O, ours in M
+open System; let w = struct | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = struct | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = struct | double +indented | `let y`: FCS in O, ours in M
+open System; let w = struct | double +indented | `let z`: FCS in O, ours in M
+open System; let w = struct | double +type | `let y`: FCS in O, ours in M
+open System; let w = struct | double +type | `let z`: FCS in O, ours in M
+open System; let w = struct | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = struct | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = struct | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = struct | double begin | `let y`: FCS in O, ours in M
+open System; let w = struct | double | `let y`: FCS in O, ours in M
+open System; let w = struct | double | `let z`: FCS in O, ours in M
+open System; let w = then | double +indented +type | `let x`: FCS in M, ours in O
+open System; let w = then | double +indented +type | `type V`: FCS in M, ours in O
+open System; let w = then | double +indented | `let x`: FCS in M, ours in O
+open System; let w = then | double +type | `let x`: FCS in M, ours in O
+open System; let w = then | double +type | `type V`: FCS in M, ours in O
+open System; let w = then | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = then | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = then | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = then | double begin | `let y`: FCS in O, ours in M
+open System; let w = then | double | `let x`: FCS in M, ours in O
+open System; let w = type | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = type | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = type | double +indented | `let y`: FCS in O, ours in M
+open System; let w = type | double +indented | `let z`: FCS in O, ours in M
+open System; let w = type | double +type | `let y`: FCS in O, ours in M
+open System; let w = type | double +type | `let z`: FCS in O, ours in M
+open System; let w = type | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = type | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = type | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = type | double begin | `let y`: FCS in O, ours in M
+open System; let w = type | double | `let y`: FCS in O, ours in M
+open System; let w = type | double | `let z`: FCS in O, ours in M
+open System; let w = val | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = val | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = val | double +indented | `let y`: FCS in O, ours in M
+open System; let w = val | double +indented | `let z`: FCS in O, ours in M
+open System; let w = val | double +type | `let y`: FCS in O, ours in M
+open System; let w = val | double +type | `let z`: FCS in O, ours in M
+open System; let w = val | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = val | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = val | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = val | double begin | `let y`: FCS in O, ours in M
+open System; let w = val | double | `let y`: FCS in O, ours in M
+open System; let w = val | double | `let z`: FCS in O, ours in M
+open System; let w = when | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = when | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = when | double +indented | `let y`: FCS in O, ours in M
+open System; let w = when | double +indented | `let z`: FCS in O, ours in M
+open System; let w = when | double +type | `let y`: FCS in O, ours in M
+open System; let w = when | double +type | `let z`: FCS in O, ours in M
+open System; let w = when | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = when | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = when | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = when | double begin | `let y`: FCS in O, ours in M
+open System; let w = when | double | `let y`: FCS in O, ours in M
+open System; let w = when | double | `let z`: FCS in O, ours in M
+open System; let w = with | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = with | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = with | double +indented | `let y`: FCS in O, ours in M
+open System; let w = with | double +indented | `let z`: FCS in O, ours in M
+open System; let w = with | double +type | `let y`: FCS in O, ours in M
+open System; let w = with | double +type | `let z`: FCS in O, ours in M
+open System; let w = with | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = with | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = with | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = with | double begin | `let y`: FCS in O, ours in M
+open System; let w = with | double | `let y`: FCS in O, ours in M
+open System; let w = with | double | `let z`: FCS in O, ours in M
+open System; let w = x | double +indented +type | `let y`: FCS in A, ours in O
+open System; let w = x | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = x | double +indented | `let y`: FCS in A, ours in O
+open System; let w = x | double +indented | `let z`: FCS in A, ours in M
+open System; let w = x | double +type | `let y`: FCS in A, ours in O
+open System; let w = x | double +type | `let z`: FCS in A, ours in M
+open System; let w = x | double | `let y`: FCS in A, ours in O
+open System; let w = x | double | `let z`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +indented +type | `let x`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double +indented +type | `let y`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +indented +type | `let z`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +indented +type | `type V`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double +indented | `let x`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double +indented | `let y`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +indented | `let z`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +type | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +type | `let y`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +type | `let z`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double +type | `type V`: FCS in A, ours in nowhere
+open System; let w = { F : .Foo } | double begin +indented +type | `let x`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = { F : .Foo } | double begin +indented +type | `type V`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double begin +indented | `let x`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = { F : .Foo } | double begin +type | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = { F : .Foo } | double begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = { F : .Foo } | double begin | `let x`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double begin | `let y`: FCS in O, ours in M
+open System; let w = { F : .Foo } | double | `let x`: FCS in A, ours in O
+open System; let w = { F : .Foo } | double | `let y`: FCS in A, ours in M
+open System; let w = { F : .Foo } | double | `let z`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single +indented +type | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single +indented +type | `type V`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single +indented | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single +type | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single +type | `type V`: FCS in A, ours in nowhere
+open System; let w = { F : .Foo } | single begin +indented +type | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single begin +indented +type | `type V`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single begin +indented | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single begin +type | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = { F : .Foo } | single begin | `let x`: FCS in A, ours in M
+open System; let w = { F : .Foo } | single | `let x`: FCS in A, ours in M
+open System; let w = { | double +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | double +indented +type | `let y`: FCS in A, ours in nowhere
+open System; let w = { | double +indented +type | `let z`: FCS in A, ours in nowhere
+open System; let w = { | double +indented | `let y`: FCS in A, ours in nowhere
+open System; let w = { | double +indented | `let z`: FCS in A, ours in nowhere
+open System; let w = { | double +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | double +type | `let y`: FCS in A, ours in nowhere
+open System; let w = { | double +type | `let z`: FCS in A, ours in nowhere
+open System; let w = { | double +type | `type V`: FCS in A, ours in nowhere
+open System; let w = { | double begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | double begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = { | double begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = { | double begin | `let y`: FCS in O, ours in M
+open System; let w = { | double | `let z`: FCS in A, ours in nowhere
+open System; let w = { | single +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | single +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | single +type | `type V`: FCS in A, ours in nowhere
+open System; let w = { | single begin +indented +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | single begin +type | `let x`: FCS in A, ours in nowhere
+open System; let w = { | single begin +type | `type V`: FCS in A, ours in nowhere
+open System; let w = | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = | double +indented | `let y`: FCS in O, ours in M
+open System; let w = | double +indented | `let z`: FCS in O, ours in M
+open System; let w = | double +type | `let y`: FCS in O, ours in M
+open System; let w = | double +type | `let z`: FCS in O, ours in M
+open System; let w = | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = | double begin | `let y`: FCS in O, ours in M
+open System; let w = | double | `let y`: FCS in O, ours in M
+open System; let w = | double | `let z`: FCS in O, ours in M
+open System; let w = | | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = | | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = | | double +indented | `let y`: FCS in O, ours in M
+open System; let w = | | double +indented | `let z`: FCS in O, ours in M
+open System; let w = | | double +type | `let y`: FCS in O, ours in M
+open System; let w = | | double +type | `let z`: FCS in O, ours in M
+open System; let w = | | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = | | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = | | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = | | double begin | `let y`: FCS in O, ours in M
+open System; let w = | | double | `let y`: FCS in O, ours in M
+open System; let w = | | double | `let z`: FCS in O, ours in M
+open System; let w = |] | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = |] | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = |] | double +indented | `let y`: FCS in O, ours in M
+open System; let w = |] | double +indented | `let z`: FCS in O, ours in M
+open System; let w = |] | double +type | `let y`: FCS in O, ours in M
+open System; let w = |] | double +type | `let z`: FCS in O, ours in M
+open System; let w = |] | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = |] | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = |] | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = |] | double begin | `let y`: FCS in O, ours in M
+open System; let w = |] | double | `let y`: FCS in O, ours in M
+open System; let w = |] | double | `let z`: FCS in O, ours in M
+open System; let w = } | double +indented +type | `let y`: FCS in O, ours in M
+open System; let w = } | double +indented +type | `let z`: FCS in O, ours in M
+open System; let w = } | double +indented | `let y`: FCS in O, ours in M
+open System; let w = } | double +indented | `let z`: FCS in O, ours in M
+open System; let w = } | double +type | `let y`: FCS in O, ours in M
+open System; let w = } | double +type | `let z`: FCS in O, ours in M
+open System; let w = } | double begin +indented +type | `let y`: FCS in O, ours in M
+open System; let w = } | double begin +indented | `let y`: FCS in O, ours in M
+open System; let w = } | double begin +type | `let y`: FCS in O, ours in M
+open System; let w = } | double begin | `let y`: FCS in O, ours in M
+open System; let w = } | double | `let y`: FCS in O, ours in M
+open System; let w = } | double | `let z`: FCS in O, ours in M
 type T = "s" | double +indented +type | `let x`: FCS in A, ours in O
 type T = "s" | double +indented +type | `let y`: FCS in A, ours in M
 type T = "s" | double +indented +type | `let z`: FCS in A, ours in M
@@ -5062,6 +6692,62 @@ type T = 1 | single +indented | `let x`: FCS in A, ours in M
 type T = 1 | single begin +indented +type | `let x`: FCS in A, ours in M
 type T = 1 | single begin +indented +type | `type V`: FCS in A, ours in M
 type T = 1 | single begin +indented | `let x`: FCS in A, ours in M
+type T = 1 } | double +indented +type | `let x`: FCS in A, ours in O
+type T = 1 } | double +indented +type | `let y`: FCS in A, ours in M
+type T = 1 } | double +indented +type | `let z`: FCS in A, ours in M
+type T = 1 } | double +indented +type | `type V`: FCS in A, ours in O
+type T = 1 } | double +indented | `let x`: FCS in A, ours in O
+type T = 1 } | double +indented | `let y`: FCS in A, ours in M
+type T = 1 } | double +indented | `let z`: FCS in A, ours in M
+type T = 1 } | double +type | `let x`: FCS in A, ours in O
+type T = 1 } | double +type | `let y`: FCS in O, ours in M
+type T = 1 } | double +type | `type V`: FCS in A, ours in nowhere
+type T = 1 } | double begin +indented +type | `let x`: FCS in A, ours in O
+type T = 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+type T = 1 } | double begin +indented +type | `type V`: FCS in A, ours in O
+type T = 1 } | double begin +indented | `let x`: FCS in A, ours in O
+type T = 1 } | double begin +indented | `let y`: FCS in O, ours in M
+type T = 1 } | double begin +type | `let x`: FCS in A, ours in O
+type T = 1 } | double begin +type | `let y`: FCS in O, ours in M
+type T = 1 } | double begin +type | `type V`: FCS in A, ours in nowhere
+type T = 1 } | single +indented +type | `let x`: FCS in A, ours in M
+type T = 1 } | single +indented +type | `type V`: FCS in A, ours in M
+type T = 1 } | single +indented | `let x`: FCS in A, ours in M
+type T = 1 } | single +type | `let x`: FCS in A, ours in M
+type T = 1 } | single +type | `type V`: FCS in A, ours in nowhere
+type T = 1 } | single begin +indented +type | `let x`: FCS in A, ours in M
+type T = 1 } | single begin +indented +type | `type V`: FCS in A, ours in M
+type T = 1 } | single begin +indented | `let x`: FCS in A, ours in M
+type T = 1 } | single begin +type | `let x`: FCS in A, ours in M
+type T = 1 } | single begin +type | `type V`: FCS in A, ours in nowhere
+type T = 1) | double +indented +type | `let x`: FCS in A, ours in O
+type T = 1) | double +indented +type | `let y`: FCS in A, ours in M
+type T = 1) | double +indented +type | `let z`: FCS in A, ours in M
+type T = 1) | double +indented +type | `type V`: FCS in A, ours in O
+type T = 1) | double +indented | `let x`: FCS in A, ours in O
+type T = 1) | double +indented | `let y`: FCS in A, ours in M
+type T = 1) | double +indented | `let z`: FCS in A, ours in M
+type T = 1) | double +type | `let x`: FCS in A, ours in O
+type T = 1) | double +type | `let y`: FCS in O, ours in M
+type T = 1) | double +type | `type V`: FCS in A, ours in nowhere
+type T = 1) | double begin +indented +type | `let x`: FCS in A, ours in O
+type T = 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+type T = 1) | double begin +indented +type | `type V`: FCS in A, ours in O
+type T = 1) | double begin +indented | `let x`: FCS in A, ours in O
+type T = 1) | double begin +indented | `let y`: FCS in O, ours in M
+type T = 1) | double begin +type | `let x`: FCS in A, ours in O
+type T = 1) | double begin +type | `let y`: FCS in O, ours in M
+type T = 1) | double begin +type | `type V`: FCS in A, ours in nowhere
+type T = 1) | single +indented +type | `let x`: FCS in A, ours in M
+type T = 1) | single +indented +type | `type V`: FCS in A, ours in M
+type T = 1) | single +indented | `let x`: FCS in A, ours in M
+type T = 1) | single +type | `let x`: FCS in A, ours in M
+type T = 1) | single +type | `type V`: FCS in A, ours in nowhere
+type T = 1) | single begin +indented +type | `let x`: FCS in A, ours in M
+type T = 1) | single begin +indented +type | `type V`: FCS in A, ours in M
+type T = 1) | single begin +indented | `let x`: FCS in A, ours in M
+type T = 1) | single begin +type | `let x`: FCS in A, ours in M
+type T = 1) | single begin +type | `type V`: FCS in A, ours in nowhere
 type T = : | double +indented +type | `let x`: FCS in O, ours in M
 type T = : | double +indented +type | `let y`: FCS in O, ours in M
 type T = : | double +indented +type | `let z`: FCS in O, ours in M
@@ -5414,6 +7100,74 @@ type T = [<A>] 1 | single begin +type | `let x`: FCS in A, ours in M
 type T = [<A>] 1 | single begin +type | `type V`: FCS in A, ours in M
 type T = [<A>] 1 | single begin | `let x`: FCS in A, ours in M
 type T = [<A>] 1 | single | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | double +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | double +indented +type | `let y`: FCS in A, ours in M
+type T = [<A>] 1 } | double +indented +type | `let z`: FCS in A, ours in M
+type T = [<A>] 1 } | double +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1 } | double +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | double +indented | `let y`: FCS in A, ours in M
+type T = [<A>] 1 } | double +indented | `let z`: FCS in A, ours in M
+type T = [<A>] 1 } | double +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | double +type | `let y`: FCS in O, ours in M
+type T = [<A>] 1 } | double +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1 } | double begin +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | double begin +indented +type | `let y`: FCS in O, ours in M
+type T = [<A>] 1 } | double begin +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1 } | double begin +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | double begin +indented | `let y`: FCS in O, ours in M
+type T = [<A>] 1 } | double begin +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | double begin +type | `let y`: FCS in O, ours in M
+type T = [<A>] 1 } | double begin +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1 } | double begin | `let x`: FCS in A, ours in O
+type T = [<A>] 1 } | double begin | `let y`: FCS in O, ours in M
+type T = [<A>] 1 } | double | `let x`: FCS in A, ours in O
+type T = [<A>] 1 } | double | `let y`: FCS in O, ours in M
+type T = [<A>] 1 } | single +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | single +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1 } | single +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | single +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | single +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1 } | single begin +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | single begin +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1 } | single begin +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | single begin +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | single begin +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1 } | single begin | `let x`: FCS in A, ours in M
+type T = [<A>] 1 } | single | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | double +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | double +indented +type | `let y`: FCS in A, ours in M
+type T = [<A>] 1) | double +indented +type | `let z`: FCS in A, ours in M
+type T = [<A>] 1) | double +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1) | double +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | double +indented | `let y`: FCS in A, ours in M
+type T = [<A>] 1) | double +indented | `let z`: FCS in A, ours in M
+type T = [<A>] 1) | double +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | double +type | `let y`: FCS in O, ours in M
+type T = [<A>] 1) | double +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1) | double begin +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | double begin +indented +type | `let y`: FCS in O, ours in M
+type T = [<A>] 1) | double begin +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1) | double begin +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | double begin +indented | `let y`: FCS in O, ours in M
+type T = [<A>] 1) | double begin +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | double begin +type | `let y`: FCS in O, ours in M
+type T = [<A>] 1) | double begin +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1) | double begin | `let x`: FCS in A, ours in O
+type T = [<A>] 1) | double begin | `let y`: FCS in O, ours in M
+type T = [<A>] 1) | double | `let x`: FCS in A, ours in O
+type T = [<A>] 1) | double | `let y`: FCS in O, ours in M
+type T = [<A>] 1) | single +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | single +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1) | single +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | single +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | single +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1) | single begin +indented +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | single begin +indented +type | `type V`: FCS in A, ours in M
+type T = [<A>] 1) | single begin +indented | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | single begin +type | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | single begin +type | `type V`: FCS in A, ours in nowhere
+type T = [<A>] 1) | single begin | `let x`: FCS in A, ours in M
+type T = [<A>] 1) | single | `let x`: FCS in A, ours in M
 type T = [<A>] : | double +indented +type | `let x`: FCS in O, ours in M
 type T = [<A>] : | double +indented +type | `let y`: FCS in O, ours in M
 type T = [<A>] : | double +indented +type | `let z`: FCS in O, ours in M

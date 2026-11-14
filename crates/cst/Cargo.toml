@@ -27,17 +27,51 @@ rowan-reference = ["dep:rowan"]
 # Test-only, on for this crate's own tests through the self-reference below.
 token-reference = []
 # Exports the union typed facade (`syntax::{ImplFile, Expr, Pat, Type,
-# ModuleDecl, …}`) and the `syntax::v8` / `syntax::v9` facades that re-export
-# it. The union is the maximal, every-version surface and gains a variant
+# ModuleDecl, …}`) and each facade's `to_union` escape back to it. The union is the maximal, every-version surface and gains a variant
 # whenever a construct is modelled, so it carries no stability promise; without
 # this feature `syntax` exports only the untyped substrate (`SyntaxNode`,
-# `SyntaxKind`, `AstNode`, the `projection` gate). `borzoi-sema`, the LSP and
+# `SyntaxKind`, `AstNode`, the `projection` gate) and whichever per-version
+# facades below are on. `borzoi-sema`, the LSP and
 # `borzoi-corpus-diff` turn it on, and this crate's own tests through the
 # self-reference below. CI's lint job builds the crate without it.
 unstable-union = []
+# The per-version typed facades, `syntax::v4_6` … `syntax::v11`
+# (`docs/ast-versioning-plan.md` D4, D8): each owns every node type and enum
+# of its language version's surface, and `Parse::view` reads a parse through
+# one. A version whose surface equals an earlier one's is an alias of it
+# (`pub use super::<earlier>::*`), and its feature also compiles, and so
+# exposes, the module it aliases. `borzoi-sema` and the LSP use the union and
+# turn none on; this crate's own tests turn all on.
+v4_6 = []
+v4_7 = []
+v5 = []
+v6 = []
+v7 = []
+v8 = []
+v9 = []
+v10 = []
+v11 = []
+# `syntax::preview`, the facade of FCS's `preview` version. It is never frozen:
+# its lock is regenerated whenever the union moves.
+unstable-preview = []
 
 [dev-dependencies]
-borzoi-cst = { path = ".", features = ["accessor-trace", "rowan-reference", "token-reference", "unstable-union"] }
+borzoi-cst = { path = ".", features = [
+    "accessor-trace",
+    "rowan-reference",
+    "token-reference",
+    "unstable-union",
+    "v4_6",
+    "v4_7",
+    "v5",
+    "v6",
+    "v7",
+    "v8",
+    "v9",
+    "v10",
+    "v11",
+    "unstable-preview",
+] }
 borzoi-oracle-harness.workspace = true
 # The feature table's parser, so `tests/all/language_features.rs` reads
 # `language-features.tsv` exactly as the generator does.

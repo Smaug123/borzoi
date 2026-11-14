@@ -10,10 +10,10 @@
 mod common;
 
 mod accessor_coverage;
-mod ast_projection;
 mod corpus;
 mod corpus_walk;
 mod diagnostic_classes;
+mod facade_properties;
 mod fcs_divergence;
 mod fcs_record_stack_bound;
 mod filtered_table;

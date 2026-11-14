@@ -29,7 +29,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/Accessibil
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface06.fs	both-reject exact 3/3/4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords.fs	both-reject exact 2/2/3
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnRecords02.fs	both-reject exact 2/2/3
-tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_let01.fs	both-reject outside-damage 1/1/5
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_let01.fs	both-reject exact 1/1/5
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_member01.fs	both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_module01.fs	both-reject divergent 0/1/3
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_orderingOfAccessibilityKeyword_type01.fs	both-reject exact 2/2/3
@@ -177,7 +177,7 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/StringsAndCharacters/TripleQuoteString02.fs	non-utf8
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_CantUseDollarSign.fs	both-reject exact 2/2/3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalAnalysis/SymbolicOperators/E_GreaterThanDotParen01.fs	we-accept-fcs-rejects exact 1/1/5
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/Basic/OffsideExceptions/Offside01c.fs	both-reject divergent 0/0/2
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/Basic/OffsideExceptions/Offside01c.fs	both-reject outside-damage 0/0/2
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_SpacesAfterLetBinding.fs	both-reject outside-damage 1/1/3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_TABsNotAllowedIndentOff.fs	both-reject exact 2/2/2
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_UnclosedLetBlock01.fs	both-reject exact 1/1/2

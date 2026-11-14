@@ -1,7 +1,7 @@
-//! Staleness gate: every checked-in generated facade, and the union's lock, must
+//! Staleness gate: every checked-in generated file — the union's modules and
+//! lock, each facade's lock and code, and the facade property table — must
 //! equal a fresh generation. Runs under the normal workspace `cargo test`, so a
-//! stale `crates/cst/src/syntax/generated/*.rs` or `crates/cst/facades/union.lock`
-//! fails CI. Fix with
+//! stale one fails CI. Fix with
 //! `cargo run -p borzoi-astgen --example generate`.
 
 use std::path::Path;
@@ -16,7 +16,7 @@ fn generated_facades_are_up_to_date() {
         assert_eq!(
             on_disk,
             generated,
-            "{} is stale — run `cargo run -p borzoi-astgen --example generate` to regenerate",
+            "{} is stale â run `cargo run -p borzoi-astgen --example generate` to regenerate",
             path.display(),
         );
     }

@@ -1004,7 +1004,30 @@ impl<'src> Parser<'src> {
         // it so the retroactive wrapper covers only the decl's own tokens.
         self.drain_raw_up_to(let_span.start);
         let cp = self.builder.checkpoint();
+        let block_let = matches!(
+            self.peek(),
+            Some((Ok(FilteredToken::Virtual(Virtual::Let)), _))
+        );
+        // Whether the group's last binding owns the close at the cursor, and
+        // whether the group parsed cleanly, decide whether the declaration
+        // takes it (`close_module_let_block`).
+        self.last_binding_owns_close = false;
+        let errors_before = self.errors.len();
         self.parse_let_head_and_bindings();
+        let owns_block = self.last_binding_owns_close;
+        // A closer the lex filter's outer wrapper swallowed (a stray `)` or
+        // `}`, `LexFilter.fs:2831-2836`) still pending after the RHS is an
+        // error FCS's parser met there; ours surfaces only when the close
+        // drains it. The filter swallows `module` and `type` too, but those
+        // the parser reads off the raw stream.
+        let swallowed_pending = owns_block
+            && self
+                .next_non_trivia_raw_at_pos_with_span()
+                .is_some_and(|(token, span)| {
+                    matches!(token, Token::RParen | Token::RBrace)
+                        && !self.filtered_stream_carries(span.start)
+                });
+        let clean = self.errors.len() == errors_before && !swallowed_pending;
         // Classify from the binding terminator — the first filtered token past
         // the final binding's RHS-close `Virtual::BlockEnd` run (the cursor sits
         // at that `BlockEnd`; a recovered RHS leaves it elsewhere → `None` → a
@@ -1094,10 +1117,64 @@ impl<'src> Parser<'src> {
             return;
         }
         // Plain `let x = e` (no explicit `in`) or a recovered RHS: a flat
-        // `SynModuleDecl.Let`, leaving the terminator `BlockEnd · DeclEnd` for
-        // the loop (unchanged from the pre-let-in behaviour).
+        // `SynModuleDecl.Let`.
         self.builder.start_node_at(cp, SyntaxKind::LET_DECL);
         self.builder.finish_node();
+        if clean && owns_block {
+            self.close_module_let_block(block_let);
+        }
+    }
+
+    /// Take a cleanly parsed module-level `let`'s RHS-close `BlockEnd`, the
+    /// block its last binding opened (FCS: a binding owns its `oblockend`), so
+    /// that the declaration loop never mistakes it for its body's close. The
+    /// loop tells the two apart by an `ODECLEND` following, which a raw `let`
+    /// has none of, and which the stream need not put directly after it.
+    ///
+    /// A block `let` then needs its `hardwhiteDefnBindingsTerminator`
+    /// (pars.fsy:3167-3175), so a token other than `ODECLEND` here is where
+    /// FCS's parser raises its error (a line offside of the RHS but still in
+    /// the `let`'s context, `let w = 1⏎  2`): it shifts `recover` and panic
+    /// mode discards tokens flat, with no block counting, through the first
+    /// `ODECLEND`. Otherwise the `ODECLEND` stays the loop's.
+    ///
+    /// After an error inside the binding the loop decides, as before: how
+    /// FCS's parser recovers depends on where its yacc error arises, which our
+    /// error list does not say. Each virtual is bumped as the loop bumps
+    /// layout, after the trivia before it, so the tree is the loop's.
+    fn close_module_let_block(&mut self, block_let: bool) {
+        if !matches!(
+            self.peek(),
+            Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
+        ) {
+            return;
+        }
+        self.bump_layout_virtual();
+        if !block_let
+            || matches!(
+                self.peek(),
+                Some((Ok(FilteredToken::Virtual(Virtual::DeclEnd)), _)) | None
+            )
+        {
+            return;
+        }
+        if let Some((_, span)) = self.peek().cloned() {
+            self.errors.push(ParseError {
+                message: "unexpected token after binding".to_string(),
+                span,
+            });
+        }
+        while let Some((res, _)) = self.peek().cloned() {
+            match res {
+                Ok(FilteredToken::Virtual(v)) => {
+                    self.bump_layout_virtual();
+                    if v == Virtual::DeclEnd {
+                        return;
+                    }
+                }
+                _ => self.bump_into(SyntaxKind::ERROR),
+            }
+        }
     }
 
     /// The filtered index of the final binding's terminator — the first token

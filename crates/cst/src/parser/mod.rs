@@ -245,6 +245,33 @@ impl Parse {
     pub fn recovery_warnings(&self) -> impl Iterator<Item = &ParseDiagnostic> {
         self.warnings.iter().filter(|e| e.is_recovery())
     }
+
+    /// The tree read through the per-version facade `V`
+    /// (`docs/ast-versioning-plan.md` D4): `V`'s root over [`Parse::root`],
+    /// e.g. `parse.view::<syntax::v8::ParsedInput>()`.
+    ///
+    /// It is an error, not a panic or a silent projection, to read a parse
+    /// through a facade that does not serve [`Parse::lang`] (`lang ∉
+    /// V::VERSIONS`): the facade's exhaustiveness is a claim about its own
+    /// version's syntax, and a tree parsed at another version can hold a
+    /// construct the facade has no variant for without any diagnostic saying
+    /// so. Parse at a version the facade serves instead.
+    ///
+    /// Under a facade that serves `lang`, a node outside its surface reads as
+    /// an absent child (its cast is `None`), and an entry of [`Parse::errors`]
+    /// whose [`gate`](field@ParseDiagnostic::gate) is the feature that
+    /// introduced the node's kind lies over it. So a parse with no gate
+    /// diagnostic reads totally.
+    pub fn view<V: crate::syntax::Facade>(&self) -> Result<V, crate::syntax::ViewError> {
+        if !V::VERSIONS.contains(&self.lang) {
+            return Err(crate::syntax::ViewError {
+                parsed: self.lang,
+                facade: V::VERSIONS,
+            });
+        }
+        Ok(V::cast(self.root.clone())
+            .expect("a parse's root is an IMPL_FILE or SIG_FILE, which every facade casts"))
+    }
 }
 
 /// The message of FCS's FS0597, reported on an application argument that
@@ -284,6 +311,7 @@ impl ParseError {
             message: self.message,
             span: self.span,
             class: DiagnosticClass::Recovery,
+            gate: None,
         }
     }
 }
@@ -296,6 +324,18 @@ pub struct ParseDiagnostic {
     pub span: Range<usize>,
     /// What the diagnostic says about the tree it sits on.
     pub class: DiagnosticClass,
+    /// The feature, when this is a language-version gate: the parse's
+    /// version is below `feature`'s, and the diagnostic sits over a construct
+    /// that feature introduced (or, for a gate FCS reports elsewhere, the
+    /// range its check is given). Set by the gate constructor whatever
+    /// the class, so a [`DiagnosticClass::Recovery`] gate (one whose feature
+    /// FCS handles by reshaping) names its feature too. `None` for every other
+    /// diagnostic, including the offside diagnostics a version moves, which
+    /// sit over no construct of a feature.
+    ///
+    /// `class` is [`DiagnosticClass::of_gate`] of it, so a `Legality { feature
+    /// }` diagnostic always has `gate == Some(feature)`.
+    pub gate: Option<LanguageFeature>,
 }
 
 impl ParseDiagnostic {
@@ -306,6 +346,7 @@ impl ParseDiagnostic {
             message,
             span,
             class: DiagnosticClass::of_gate(feature),
+            gate: Some(feature),
         }
     }
 
@@ -1002,6 +1043,9 @@ struct Parser<'src> {
     /// Trivia-free token stream as seen by the productions, with the cursor
     /// that walks it. The cursor is monotonic — we only index, never pop.
     filtered: FilteredCursor<'src>,
+    /// `block_depth_prefix[i]`: `OBLOCKBEGIN`s minus `OBLOCKEND`s among the
+    /// filtered tokens `0..i` ([`Self::block_balance`]).
+    block_depth_prefix: Vec<i32>,
     /// High-water mark of source bytes already emitted into the tree.
     /// Used to clamp filtered-token text starts so FCS-faithful *overlapping*
     /// splits — `RQuoteBarRBrace` becomes `RQUOTE=[s,e-2)` + `BAR_RBRACE=
@@ -1010,6 +1054,17 @@ struct Parser<'src> {
     raw_consumed_end: usize,
     builder: TreeBuilder,
     errors: Vec<ParseError>,
+    /// Whether the binding [`Self::parse_binding_with_modifiers`] finished
+    /// last owns the `OBLOCKEND` at the cursor: its RHS opened an offside
+    /// block after the `=` and closed it cleanly ([`Self::rhs_closed_cleanly`]).
+    /// A failed head, no block, or leftovers own none. A binding nested in
+    /// another's RHS finishes first, so after a `let` group this is its last
+    /// binding's.
+    last_binding_owns_close: bool,
+    /// Whether the RHS [`Self::parse_let_equals_rhs`] parsed last opened a
+    /// block and its gatherer stopped exactly at that block's `BlockEnd`,
+    /// with nothing left for the recovery drain.
+    rhs_closed_cleanly: bool,
     /// Warning-severity diagnostics (FCS `warning(...)` cases that leave
     /// `hadErrors` false). Kept separate from `errors` — see [`Parse`].
     warnings: Vec<ParseError>,
