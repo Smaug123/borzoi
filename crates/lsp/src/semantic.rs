@@ -531,13 +531,15 @@ pub struct SemanticState {
     /// Compile-order folds computed in the open generation
     /// ([`Self::end_generation`]).
     folds: u64,
-    /// The sources whose text changes have been announced to the client
-    /// since a fold last read them: a text sync or a watch event named them
-    /// and owed the refresh ([`Self::owe_token_refresh`]). A cached fold
-    /// found stale only at those owes no second refresh
-    /// ([`Self::validate_cached_fold`]); a fold that reads one consumes it.
-    /// Keyed as the `Vfs` keys its buffers ([`crate::paths::path_dedup_key`]).
-    announced: std::collections::HashSet<String>,
+    /// The generation in which each source was last announced to the
+    /// client as changed: a text sync or a watch event named it and owed
+    /// the refresh then ([`Self::owe_token_refresh`]). A cached fold whose
+    /// moved items were all announced after the generation that last
+    /// confirmed it owes no second refresh ([`Self::validate_cached_fold`]):
+    /// the client was told of every change it finds. Keyed as the `Vfs` keys
+    /// its buffers ([`crate::paths::path_dedup_key`]), one entry per source
+    /// the session has announced.
+    announced: HashMap<String, u64>,
 }
 
 /// What the semantic layer did in one generation
@@ -671,12 +673,21 @@ impl SemanticState {
     /// other than the one touched may now be shown stale tokens, and the
     /// client re-asks only for the one it touched, so a
     /// `workspace/semanticTokens/refresh` is owed. The paths are recorded as
-    /// announced, so the fold that next finds them changed owes no second
-    /// one.
-    pub fn owe_token_refresh<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) {
+    /// announced in `generation` (the open one, `None` outside one), so a
+    /// fold that finds them changed owes no second one.
+    pub fn owe_token_refresh<'a>(
+        &mut self,
+        paths: impl IntoIterator<Item = &'a Path>,
+        generation: Option<u64>,
+    ) {
         self.wants_refresh = true;
-        self.announced
-            .extend(paths.into_iter().map(|path| path_dedup_key(&lexically_normalize(path))));
+        if let Some(generation) = generation {
+            self.announced.extend(
+                paths
+                    .into_iter()
+                    .map(|path| (path_dedup_key(&lexically_normalize(path)), generation)),
+            );
+        }
     }
 
     /// Forget `project`'s cached parses and fold, as if it had never been
@@ -1720,12 +1731,6 @@ impl SemanticState {
         self.validate_cached_fold(&key, workspace, docs);
         if !self.project_parses.contains_key(&key) {
             let parses = self.fold(project, workspace, docs).ok()?;
-            // The fold read every item's current text: what was announced of
-            // them is in it.
-            for path in &parses.paths {
-                self.announced
-                    .remove(&path_dedup_key(&lexically_normalize(path)));
-            }
             self.project_parses.insert(
                 key.clone(),
                 CachedParses {
@@ -1815,14 +1820,21 @@ impl SemanticState {
             "a cached fold's evaluation or a Compile item's text moved; dropping it"
         );
         // Another open buffer's tokens may now be stale, unless every move
-        // was announced already, which owed the refresh then. A moved
-        // evaluation is announced by the moved projects generation, but the
-        // refresh is owed again here rather than reasoned about.
+        // was announced after the generation that last confirmed the fold,
+        // which owed the refresh then: the client was told of each change
+        // found here. One announced in that generation or before it may
+        // predate the confirmation, and outside a generation nothing is
+        // known, so either owes the refresh again. A moved evaluation is
+        // announced by the moved projects generation, but the refresh is
+        // owed again here rather than reasoned about.
+        let confirmed_in = cached.validated_in;
         let announced = &self.announced;
         let unannounced = !same_evaluation
-            || moved
-                .iter()
-                .any(|path| !announced.contains(&path_dedup_key(&lexically_normalize(path))));
+            || moved.iter().any(|path| {
+                !announced
+                    .get(&path_dedup_key(&lexically_normalize(path)))
+                    .is_some_and(|&at| confirmed_in.is_some_and(|confirmed| at > confirmed))
+            });
         self.project_parses.remove(key);
         self.resolved_projects.remove(key);
         self.observed_fold_refusals.remove(key);
@@ -7686,7 +7698,10 @@ mod tests {
 
         // An edit forces a re-fold; the new Arc differs.
         let mut docs = Vfs::new();
-        docs.insert(Uri::from_file_path(&file).unwrap(), "let x = 2\n".to_string());
+        docs.insert(
+            Uri::from_file_path(&file).unwrap(),
+            "let x = 2\n".to_string(),
+        );
         let third = sema
             .resolved_project_for(&proj, &mut ws, &docs)
             .expect("re-fold after an edit");
@@ -8430,7 +8445,7 @@ mod tests {
         assert!(!sema.take_wants_refresh(), "nothing owed initially");
 
         // No fold anywhere — just what the notification path records.
-        sema.owe_token_refresh([Path::new("/some/project/A.fs")]);
+        sema.owe_token_refresh([Path::new("/some/project/A.fs")], None);
         assert!(
             sema.take_wants_refresh(),
             "a fold-less source change still owes a refresh"

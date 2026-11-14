@@ -419,7 +419,8 @@ impl State {
             return;
         }
         let path = uri.to_file_path().ok();
-        self.semantic.owe_token_refresh(path.as_deref());
+        self.semantic
+            .owe_token_refresh(path.as_deref(), self.docs.generation());
     }
 
     /// Apply a batch of `workspace/didChangeWatchedFiles` changes and return
@@ -487,7 +488,8 @@ impl State {
                 ChangeClass::Source => {
                     self.wants_diagnostic_refresh = true;
                     let path = change.uri.to_file_path().ok();
-                    self.semantic.owe_token_refresh(path.as_deref());
+                    self.semantic
+                        .owe_token_refresh(path.as_deref(), self.docs.generation());
                 }
                 ChangeClass::AssemblyInput => assembly_input = true,
                 ChangeClass::Ignored => {}
@@ -501,7 +503,7 @@ impl State {
             self.semantic
                 .sync_with_evaluations(self.workspace.projects_generation());
             self.semantic
-                .owe_token_refresh(hinted.iter().map(PathBuf::as_path));
+                .owe_token_refresh(hinted.iter().map(PathBuf::as_path), self.docs.generation());
             // This is the response to the moved generation, so none is owed
             // for it after the message.
             self.evaluations_reported = self.workspace.projects_generation();
@@ -2739,7 +2741,10 @@ mod tests {
             "the fold did not see the synced buffer: {:?}",
             parses.texts[0]
         );
-        assert!(state.semantic.take_wants_refresh(), "a source sync owes a refresh");
+        assert!(
+            state.semantic.take_wants_refresh(),
+            "a source sync owes a refresh"
+        );
         state.note_source_sync(&Uri::from_file_path(&proj).unwrap());
         assert!(
             !state.semantic.take_wants_refresh(),
@@ -3062,7 +3067,9 @@ mod tests {
         let mut state = State::default();
         let evaluated_after = |state: &mut State, event: &str| {
             state.begin_generation();
-            state.apply_watched_changes(&[changed(Uri::from_file_path(tmp.path().join(event)).unwrap())]);
+            state.apply_watched_changes(&[changed(
+                Uri::from_file_path(tmp.path().join(event)).unwrap(),
+            )]);
             assert!(state.workspace.symbols_for(&file).contains("ALPHA"));
             state.end_generation().evaluations.evaluated
         };

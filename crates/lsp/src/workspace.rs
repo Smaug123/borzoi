@@ -288,7 +288,7 @@ struct CachedEvaluation {
     validated_in: Option<u64>,
 }
 
-/// The identity of one cached evaluation ([`CachedEvaluation::id`]): what a
+/// The identity of one cached evaluation (`CachedEvaluation::id`): what a
 /// value derived from an evaluation records, so that it can tell whether the
 /// evaluation it was derived from is the one the workspace serves now
 /// ([`Workspace::evaluation_id`]).
@@ -1631,7 +1631,11 @@ impl Workspace {
     ) -> (ProjectEvaluation<'_>, Option<EvaluationId>) {
         self.cached_or_evaluated(project);
         let id = self.evaluation_id(project);
-        let evaluation = match self.projects.get(project).and_then(|c| c.evaluated.as_ref()) {
+        let evaluation = match self
+            .projects
+            .get(project)
+            .and_then(|c| c.evaluated.as_ref())
+        {
             Some(evaluated) => ProjectEvaluation::Evaluated {
                 parsed: &evaluated.parsed,
                 not_an_inner_build: evaluated.not_an_inner_build,

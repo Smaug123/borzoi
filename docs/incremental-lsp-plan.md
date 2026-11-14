@@ -2813,15 +2813,25 @@ then have to carry. It is not adopted by default.
   `projects_generation` no longer drops every semantic cache
   (`sync_with_evaluations`): what it drops is the envs with an unrecorded
   reader, and nothing else.
-- **A change owes one refresh.** A text sync or a watch event records the
-  paths it announced (`SemanticState::announced`) when it owes the
-  semantic-token refresh, and a cached fold found stale only at announced
-  paths owes no second one; a fold that reads a path consumes its
-  announcement. A change no one announced (a write on disk with no event)
-  still owes one from the request that finds it. Without this, every
-  keystroke sent the client two workspace-wide refreshes: one at the
-  `didChange`, and one from the next request's validation (found by Codex;
-  `each_change_owes_one_refresh`).
+- **A change owes one refresh.** A text sync or a watch event records, for
+  each path it names, the generation in which it owed the semantic-token
+  refresh (`SemanticState::announced`). A cached fold found stale owes no
+  second refresh when every item that moved was announced after the
+  generation that last confirmed the fold: the client was told of each
+  change it finds. A change announced in that generation or before it, or
+  never (a write on disk with no event), owes one from the request that
+  finds it. Without this, every keystroke sent the client two
+  workspace-wide refreshes: one at the `didChange`, and one from the next
+  request's validation (found by Codex; `each_change_owes_one_refresh`).
+  A first version kept a set of announced paths that a fold reading them
+  consumed; Codex found both ways that lifecycle goes wrong (an
+  announcement for a file that had not changed outlived the confirmation
+  that found it unchanged and silenced a later unwatched change, and one
+  project's fold consumed the announcement a second project compiling the
+  same file still needed). Comparing generations has no lifecycle to get
+  wrong: an announcement speaks only for what changed after the fold was
+  last confirmed, for every fold at once
+  (`an_announcement_speaks_only_for_changes_after_the_last_confirmation`).
 - **A fold refusal records the evaluation it was refused under**, and
   `fold_outcome` reports `Unknown` under any other
   (`a_fold_refusal_does_not_outlive_the_project_that_caused_it`). A text
@@ -3070,6 +3080,7 @@ Planted, each caught, then removed (each run against `cargo test -p borzoi
 | the doc-file cache caching under a racy stamp | `nothing_is_cached_under_a_racy_stamp` (added for it) |
 | a validation owing a refresh for an announced change (Codex) | `each_change_owes_one_refresh` (added for it: `(1, 1, 0, 1)` where `(1, 0, 0, 1)` is right) |
 | every change treated as announced | `each_change_owes_one_refresh` (the unwatched write owes none), the pinned scripts |
+| announcements as a set a fold consumes (Codex) | `an_announcement_speaks_only_for_changes_after_the_last_confirmation` (added for it) |
 
 #313's mutations, re-planted where their code still exists:
 

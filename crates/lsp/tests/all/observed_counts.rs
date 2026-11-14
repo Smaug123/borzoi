@@ -739,15 +739,7 @@ fn after_a_save(n: usize, edited: usize, other: usize, pull: bool, saved: Saved)
     };
     requests(&mut client);
 
-    let rewrite = |path: &Path, bytes: &[u8]| {
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(path)
-            .unwrap();
-        file.write_all(bytes).unwrap();
-    };
+    let rewrite = |path: &Path, bytes: &[u8]| std::fs::write(path, bytes).unwrap();
     let fsproj = p.join("P.fsproj");
     let closed = (0..n)
         .find(|i| ![edited, other].contains(i))
@@ -759,7 +751,7 @@ fn after_a_save(n: usize, edited: usize, other: usize, pull: bool, saved: Saved)
             (q.join("New.fs"), 1)
         }
         Saved::OwnProjectUnchanged => {
-            rewrite(&fsproj, &std::fs::read(&fsproj).unwrap());
+            rewrite(&fsproj, &crate::common::host_fs::read(&fsproj).unwrap());
             (fsproj, 2)
         }
         Saved::SourceUnchanged => {
@@ -767,7 +759,9 @@ fn after_a_save(n: usize, edited: usize, other: usize, pull: bool, saved: Saved)
             (items[closed].clone(), 2)
         }
         Saved::OwnProjectChanged => {
-            let text = std::fs::read_to_string(&fsproj).unwrap().replace(
+            let text = crate::common::host_fs::read_to_string(&fsproj)
+                .unwrap()
+                .replace(
                 "<Project>\n",
                 "<Project>\n  <PropertyGroup><DefineConstants>SAVED</DefineConstants></PropertyGroup>\n",
             );
@@ -890,7 +884,12 @@ fn refreshes(n: usize, edited: usize, other: usize, pull: bool) -> (usize, usize
     let after_write = barrier(&mut client);
     let after_write_tokens = tokens(&mut client, edited) + barrier(&mut client);
     client.shut_down();
-    (after_keystroke, after_its_tokens, after_write, after_write_tokens)
+    (
+        after_keystroke,
+        after_its_tokens,
+        after_write,
+        after_write_tokens,
+    )
 }
 
 proptest! {
@@ -905,4 +904,93 @@ proptest! {
         prop_assume!(n >= 3);
         prop_assert_eq!(refreshes(n, edited, other, pull), (1, 0, 0, 1));
     }
+}
+
+/// The refreshes two announcement lifecycles owe (found by Codex): a watch
+/// event for a closed item that changed nothing, then the same item
+/// rewritten with no event; and a keystroke in a source two cached projects
+/// compile, then a request on each project.
+#[test]
+fn an_announcement_speaks_only_for_changes_after_the_last_confirmation() {
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("P");
+    let q = tmp.path().join("Q");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::create_dir_all(&q).unwrap();
+    let (items, mut texts) = project(&p, 4);
+    std::fs::write(
+        q.join("Q.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"../P/F0.fs\" />\n    <Compile Include=\"Q.fs\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    let q_text = "module Q\n\nlet q = F0.v0 + 1\n";
+    std::fs::write(q.join("Q.fs"), q_text).unwrap();
+    let mut client = Client::start(tmp.path(), true, settled());
+    let open = |client: &Client, path: &Path, text: &str| {
+        client.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": Uri::from_file_path(path).unwrap().as_str(),
+                "languageId": "fsharp", "version": 0, "text": text,
+            }}),
+        );
+    };
+    let tokens = |client: &mut Client, path: &Path| {
+        let (result, answered) = client.request(
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": Uri::from_file_path(path).unwrap().as_str() } }),
+        );
+        assert!(
+            result["data"].as_array().is_some_and(|d| !d.is_empty()),
+            "semantic tokens for {}: {result}",
+            path.display()
+        );
+        answered
+    };
+    let barrier = |client: &mut Client| client.request("borzoi/test/barrier", Value::Null).1;
+    open(&client, &items[0], &texts[0]);
+    open(&client, &items[1], &texts[1]);
+    open(&client, &q.join("Q.fs"), q_text);
+    tokens(&mut client, &items[1]);
+    tokens(&mut client, &q.join("Q.fs"));
+    client.settle();
+
+    // A watch event for the closed `F3` that changed nothing owes its
+    // refresh; the request after it finds nothing moved.
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": Uri::from_file_path(&items[3]).unwrap().as_str(), "type": 2 }] }),
+    );
+    assert_eq!(barrier(&mut client), 1, "the event owes a refresh");
+    assert_eq!(tokens(&mut client, &items[1]) + barrier(&mut client), 0);
+    // `F3` rewritten with no event: the old announcement does not speak for it.
+    std::fs::write(&items[3], format!("{}// written\n", texts[3])).unwrap();
+    assert_eq!(
+        tokens(&mut client, &items[1]) + barrier(&mut client),
+        1,
+        "an unannounced change after an announcement owes a refresh"
+    );
+
+    // A keystroke in `F0`, which both projects compile: one refresh, and
+    // neither project's request owes another.
+    texts[0].push_str("// typed");
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": Uri::from_file_path(&items[0]).unwrap().as_str(), "version": 1 },
+            "contentChanges": [{ "text": texts[0] }],
+        }),
+    );
+    assert_eq!(barrier(&mut client), 1, "the keystroke owes a refresh");
+    assert_eq!(
+        tokens(&mut client, &items[1]) + barrier(&mut client),
+        0,
+        "P"
+    );
+    assert_eq!(
+        tokens(&mut client, &q.join("Q.fs")) + barrier(&mut client),
+        0,
+        "Q"
+    );
+    client.shut_down();
 }
