@@ -32,20 +32,54 @@ const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// respell in an item; a literal tab survives in MSBuild where XML attribute
 /// normalisation would turn it into a space. `@` and `(I)` assemble an item
 /// reference as `$(A)$(B)`, which MSBuild expands as such.
-const VALUES: [&str; 12] = [
-    "x", "y", "$(A)z", "$(B)", "", "$(Gated)", " x ", "a\\b", "x\ty", "@", "(I)", "$(A)$(B)",
+/// `@(I)` and `@(J)` read item lists (an `Include` copies them), and a
+/// transform is an item expression the executor declines.
+const VALUES: [&str; 18] = [
+    "x",
+    "y",
+    "$(A)z",
+    "$(B)",
+    "",
+    "$(Gated)",
+    " x ",
+    "a\\b",
+    "x\ty",
+    "@",
+    "(I)",
+    "$(A)$(B)",
+    "@(I)",
+    "@(J)",
+    "@(I->'%(M)')",
+    // Literal text in MSBuild, which does not expand `@(0)`; and a read of a
+    // property no project can write.
+    "@(0)",
+    "$(-ItemList-J)",
+    // A list run into text: with `J` holding a lone `%`, MSBuild reads `A`.
+    "@(J)41",
 ];
-const CONDITIONS: [&str; 6] = [
+const CONDITIONS: [&str; 8] = [
     "'$(A)' == 'x'",
     "'$(A)' != 'x'",
     "'$(B)' == ''",
     "'$(C)' == 'y'",
     "'$(Gated)' == 'g'",
+    "'@(I)' == ''",
+    "@(J) != ''",
     "Exists('nowhere')",
 ];
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
 /// `Gated` is untrusted.
 const UNDECIDABLE: &str = "$([System.String]::IsNullOrWhiteSpace(''))";
+
+/// A value: mostly one of the first seven, which the executor runs, and now
+/// and then any, many of which it declines.
+fn value(rng: &mut SplitMix64) -> &'static str {
+    if rng.below(5) == 0 {
+        rng.pick(&VALUES)
+    } else {
+        rng.pick(&VALUES[..7])
+    }
+}
 
 /// The structural `Label` attribute, now and then: it is not metadata.
 fn label(rng: &mut SplitMix64) -> &'static str {
@@ -110,6 +144,19 @@ fn project(rng: &mut SplitMix64) -> String {
     out.push_str("    <Deps>T2;T3</Deps>\n    <Hook>T1</Hook>\n  </PropertyGroup>\n");
     if rng.below(2) == 0 {
         out.push_str("  <ItemGroup>\n    <I Include=\"e\" M=\"m\" />\n  </ItemGroup>\n");
+    }
+    // Another list, with metadata of its own, for a target to copy.
+    if rng.below(2) == 0 {
+        out.push_str("  <ItemGroup>\n    <J Include=\"j1;j2\" N=\"n\" />\n");
+        // A padded identity, escaped so MSBuild keeps the padding.
+        if rng.below(4) == 0 {
+            out.push_str("    <J Include=\"%20j3%20\" />\n");
+        }
+        // A lone `%`, which beside other text can form a new escape.
+        if rng.below(6) == 0 {
+            out.push_str("    <J Include=\"%\" />\n");
+        }
+        out.push_str("  </ItemGroup>\n");
     }
     // A `UsingTask` may rebind a built-in task.
     if rng.below(15) == 0 {
@@ -199,15 +246,15 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
                             "      <{property}{}{}>{}</{property}>\n",
                             condition(rng),
                             label(rng),
-                            rng.pick(&VALUES)
+                            value(rng)
                         ));
                     }
                     out.push_str("    </PropertyGroup>\n");
                 }
                 7 | 8 => out.push_str(&format!(
                     "    <ItemGroup>\n      <I Include=\"{};k\" M=\"{}\"{}{} />\n    </ItemGroup>\n",
-                    rng.pick(&VALUES),
-                    rng.pick(&VALUES),
+                    value(rng),
+                    value(rng),
                     condition(rng),
                     label(rng)
                 )),
@@ -483,4 +530,79 @@ fn returns_that_fail_the_build_decline() {
         check(&mut oracle, xml, &mut tally);
     }
     assert_eq!(tally.failed, CASES.len(), "every case fails in MSBuild");
+}
+
+/// Item references whose effect the generator rarely shows: a copy takes its
+/// type's item-definition defaults beneath the metadata it carries, and a
+/// condition reads a list as MSBuild does. Each must run, as MSBuild runs it.
+#[test]
+fn item_references_keep_definitions_and_escapes() {
+    const CASES: [&str; 2] = [
+        r#"<Project>
+             <ItemDefinitionGroup><I><M>d</M></I></ItemDefinitionGroup>
+             <ItemGroup><J Include="j1;j2" N="n" /></ItemGroup>
+             <Target Name="T0"><ItemGroup><I Include="@(J)" /></ItemGroup></Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="x%3By;z" /></ItemGroup>
+             <Target Name="T0" Condition="'@(J)' != ''">
+               <PropertyGroup><C>ran</C></PropertyGroup>
+             </Target>
+           </Project>"#,
+    ];
+    let mut oracle = Oracle::spawn();
+    let mut tally = Tally::default();
+    for xml in CASES {
+        check(&mut oracle, xml, &mut tally);
+    }
+    assert_eq!(tally.committed, CASES.len(), "every case runs");
+}
+
+/// Identities whose escaped spelling decoding loses, read through a
+/// property: MSBuild keeps padding escaped (`%20j%20`), and a lone `%` run into
+/// `41` forms the escape for `A`. The executor's tables hold identities
+/// decoded. Each run may decline; if it runs, it must be MSBuild's.
+#[test]
+fn identities_decoding_loses_the_spelling_of() {
+    const CASES: [&str; 6] = [
+        r#"<Project>
+             <ItemGroup><J Include="%34%31" /></ItemGroup>
+             <Target Name="T0"><PropertyGroup><B>@(J)</B><C>%$(B)</C></PropertyGroup></Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="%34%31" /></ItemGroup>
+             <Target Name="T0"><PropertyGroup><C>%@(J)</C></PropertyGroup></Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="%34%31" /></ItemGroup>
+             <Target Name="T0" Condition="'%@(J)' == 'A'">
+               <PropertyGroup><C>ran</C></PropertyGroup>
+             </Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="x%3By;z" /></ItemGroup>
+             <Target Name="T0">
+               <PropertyGroup><C>@(J)</C></PropertyGroup>
+               <ItemGroup><I Include="$(C)" /></ItemGroup>
+             </Target>
+           </Project>"#,
+        r#"<Project>
+         <ItemGroup><J Include="%20j%20" /></ItemGroup>
+         <Target Name="T0">
+           <PropertyGroup><C>@(J)</C></PropertyGroup>
+           <ItemGroup><I Include="$(C)" /></ItemGroup>
+         </Target>
+       </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="%" /></ItemGroup>
+             <Target Name="T0">
+               <PropertyGroup><C>@(J)41</C></PropertyGroup>
+               <ItemGroup><I Include="$(C)" /></ItemGroup>
+             </Target>
+           </Project>"#,
+    ];
+    let mut oracle = Oracle::spawn();
+    for xml in CASES {
+        check(&mut oracle, xml, &mut Tally::default());
+    }
 }
