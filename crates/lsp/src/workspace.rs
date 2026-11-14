@@ -4361,6 +4361,45 @@ mod tests {
         assert_eq!(ws.projects_generation(), projects_generation);
     }
 
+    /// A watch event names a path whose directory's stamp may not have moved
+    /// (D1's "not covered"): the next generation asks again what the
+    /// ownership walk and the evaluation read there, whatever the stamps say.
+    /// A hint naming an entry of `sub/` lists `sub/` again and leaves the
+    /// project's directory to its stamp; a hint naming the project file
+    /// reads it again.
+    #[test]
+    fn a_hint_asks_again_what_was_read_at_the_paths_it_names() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("Root.fsproj");
+        let file = tmp.path().join("sub").join("Foo.fs");
+        write_file(&root, &fsproj_with_compile("sub/Foo.fs"));
+        write_file(&file, "let x = 1");
+
+        let mut ws = Workspace::default();
+        let old = Nanos(i128::MAX / 2);
+        let generation = |ws: &mut Workspace| {
+            ws.begin_generation(old);
+            assert_eq!(ws.owning_project(&file), Some(root.clone()));
+            ws.end_generation()
+        };
+        generation(&mut ws);
+        generation(&mut ws);
+        let settled = generation(&mut ws);
+        assert_eq!(settled.ownership.listings, 0, "{settled:?}");
+        assert_eq!(settled.evaluations.validation.opens, 0, "{settled:?}");
+
+        ws.hint([tmp.path().join("sub").join("New.fs").as_path()]);
+        let hinted = generation(&mut ws);
+        assert_eq!(hinted.ownership.listings, 1, "{hinted:?}");
+        assert_eq!(hinted.evaluations.validation.opens, 0, "{hinted:?}");
+
+        ws.hint([root.as_path()]);
+        let hinted = generation(&mut ws);
+        assert_eq!(hinted.ownership.listings, 1, "{hinted:?}");
+        assert_eq!(hinted.evaluations.validation.opens, 1, "{hinted:?}");
+        assert_eq!(generation(&mut ws).ownership.listings, 0);
+    }
+
     /// The owners of every file in a directory share its listing: a
     /// generation asking for all of them lists each directory once, and
     /// the workspace keeps one listing per directory, not one per file.

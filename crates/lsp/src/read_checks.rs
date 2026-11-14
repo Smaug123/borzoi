@@ -287,29 +287,48 @@ impl<D: Probe> ReadChecks<D> {
     /// That is what covers a file system whose stamps do not move (D1's "not
     /// covered") for the paths an event names: a file there is read again
     /// and compared, and what a path names, whether it is there, its
-    /// canonical spelling and its directory's listing are asked again. It
-    /// matches the paths as [`crate::paths::path_dedup_key`] spells them, so
-    /// a witness naming a path by another spelling (a symlink) is not
-    /// reached; on a file system whose stamps move, the stamps reach it.
+    /// canonical spelling and its directory's listing are asked again. A
+    /// witness names a directory by the spelling its read used, which may
+    /// lead through a symlink, so a named directory is matched by spelling
+    /// ([`crate::paths::path_dedup_key`]) and by identity: the device and
+    /// inode a `stat` of it finds now, against those its last stamp held. A
+    /// directory that can no longer be `stat`ed under a witness's spelling
+    /// fails that witness anyway.
     pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
         let paths: Vec<&Path> = paths.into_iter().collect();
         self.files.hint(paths.iter().copied());
-        let named: std::collections::HashSet<String> = paths
+        let named: Vec<PathBuf> = paths
             .iter()
             .flat_map(|path| {
                 let path = lexically_normalize(path);
                 let parent = path.parent().map(Path::to_path_buf);
                 std::iter::once(path).chain(parent)
             })
-            .map(|path| crate::paths::path_dedup_key(&path))
             .collect();
         if named.is_empty() {
             return;
         }
+        let spellings: std::collections::HashSet<String> = named
+            .iter()
+            .map(|path| crate::paths::path_dedup_key(path))
+            .collect();
+        let identities: std::collections::HashSet<(u64, u64)> = named
+            .iter()
+            .filter_map(|path| {
+                let mut counts = self.counts.get();
+                counts.stats += 1;
+                self.counts.set(counts);
+                self.files.disk().stat(path).ok()
+            })
+            .map(|stamp| (stamp.dev, stamp.ino))
+            .collect();
         let hints = self.hints.get() + 1;
         self.hints.set(hints);
         for dir in self.dirs.borrow_mut().iter_mut() {
-            if named.contains(&crate::paths::path_dedup_key(&dir.path)) {
+            let by_identity = dir
+                .stamp
+                .is_some_and(|stamp| identities.contains(&(stamp.dev, stamp.ino)));
+            if by_identity || spellings.contains(&crate::paths::path_dedup_key(&dir.path)) {
                 dir.hinted = hints;
             }
         }

@@ -7,9 +7,9 @@
 //! Compile-ordered `Vec<ImplFile>` for a project, preferring the in-memory
 //! buffer of each member file over its on-disk text. Stage 3 adds an
 //! `AssemblyEnv` cache; Stage 4 the orchestrator that runs
-//! [`borzoi_sema::resolve_project`] and caches the result. Each stage
-//! invalidates strictly by project path; sema's prefix-monotone fold makes
-//! sub-project incrementality a later optimisation, not a v1 requirement.
+//! [`borzoi_sema::resolve_project`] and caches the result. Every cache is
+//! confirmed against its inputs when read (`docs/incremental-lsp-plan.md`,
+//! Stage 7), so nothing here is told when an input changes.
 
 use crate::observed::Unobserved;
 use crate::parses::{ParseMemo, SourceParse};
@@ -247,9 +247,8 @@ struct CachedParse {
 /// against. The env Arc is the reuse *precondition witness*: reusing a
 /// file's resolution is sound only against the same env it was resolved with, so
 /// [`SemanticState::resolved_project_for`] reuses this only when the current env
-/// is [`Arc::ptr_eq`] to [`Self::env`]. A rebuilt env — structural
-/// invalidation, a referenced-DLL change, or a transient-sidecar recovery — is a
-/// fresh Arc, so the pointer check fails and the fold falls back to cold. This
+/// is [`Arc::ptr_eq`] to [`Self::env`]. A rebuilt env — its inputs moved, an
+/// event dropped it, or a transient-sidecar recovery — is a fresh Arc, so the pointer check fails and the fold falls back to cold. This
 /// makes "same env" machine-checked rather than a reasoned invariant.
 /// One project's inference fold ([`SemanticState::inferred_prefix_for`]),
 /// with the env it was inferred against. It answers for a later request only
@@ -423,7 +422,7 @@ pub struct SemanticState {
     /// should reuse but doesn't — is a *performance* regression, not a
     /// correctness one, so no result comparison would catch it; the tests read
     /// this to assert the incremental path actually fires after an edit. Also a
-    /// natural telemetry hook. Monotone; never reset by invalidation.
+    /// natural telemetry hook. Monotone; never reset.
     incremental_folds: usize,
     /// How many per-file [`borzoi_sema::ResolvedFile`]s the *most recent* fold
     /// reused verbatim (0 for a cold fold — it reuses nothing). Where
@@ -452,8 +451,8 @@ pub struct SemanticState {
     /// [`Self::take_wants_refresh`] in the dispatch loop after each request *and*
     /// notification (it owns the connection and checks `refreshSupport`). A plain
     /// bool: the refresh is workspace-wide and idempotent, so coalescing several
-    /// invalidations into one refresh is correct — and it can't loop, since the
-    /// refresh's own re-requests are ordinary requests, not invalidations.
+    /// changes into one refresh is correct — and it can't loop, since the
+    /// refresh's own re-requests are ordinary requests, not changes.
     wants_refresh: bool,
     /// The [`Workspace::projects_generation`] last seen
     /// ([`Self::sync_with_evaluations`]), `None` before the first. When it
@@ -1438,8 +1437,8 @@ impl SemanticState {
             // Reuse the previous fold only when it ran against the *same* env
             // `Arc` — the incremental fold keeps files' resolutions verbatim, so
             // they must have been resolved against this exact env (a rebuilt env,
-            // from invalidation or a transient-sidecar recovery, is a fresh Arc,
-            // so the pointer check fails and we fold cold). See [`PrevFold`].
+            // whose inputs moved or a transient-sidecar recovery, is a fresh
+            // Arc, so the pointer check fails and we fold cold). See [`PrevFold`].
             let reusable_prev = self
                 .prev_resolved
                 .get(&key)
@@ -1824,8 +1823,8 @@ impl SemanticState {
             Ok(_) => {
                 // A refusal recovering changes every open buffer's tokens
                 // from single-file to folded. An edit or a watch event owes
-                // that refresh when it invalidates; an unwatched disk write
-                // the fold itself noticed has nothing else to owe it.
+                // that refresh itself; an unwatched disk write the fold
+                // itself noticed has nothing else to owe it.
                 if self.observed_fold_refusals.remove(&key).is_some() {
                     self.wants_refresh = true;
                 }
@@ -8012,9 +8011,8 @@ mod tests {
         );
     }
 
-    /// A dropped env (here, by a watch event naming a file its resolution
-    /// read: [`SemanticState::hint_assembly_paths`]) drops the incremental
-    /// base, so the next fold is cold — the env it would reuse against is
+    /// A dropped env (here, every env: [`SemanticState::drop_every_env`])
+    /// drops the incremental base, so the next fold is cold — the env it would reuse against is
     /// gone. Guards the `Arc::ptr_eq` env precondition at the cache-lifecycle
     /// level.
     #[test]
@@ -8035,7 +8033,7 @@ mod tests {
             "the initial fold stores an incremental base"
         );
 
-        sema.hint_assembly_paths(std::slice::from_ref(&proj));
+        sema.drop_every_env();
         assert_eq!(
             sema.prev_resolved.len(),
             0,
