@@ -679,15 +679,48 @@ enum Saved {
     /// `P`'s own `.fsproj`, given a define: the control, which must
     /// evaluate it again.
     OwnProjectChanged,
+    /// `P`'s own `.fsproj`, rewritten so that its evaluation is run again
+    /// and comes back with every value its parses and its env read as it
+    /// was (`docs/incremental-lsp-plan.md`, "Follow-up: cutoffs on the
+    /// evaluation's consumed outputs"), with its watch event or without
+    /// one.
+    OwnProjectInert { edit: Inert, watched: bool },
+}
+
+/// An edit to a project file that leaves every output of its evaluation the
+/// parses and the env read as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Inert {
+    /// An XML comment added.
+    Comment,
+    /// Blank lines and indentation added between elements.
+    Whitespace,
+    /// A property nothing reads (`<Description>`).
+    UnreadProperty,
+}
+
+impl Inert {
+    fn apply(self, project: &str) -> String {
+        match self {
+            Inert::Comment => project.replace("<Project>\n", "<Project>\n  <!-- saved -->\n"),
+            Inert::Whitespace => project.replace("  <ItemGroup>", "\n\n      <ItemGroup>"),
+            Inert::UnreadProperty => project.replace(
+                "<Project>\n",
+                "<Project>\n  <PropertyGroup><Description>saved</Description></PropertyGroup>\n",
+            ),
+        }
+    }
 }
 
 /// What a generation's work beyond confirming came to: MSBuild evaluations
-/// run, sources parsed, assembly envs built and Compile-order folds computed.
+/// run, sources parsed, assembly envs built, cached envs whose references
+/// were resolved again and Compile-order folds computed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Recomputed {
     evaluated: u64,
     parsed: u64,
     envs_built: u64,
+    envs_resolved_again: u64,
     folds: u64,
 }
 
@@ -768,21 +801,32 @@ fn after_a_save(n: usize, edited: usize, other: usize, pull: bool, saved: Saved)
             rewrite(&fsproj, text.as_bytes());
             (fsproj, 2)
         }
+        Saved::OwnProjectInert { edit, .. } => {
+            let before = crate::common::host_fs::read_to_string(&fsproj).unwrap();
+            let after = edit.apply(&before);
+            assert_ne!(before, after, "{edit:?} changed the project file");
+            rewrite(&fsproj, after.as_bytes());
+            (fsproj, 2)
+        }
     };
+    let watched = !matches!(saved, Saved::OwnProjectInert { watched: false, .. });
     let mark = client.generations().len();
-    client.notify(
-        "workspace/didChangeWatchedFiles",
-        json!({ "changes": [{
-            "uri": Uri::from_file_path(&path).unwrap().as_str(),
-            "type": typ,
-        }]}),
-    );
+    if watched {
+        client.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({ "changes": [{
+                "uri": Uri::from_file_path(&path).unwrap().as_str(),
+                "type": typ,
+            }]}),
+        );
+    }
     requests(&mut client);
     let generations = &client.generations()[mark..];
     let recomputed = Recomputed {
         evaluated: generations.iter().map(|g| g.evaluations.evaluated).sum(),
         parsed: generations.iter().map(|g| g.parses.parsed).sum(),
         envs_built: generations.iter().map(|g| g.envs.built).sum(),
+        envs_resolved_again: generations.iter().map(|g| g.envs.resolved_again).sum(),
         folds: generations.iter().map(|g| g.folds).sum(),
     };
     client.shut_down();
@@ -832,6 +876,37 @@ proptest! {
         let recomputed = after_a_save(n, edited, other, pull, Saved::OwnProjectChanged);
         prop_assert_eq!(recomputed.evaluated, 1, "{:?}", recomputed);
         prop_assert!(recomputed.folds >= 1, "{:?}", recomputed);
+    }
+
+    /// A define re-parses every item and folds again, and builds no env:
+    /// the env reads the project's references, its TFM and its restore
+    /// output, and a define is none of them. Its references are resolved
+    /// again once, by the first request that reads the env, to find that.
+    #[test]
+    fn a_define_change_keeps_the_env(
+        (n, edited, other, pull) in cases(),
+    ) {
+        let recomputed = after_a_save(n, edited, other, pull, Saved::OwnProjectChanged);
+        prop_assert!(recomputed.parsed >= n as u64 - 2, "{:?}", recomputed);
+        prop_assert_eq!(recomputed.envs_built, 0, "{:?}", recomputed);
+        prop_assert_eq!(recomputed.envs_resolved_again, 1, "{:?}", recomputed);
+    }
+
+    /// An edit to the project file that leaves what its parses and its env
+    /// read as it was costs one evaluation and one resolution of the env's
+    /// references, and nothing else: no parse, no env, no fold. The
+    /// evaluation is a new one, so this is a cutoff on the values consumed,
+    /// not on the evaluation's identity.
+    #[test]
+    fn an_edit_no_consumer_reads_costs_one_evaluation(
+        (n, edited, other, pull) in cases(),
+        edit in prop_oneof![Just(Inert::Comment), Just(Inert::Whitespace), Just(Inert::UnreadProperty)],
+        watched in any::<bool>(),
+    ) {
+        prop_assert_eq!(
+            after_a_save(n, edited, other, pull, Saved::OwnProjectInert { edit, watched }),
+            Recomputed { evaluated: 1, envs_resolved_again: 1, ..Recomputed::default() }
+        );
     }
 }
 

@@ -112,6 +112,12 @@
 //!   it, as an editor's save of an unmodified buffer does: it writes the
 //!   file's bytes back in place (no truncation, so a concurrent reader of
 //!   the shared corpus never sees it short) and reports the write.
+//!   `own-comment` rewrites the measured project's `.fsproj` with an XML
+//!   comment added (every other round, taken away again) and reports the
+//!   write: an edit that runs the evaluation again and leaves every value
+//!   the parses and the env read from it as it was. The run puts the file
+//!   back as it found it; it still writes the project file, so point it at
+//!   a copy of the project, not the shared corpus cache.
 //!   `blocked-edit` is Stage 9's gate (`docs/incremental-lsp-plan.md`): it
 //!   rewrites the measured project's `.fsproj` with one more
 //!   `DefineConstants` symbol (no watch event), so the next fold re-evaluates
@@ -135,8 +141,11 @@
 //!   answered (with a result, `ContentModified`, `RequestCancelled`).
 //!
 //! The **a.built** column counts the envs built (each a cold resolution of a
-//! project's references and a projection of every DLL they name), and
-//! **av.open**, **av.stat**, **av.list** and **av.canon** what confirming the
+//! project's references and a projection of every DLL they name),
+//! **a.again** the cached envs whose references were resolved again because
+//! what their last resolution read had moved (kept when they resolve to the
+//! inputs the env was built from; the resolution's reads are in the **a.**
+//! columns too), and **av.open**, **av.stat**, **av.list** and **av.canon** what confirming the
 //! cached envs cost (`borzoi::workspace::Workspace::confirm_env`), from each
 //! [`GENERATION_EVENT`].
 //!
@@ -152,7 +161,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use borzoi::observed::{ENV_RESOLUTION_EVENT, EVALUATION_EVENT, GENERATION_EVENT};
-use borzoi::semantic::ProjectId;
+use borzoi::semantic::{ENV_RESOLVED_AGAIN_SPAN, ProjectId};
 use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
 use borzoi::uri::UriExt as _;
 use borzoi::workspace::Workspace;
@@ -285,6 +294,10 @@ const ENV_BUILD_SPAN: &str = "build_env_from_dll_paths";
 /// Envs built, and of those, envs built from no DLLs.
 static ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 static EMPTY_ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
+
+/// Cached envs whose references were resolved again to confirm them
+/// ([`borzoi::semantic::ENV_RESOLVED_AGAIN_SPAN`]), kept or not.
+static ENVS_RESOLVED_AGAIN: AtomicU64 = AtomicU64::new(0);
 
 /// Files opened and paths `stat`ed by every generation that has ended, from
 /// each [`GENERATION_EVENT`]'s `opens` and `stats`.
@@ -450,7 +463,11 @@ impl tracing::Subscriber for FoldObserver {
         }
     }
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        (metadata.is_span() && matches!(metadata.name(), PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN))
+        (metadata.is_span()
+            && matches!(
+                metadata.name(),
+                PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN | ENV_RESOLVED_AGAIN_SPAN
+            ))
             || (metadata.is_event()
                 && matches!(
                     metadata.name(),
@@ -458,7 +475,9 @@ impl tracing::Subscriber for FoldObserver {
                 ))
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        if counted() && span.metadata().name() == ENV_BUILD_SPAN {
+        if counted() && span.metadata().name() == ENV_RESOLVED_AGAIN_SPAN {
+            ENVS_RESOLVED_AGAIN.fetch_add(1, Relaxed);
+        } else if counted() && span.metadata().name() == ENV_BUILD_SPAN {
             let mut count = DllCount(None);
             span.record(&mut count);
             ENV_BUILDS.fetch_add(1, Relaxed);
@@ -610,6 +629,8 @@ struct Cost {
     validation: [u64; 13],
     /// Envs built ([`ENV_BUILD_SPAN`]).
     env_builds: u64,
+    /// Cached envs resolved again ([`ENVS_RESOLVED_AGAIN`]).
+    envs_resolved_again: u64,
 }
 
 impl Cost {
@@ -631,6 +652,7 @@ impl Cost {
             env: std::array::from_fn(|i| self.env[i] + other.env[i]),
             validation: std::array::from_fn(|i| self.validation[i] + other.validation[i]),
             env_builds: self.env_builds + other.env_builds,
+            envs_resolved_again: self.envs_resolved_again + other.envs_resolved_again,
         }
     }
 }
@@ -647,6 +669,7 @@ struct Reading {
     env: [u64; 6],
     validation: [u64; 13],
     env_builds: u64,
+    envs_resolved_again: u64,
 }
 
 impl Reading {
@@ -665,6 +688,7 @@ impl Reading {
             env: std::array::from_fn(|i| ENV_RESOLUTION[i].load(Relaxed)),
             validation: std::array::from_fn(|i| VALIDATION[i].load(Relaxed)),
             env_builds: ENV_BUILDS.load(Relaxed),
+            envs_resolved_again: ENVS_RESOLVED_AGAIN.load(Relaxed),
         }
     }
 
@@ -688,6 +712,7 @@ impl Reading {
             env: std::array::from_fn(|i| later.env[i] - self.env[i]),
             validation: std::array::from_fn(|i| later.validation[i] - self.validation[i]),
             env_builds: later.env_builds - self.env_builds,
+            envs_resolved_again: later.envs_resolved_again - self.envs_resolved_again,
         }
     }
 }
@@ -1072,6 +1097,9 @@ enum Script {
     UnrelatedSave,
     /// Write the measured project's `.fsproj` back unchanged, and report it.
     OwnSave,
+    /// Add an XML comment to the measured project's `.fsproj`, or take it
+    /// away again, and report it.
+    OwnComment,
     /// Stage 9's gate: an edit queued behind a fold that must re-evaluate.
     BlockedEdit,
 }
@@ -1089,7 +1117,7 @@ fn unrelated_changes(script: Script, unrelated: &Path, project: &Path) -> Vec<Pa
     match script {
         Script::Keystroke | Script::BlockedEdit => Vec::new(),
         Script::UnrelatedSave => vec![unrelated.to_path_buf()],
-        Script::OwnSave => vec![project.to_path_buf()],
+        Script::OwnSave | Script::OwnComment => vec![project.to_path_buf()],
         Script::UnrelatedBuild => {
             let tfm = Workspace::new()
                 .target_framework_for_project(unrelated)
@@ -1263,14 +1291,19 @@ fn columns(cost: &Cost) -> String {
     ] = cost.validation;
     let [a_opens, a_stats, a_listings, a_canon, a_reads, a_unrecorded] = cost.env;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7} {:>7} {av_opens:>7} {av_stats:>7} {av_listings:>7} {av_canon:>7} {folded:>7}",
-        cost.allocations, cost.allocated_bytes, cost.opens, cost.stats, cost.env_builds,
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7} {:>7} {:>7} {av_opens:>7} {av_stats:>7} {av_listings:>7} {av_canon:>7} {folded:>7}",
+        cost.allocations,
+        cost.allocated_bytes,
+        cost.opens,
+        cost.stats,
+        cost.env_builds,
+        cost.envs_resolved_again,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "message",
         "instructions",
         "allocs",
@@ -1297,6 +1330,7 @@ fn header() -> String {
         "a.reads",
         "a.unrec",
         "a.built",
+        "a.again",
         "av.open",
         "av.stat",
         "av.list",
@@ -1321,6 +1355,7 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             env: std::array::from_fn(|i| f(a.env[i], b.env[i])),
             validation: std::array::from_fn(|i| f(a.validation[i], b.validation[i])),
             env_builds: f(a.env_builds, b.env_builds),
+            envs_resolved_again: f(a.envs_resolved_again, b.envs_resolved_again),
         })
     };
     (pick(u64::min), pick(u64::max))
@@ -1465,9 +1500,10 @@ fn main() {
         Ok("unrelated-build") => Script::UnrelatedBuild,
         Ok("unrelated-save") => Script::UnrelatedSave,
         Ok("own-save") => Script::OwnSave,
+        Ok("own-comment") => Script::OwnComment,
         Ok("blocked-edit") => Script::BlockedEdit,
         Ok(other) => panic!(
-            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build`, `unrelated-save`, `own-save` or `blocked-edit`, not {other:?}"
+            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build`, `unrelated-save`, `own-save`, `own-comment` or `blocked-edit`, not {other:?}"
         ),
     };
     let burst = env_usize("EDIT_COUNTS_BURST");
@@ -1548,9 +1584,10 @@ fn main() {
     let unrelated = std::path::absolute(&unrelated).expect("an absolute project path");
     let changes = unrelated_changes(script, &unrelated, &project);
     if !matches!(script, Script::Keystroke | Script::BlockedEdit) {
-        // `own-save` touches only the measured project.
+        // `own-save` and `own-comment` touch only the measured project.
         assert!(
-            script == Script::OwnSave || client_fs::is_file(&unrelated),
+            matches!(script, Script::OwnSave | Script::OwnComment)
+                || client_fs::is_file(&unrelated),
             "{} does not exist (set EDIT_COUNTS_UNRELATED)",
             unrelated.display()
         );
@@ -1640,6 +1677,16 @@ fn main() {
     let mut census = Census::default();
     let mut rows: BTreeMap<usize, (&str, Vec<Cost>)> = BTreeMap::new();
     let mut totals = Vec::new();
+    // `own-comment` alone writes the project file: the comment goes before
+    // its closing tag, however that is spelt (`</Project>`, `</Project >`).
+    let original = client_fs::read_bytes(&project).expect("read the project file");
+    let commented = (script == Script::OwnComment).then(|| {
+        let text = std::str::from_utf8(&original).expect("a UTF-8 project file");
+        let end = text
+            .rfind("</Project")
+            .expect("the project file closes its <Project>");
+        format!("{}  <!-- edit_counts -->\n{}", &text[..end], &text[end..])
+    });
     e.text.push_str("\n// edit_counts ");
     for k in 0..keystrokes {
         barriers.push(client.measure(&Step::Barrier).0);
@@ -1706,9 +1753,20 @@ fn main() {
                 next(&mut client, "didChange E", did_change(&e, k as i32 + 1));
             }
             Script::BlockedEdit => unreachable!("blocked-edit returned above"),
-            Script::UnrelatedBuild | Script::UnrelatedSave | Script::OwnSave => {
+            Script::UnrelatedBuild
+            | Script::UnrelatedSave
+            | Script::OwnSave
+            | Script::OwnComment => {
                 if script == Script::OwnSave {
                     client_fs::rewrite_in_place(&project).expect("rewrite the project file");
+                }
+                if let Some(commented) = &commented {
+                    let bytes = if k % 2 == 0 {
+                        commented.as_bytes()
+                    } else {
+                        &original[..]
+                    };
+                    client_fs::write(&project, bytes).expect("rewrite the project file");
                 }
                 next(
                     &mut client,
@@ -1755,6 +1813,9 @@ fn main() {
             "burst answers: {} with a result, {} ContentModified, {} RequestCancelled",
             census.results, census.content_modified, census.cancelled
         );
+    }
+    if script == Script::OwnComment {
+        client_fs::write(&project, &original).expect("put the project file back");
     }
 
     client.shut_down();
