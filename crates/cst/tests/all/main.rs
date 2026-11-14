@@ -13,6 +13,7 @@ mod accessor_coverage;
 mod ast_projection;
 mod corpus;
 mod corpus_walk;
+mod diagnostic_classes;
 mod fcs_divergence;
 mod fcs_record_stack_bound;
 mod filtered_table;
@@ -111,6 +112,7 @@ mod parser_tree_height;
 mod recovery_sweep;
 mod shape_sensitivity;
 mod token_table_reference;
+mod version_dependence_census;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is
 /// silently never compiled or run. See the module for why that is worth a test.

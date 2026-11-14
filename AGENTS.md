@@ -572,6 +572,7 @@ before pushing rather than discovering it in CI:
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --ignored  #  ~30 s
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_diff_feature_gates:: -- --ignored  # ~2 min
+nix develop -c cargo test -p borzoi-cst  --test all version_dependence_census:: -- --ignored  # ~1.5 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_panic_sweep::fresh_seed -- --ignored  # ~10 s
 nix develop -c cargo test -p borzoi-cst  --profile gate --test all layout_perturbation_sweep:: -- --ignored  # ~1.5 min
 nix develop -c cargo test -p borzoi-cst  --test all recovery_sweep::       -- --ignored  # ~3 min
@@ -618,10 +619,10 @@ on macOS (where Nix renames case-colliding names) and on Linux CI.
 
 A manifest whose every entry is keyed (`<key><TAB><value>`) — the
 whole-project `project_corpus.txt`, and the `parser_corpus`,
-`parser_corpus_diff`, `recovery_sweep`, `resolve_corpus_diff`,
-`infer_corpus_diff` and `xml_doc_source_*` sweeps' — merges key by key rather
-than as text, so a rebase past another branch's manifest movement needs no
-regeneration when the two moved different items. Enable the driver once per clone:
+`parser_corpus_diff`, `recovery_sweep`, `version_dependence_census`,
+`resolve_corpus_diff`, `infer_corpus_diff` and `xml_doc_source_*` sweeps' —
+merges key by key rather than as text, so a rebase past another branch's
+manifest movement needs no regeneration when the two moved different items. Enable the driver once per clone:
 
 ```sh
 git config merge.borzoi-manifest.driver 'bash tools/manifest-merge.sh %O %A %B %P'

@@ -456,16 +456,15 @@ divergent:
 - **`_.M` and `for _ = …` are accepted at every version.** FCS gates the
   accessor shorthand (`AccessorFunctionShorthand`, F# 8.0, FS3350 at the `_.`)
   and a wildcard integer-`for` variable (`WildCardInForLoop`, F# 4.7, FS0525)
-  while parsing; we report neither. Today `diagnostics_are_version_invariant`
-  compares F# 4.6 with `preview`, so either gate would make every file using
-  the construct version-dependent, and a guessed language version (an orphan
-  buffer, or a project whose `LangVersion` the evaluator cannot pin) would then
-  retain no diagnostics for the file; `_.M` lambdas are common in modern code.
-  `docs/ast-versioning-plan.md` settles `_.M`: legality diagnostics get a class
-  of their own that version invariance ignores (D9, D10), and its PR 3 gates
-  it. `for _ =` is a parse error with recovery in FCS, so it stays
-  version-dependent once gated; PR 3 decides it. Pinned by
-  `parser_diff_feature_gates::unmodelled_gates_are_pinned`.
+  while parsing; we report neither. `_.M` is a `Diagnose` row, so its gate
+  would report a `Legality` diagnostic, which `diagnostics_are_version_invariant`
+  leaves out (`docs/ast-versioning-plan.md`, D9, D10): gating it does not make
+  the files using it version-dependent, and PR 3 gates it. `for _ =` is a
+  parse error with recovery in FCS, so its diagnostic would be `Recovery`, and
+  a gate would make every file using it version-dependent, so that a guessed
+  language version (an orphan buffer, or a project whose `LangVersion` the
+  evaluator cannot pin) retained no diagnostics for the file; PR 3 decides it.
+  Pinned by `parser_diff_feature_gates::unmodelled_gates_are_pinned`.
 - **FS3535 on `static abstract` is not reported.** From F# 7.0 FCS warns on
   every `static abstract` member. Code declaring such interfaces usually
   silences it with `#nowarn "3535"`, and we do not consume `#nowarn` (see

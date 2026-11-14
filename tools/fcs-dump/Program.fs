@@ -7418,7 +7418,8 @@ let private typesProjectFiles (checker: FSharpChecker) (paths: string[]) (refArg
 /// fixture references and to fan several projections through one warm checker.
 ///
 /// Protocol: one JSON request per stdin line,
-/// `{ "kind": <projection>, "path": <abs .fs>, "refs": [<dll>…] }`, and exactly
+/// `{ "kind": <projection>, "path": <abs .fs>, "refs": [<dll>…], "langversion": <token>? }`
+/// (`langversion` optional: the `<LangVersion>` to check at), and exactly
 /// one compact JSON response line — the SAME payload the matching one-shot
 /// `dumpXxx` emits. The one-shots serialise with `buildOptions ()`
 /// (`WriteIndented = true`); this uses `buildOptionsCompact ()` so the response
@@ -7430,6 +7431,29 @@ let private typesProjectFiles (checker: FSharpChecker) (paths: string[]) (refArg
 /// would respawn-storm and eventually panic every *later* request too. The Rust
 /// driver turns the sentinel back into the loud panic the one-shot's `failwith`
 /// would have raised, so a genuinely broken case still fails its own test, alone.
+/// The `--langversion` switch a `file-batch` request's optional `langversion`
+/// asks for, empty when it asks for none. FCS refuses a version below 8.0 as
+/// out of support (FS3880) and checks at its default instead, unless
+/// `SKIP_VERSION_SUPPORTED_CHECK` is set (`LanguageVersion.IsVersionSupported`),
+/// so a request that pins a version sets it: an oracle must check at the
+/// version it was asked for.
+let private fileBatchLangVersionArgs (root: JsonElement) : string[] =
+    let requested =
+        match root.TryGetProperty("langversion") with
+        | true, v when v.ValueKind = JsonValueKind.String -> Option.ofObj (v.GetString())
+        | _ -> None
+    match requested with
+    | Some s when s.Trim() <> "" ->
+        Environment.SetEnvironmentVariable("SKIP_VERSION_SUPPORTED_CHECK", "1")
+        [| "--langversion:" + s.Trim() |]
+    | _ -> [||]
+
+/// The error-severity entries of `diagnostics`, as `{ Line, Code, Message }`.
+let private errorRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    diagnostics
+    |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    |> Array.map (fun d -> {| Line = d.StartLine; Code = d.ErrorNumber; Message = d.Message |})
+
 let private fileBatchCore () =
     // `keepAssemblyContents` so the `types` / `binder-types` / `overloads`
     // projections can read the elaborated implementation file; harmless to the
@@ -7486,8 +7510,16 @@ let private fileBatchCore () =
                 checker.GetProjectOptionsFromScript(
                     absolute, sourceText, assumeDotNetFramework = false, useSdkRefs = true)
                 |> Async.RunSynchronously
+            let langVersionArgs = fileBatchLangVersionArgs root
+            let scriptSwitches =
+                if Array.isEmpty langVersionArgs then opts0.OtherOptions
+                else
+                    opts0.OtherOptions
+                    |> Array.filter (fun o ->
+                        not (o.StartsWith("--langversion:") || o.StartsWith("/langversion:")))
             let opts =
-                { opts0 with OtherOptions = Array.append opts0.OtherOptions refArgs }
+                { opts0 with
+                    OtherOptions = Array.concat [ scriptSwitches; refArgs; langVersionArgs ] }
             let blocking =
                 scriptDiags
                 |> List.filter (fun d ->
@@ -7545,6 +7577,12 @@ let private fileBatchCore () =
                        Binders = binders
                        Errors = errorLines ()
                        Unconverted = unconverted |}, compact)
+            | "parse-errors" ->
+                // The parse's own errors, which `checkResults.Diagnostics` (every
+                // other kind's `Errors`) need not carry: a language-version
+                // feature error FCS reports while parsing can be missing there.
+                // Batch-only.
+                JsonSerializer.Serialize({| Errors = errorRecords parseResults.Diagnostics |}, compact)
             | "overloads" ->
                 let calls = collectOverloads (implFile ())
                 JsonSerializer.Serialize({| File = absolute; Calls = calls; Errors = errorLines () |}, compact)
@@ -7929,7 +7967,7 @@ let private usage () =
     eprintfn "  types-census-batch       read paths from stdin; emit per-file classified expr types (Phase-3 census)"
     eprintfn "  binder-types <source-path>  dump per-binder inferred types (Phase-3 binder-type oracle)"
     eprintfn "  overloads <source-path>  dump the chosen overload at each call node (overload-resolution oracle)"
-    eprintfn "  file-batch               resident single-file oracle: one JSON request/line {kind,path,refs}, one compact JSON response/line"
+    eprintfn "  file-batch               resident single-file oracle: one JSON request/line {kind,path,refs,langversion?}, one compact JSON response/line"
     eprintfn "  uses-project-batch       resident project oracle: one JSON request/line {paths,refs,defines,langversion}, one compact {Files} response/line"
     eprintfn "  script-options-batch     test oracle: per path on stdin, the shared and the own-directory script resolution {ResolvedAs,Shared,Direct}"
     eprintfn "  xmldoc-batch             resident source-XML-doc oracle: one JSON request/line {paths,defines,langversion}, one compact {Files} response/line"

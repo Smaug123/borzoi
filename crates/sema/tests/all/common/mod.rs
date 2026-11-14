@@ -138,6 +138,23 @@ pub fn invoke_fcs_dump_with_refs(subcommand: &str, source: &Path, refs: &[&Path]
     line
 }
 
+/// Like [`invoke_fcs_dump`], but checks (and so parses) `source` at the
+/// `<LangVersion>` `lang` (`"5.0"`, `"preview"`, …) rather than FCS's default.
+/// The version rides in the batch request, as the refs do, so one resident
+/// child serves every version.
+pub fn invoke_fcs_dump_at_langversion(subcommand: &str, source: &Path, lang: &str) -> String {
+    let request = serde_json::json!({
+        "kind": subcommand,
+        "path": source.display().to_string(),
+        "refs": [],
+        "langversion": lang,
+    })
+    .to_string();
+    let line = fcs_file_batch_pool().request(&request);
+    reject_batch_error(&line, subcommand);
+    line
+}
+
 /// Check `paths` (Compile order, `.fsi` slots included) as **one project** and
 /// return each file's `types` and `binder-types` payloads, in the shapes the
 /// single-file projections emit — so [`GradedDumps::read`] reads them as it

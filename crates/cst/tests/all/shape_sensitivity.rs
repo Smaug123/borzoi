@@ -130,8 +130,9 @@ fn snippet() -> impl Strategy<Value = String> {
         0usize..6,
         prop_oneof![
             // Version-*gated* lines, so the diagnostics property below has a
-            // subject: `#elif` is a legality gate at F# 11 and a nullness
-            // annotation one at F# 9. Both leave the tree untouched, which is
+            // subject: `#elif` is a legality gate at F# 11, which the verdict
+            // leaves out, and a nullness annotation a recovery one at F# 9,
+            // which it does not. Both leave our tree untouched, which is
             // exactly why the shape flag cannot stand in for the diagnostics
             // one.
             Just("#if FOO"),
@@ -201,13 +202,13 @@ proptest! {
 proptest! {
     /// The diagnostics counterpart of [`unset_flag_proves_version_invariance`],
     /// and the property the LSP's recovery reading trusts when a project's
-    /// `LangVersion` provenance is unknowable: an unset
-    /// `diagnostics_depend_on_language_version` must **prove** the reported
-    /// errors and warnings are identical at every language version.
+    /// `LangVersion` provenance is unknowable: an invariant verdict from
+    /// `diagnostics_are_version_invariant` must **prove** the tree and the
+    /// recovery errors and warnings are identical at every language version.
     ///
-    /// This is the guard the shape flag cannot be: a legality gate reports its
-    /// feature error and then parses the construct anyway, so the tree is
-    /// byte-identical across the threshold while the diagnostics are not.
+    /// This is the guard the shape flag cannot be: a gate can move a recovery
+    /// diagnostic without moving the tree (the nested-type FS0058), and only
+    /// the legality diagnostics, which the verdict leaves out, may differ.
     /// Checking every version rather than the two extremes the flag itself
     /// compares keeps the property independent of the monotonicity argument
     /// that justifies looking at only two.
@@ -234,16 +235,23 @@ proptest! {
         for &lang in VERSIONS {
             let p = parse_at(&src, lang);
             prop_assert_eq!(
-                &p.errors,
-                &baseline.errors,
-                "unset flag must prove the errors are version-invariant, but {:?} differs at {}",
+                p.recovery_errors().collect::<Vec<_>>(),
+                baseline.recovery_errors().collect::<Vec<_>>(),
+                "an invariant verdict must prove the recovery errors are version-invariant, but {:?} differs at {}",
                 src,
                 lang
             );
             prop_assert_eq!(
-                &p.warnings,
-                &baseline.warnings,
-                "unset flag must prove the warnings are version-invariant, but {:?} differs at {}",
+                p.recovery_warnings().collect::<Vec<_>>(),
+                baseline.recovery_warnings().collect::<Vec<_>>(),
+                "an invariant verdict must prove the recovery warnings are version-invariant, but {:?} differs at {}",
+                src,
+                lang
+            );
+            prop_assert_eq!(
+                tree_shape(&p),
+                tree_shape(&baseline),
+                "an invariant verdict must prove the tree is version-invariant, but {:?} differs at {}",
                 src,
                 lang
             );

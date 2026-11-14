@@ -2,11 +2,11 @@
 
 > **Status (2026-11-13).** A living plan. The decisions below are settled; the
 > work is an eight-PR sequence ([PR sequence](#pr-sequence)), of which PR 1 (the
-> feature table, #15) and PR 4 (the union behind `unstable-union`, #13, #670)
-> have landed. Earlier stages that still stand:
-> `LanguageVersion` as a parse input (#592/#597/#606), the LSP's
-> `<LangVersion>` wiring (#613), and the generated `syntax::v8` / `syntax::v9`
-> facades (#618 and after). The goal: before the next F# compiler upgrade (a new
+> feature table, #15), PR 2 (diagnostic classes), PR 4 (the union behind
+> `unstable-union`, #13, #670) and PR 5 (astgen owns every node) have landed.
+> Earlier stages that still stand: `LanguageVersion` as a parse input
+> (#592/#597/#606), the LSP's `<LangVersion>` wiring (#613), and the generated
+> `syntax::v8` / `syntax::v9` facades (#618 and after). The goal: before the next F# compiler upgrade (a new
 > language version), every earlier language version has a stable, exhaustive
 > typed facade, and the upgrade itself is the proof that the scheme extends.
 > Companion to [`parser-plan.md`](parser-plan.md), which owns the parser; this
@@ -226,27 +226,74 @@ a borzoi **parse-phase legality diagnostic**, graded against FCS's parse *plus
 check* diagnostics, because without it `view::<V>()` would have an uncovered
 hole.
 
-Every diagnostic carries a class:
+Every diagnostic carries a class (`parser::DiagnosticClass`, on each
+`ParseDiagnostic`):
 
 - `Legality { feature }` — tree-neutral: "this construct needs a newer
   version";
-- `Recovery` — ordinary errors, and the gates whose FCS effect is `Reshape`.
+- `Recovery` — ordinary errors, and the gates whose FCS effect is `Reshape`
+  or `Severity`.
 
-`Parse::errors` minus the `Legality` ones stays FCS-*parse*-faithful. P2 is
-restated: `view::<V>()` is total when there are no legality diagnostics, and
-otherwise every hole lies under one.
+A gate's class is not chosen by hand: `DiagnosticClass::of_gate` reads it off
+the table's `fcs_effect`, `Legality` exactly when every effect is `Diagnose`
+(vacuously so for a `check` row, which is what PR 3's check-time gates will
+be). Only the two gate producers (`parser::feature_gates` and the `#elif`
+side channel) build a classed diagnostic; every other producer's problem
+reaches `Parse` as `Recovery` by construction. So today the dotless `float32`
+literal and the nullness annotation, whose trees FCS changes below their
+versions, report `Recovery`, and the other gated parse-time features report
+`Legality`.
+
+`Parse::errors` minus the `Legality` ones stays FCS-*parse*-faithful
+(`Parse::recovery_errors`). P2 is restated: `view::<V>()` is total when there
+are no legality diagnostics, and otherwise every hole lies under one.
+
+Held by cst's `diagnostic_classes` tests: every live parse-time row of the
+table has a fixture, and at every version below the feature's a `Legality`
+row's fixture parses to the tree it parses to at the feature's version, with
+the same `Recovery` diagnostics and only `Legality` errors naming that
+feature, while a `Reshape` or `Severity` row's fixture moves across its
+version and never reports a `Legality` diagnostic.
 
 ### D10. Version invariance compares Recovery only
 
 `SyntaxRecovery::of_guessed_version` (sema) keeps its full `[MIN, MAX]` range,
-but reads only `Recovery` diagnostics, and `diagnostics_are_version_invariant`
-compares `Recovery` diagnostics and tree shape. So a faithful legality gate
-(`_.M`, interpolated strings) does not make every file using the construct
-version-dependent — the trade-off that has kept those gates unmodelled. A
-`Reshape` gate (`_.` patterns, `for _ =`: FCS raises a parse error and
-recovers) is `Recovery` and stays version-dependent. To confirm FCS type-checks the same tree after
-`CheckLanguageFeatureAndRecover`, one inference differential runs at an old
-pin; a corpus census counts version-dependent files.
+and `SyntaxRecovery` reads only `Recovery` errors.
+`diagnostics_are_version_invariant` compares `Recovery` diagnostics at the two
+ends of the ladder and the tree: an unflagged
+`shape_depends_on_language_version` proves the tree the same everywhere, and a
+flagged one is compared at both ends and at every shape band between them. So a
+faithful legality gate (`#elif` today; `_.M` and interpolated strings in PR 3)
+does not make every file using the construct version-dependent — the trade-off
+that kept those gates unmodelled. A `Reshape` gate (nullness below 9.0; `_.`
+patterns and `for _ =`, where FCS raises a parse error and recovers) is
+`Recovery` and stays version-dependent, and so does a tree the lex-filter
+reshapes with no diagnostic moving (a closer dedented to its `let`'s column,
+across F# 6).
+
+Two checks hold this:
+
+- **The inference differential** (sema's `infer_legality_pin_diff`): for each
+  gated `Legality` feature, a file with the construct inside an annotated
+  declaration, checked by FCS at the version just below the feature's and at
+  the feature's own. FCS's parse reports only FS3350 at the old pin, and every
+  expression and binder type it reports is the same at both versions, and
+  every type inference commits over our tree at the old pin is FCS's there.
+  The oracle's FCS (the `FSharp.Compiler.Service` package `tools/fcs-dump`
+  references) predates the `#elif` check, so for `PreprocessorElif` it shows
+  the types only (`ORACLE_PREDATES`). The oracle needs
+  `SKIP_VERSION_SUPPORTED_CHECK` to check below 8.0 at all: without it FCS
+  refuses the version (FS3880) and checks at its default.
+- **The corpus census** (cst's `version_dependence_census`): every corpus
+  file parsed at every version, each version graded against preview as a
+  moved tree, a moved `Recovery` diagnostic, a moved `Legality` diagnostic
+  only, or no change, and every file that moves pinned in
+  `tests/manifests/version_dependence_census.txt`. On the pinned corpus 345
+  files are version-dependent and 59 move only in `Legality` diagnostics, so
+  a guessed version keeps their reading. The census also asserts that two
+  versions agreeing on every `Recovery`-class feature parse every file
+  identically, and that `diagnostics_are_version_invariant` agrees with the
+  verdict read off all ten versions.
 
 ### D11. Feature flags and the remaining issue decisions
 
@@ -359,6 +406,11 @@ PR 6 makes them generic over every (facade, enum) pair.
 - **PR 1 — the feature table** (#15): the TSV, astgen's parser and the
   generated `features.rs`, `#elif` as an ordinary row, the three
   compiler-source tests, and 11.0 in `parser_diff_feature_gates`.
+- **PR 2 — diagnostic classes** (D9, D10): `DiagnosticClass` on every
+  `ParseDiagnostic`, read off the table for the gates; `SyntaxRecovery` and
+  `diagnostics_are_version_invariant` over `Recovery` diagnostics and the tree;
+  the `diagnostic_classes` fixtures, the `infer_legality_pin_diff` inference
+  differential, and the `version_dependence_census` corpus manifest.
 - **PR 4 — the union behind `unstable-union`** (#13, #670): the hand-written
   union in a private `syntax::union`, re-exported only under the feature, with a
   featureless clippy and doc step in CI. `v8`/`v9` are behind it too until PR 6.
@@ -374,6 +426,7 @@ PR 6 makes them generic over every (facade, enum) pair.
    *Landed.*
 2. **Diagnostic classes** (D9): `Legality` / `Recovery`; `SyntaxRecovery` and
    version invariance over `Recovery` (D10); the version-dependence census.
+   *Landed.*
 3. **Faithful gates** (#21's remainder): `_.M`, interpolated strings, `^`
    from-end indexing, `_.` patterns, `for _ =`, `$$"""`, `>|}`
    (`BetterAnonymousRecordParsing`) — each gated, or `Unmodelled` with its
@@ -392,7 +445,7 @@ PR 6 makes them generic over every (facade, enum) pair.
 
 ## Still to do
 
-Everything in PRs 2, 3 and 6–8 above. Beyond them:
+Everything in PRs 3 and 6–8 above. Beyond them:
 
 - **Stale issues.** #21's text predates the relax-whitespace and `#nowarn`
   work; its remaining scope is PR 3's list. #14's "interval data below 8.0" is
@@ -403,6 +456,15 @@ Everything in PRs 2, 3 and 6–8 above. Beyond them:
   features that is the FS3350 text the differentials check; for a
   checker-only row it is checked only against that reading of FSComp.txt
   until the row is gated.
+- **The oracle's FCS is older than the table's.** `tools/fcs-dump` references
+  `FSharp.Compiler.Service` 43.12.204, which reports nothing for `#elif`
+  below 11.0; the table transcribes the `fsharp-src` compiler, which reports
+  FS3350. No differential holds the `#elif` gate to FCS until the package
+  moves.
+- **The project oracles below F# 8.0.** `uses-project-batch` and
+  `xmldoc-batch` pass `--langversion` without `SKIP_VERSION_SUPPORTED_CHECK`,
+  so a project pinned below 8.0 is checked at FCS's default (FS3880); only
+  the single-file `file-batch` sets it.
 
 ## Open questions
 

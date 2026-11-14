@@ -4576,22 +4576,23 @@ mod tests {
     }
 
     /// A guessed language version cannot prove a clean read of a file whose
-    /// diagnostics are version-gated.
+    /// recovery diagnostics are version-gated.
     ///
-    /// `#elif` is an error below F# 11 and silent at or above it, from a
-    /// byte-identical tree — so the version-boundary gate, which compares tree
-    /// *shape*, never fires and the guessed parse records `Reported([])`. Read
-    /// as proof, that licenses publishing a type for an annotation the real
-    /// build rejects. The file must read `Unretained` instead.
+    /// A nullness annotation is a recovery below F# 9 (FCS parses it
+    /// differently there) and silent at or above it, from a byte-identical tree
+    /// of ours — so the version-boundary gate, which compares tree *shape*,
+    /// never fires and the guessed parse records `Reported([])`. Read as proof,
+    /// that licenses publishing a type for an annotation the real build parses
+    /// otherwise. The file must read `Unretained` instead. A legality error is
+    /// different: `#elif` is an error below F# 11 over the tree FCS builds at
+    /// every version, so a guess on either side reads that tree, and the file
+    /// keeps its reading.
     #[test]
-    fn a_version_gated_diagnostic_is_unretained_under_a_guessed_version() {
+    fn a_version_gated_recovery_is_unretained_under_a_guessed_version() {
         use borzoi_cst::language_version::LanguageVersion;
         use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
 
-        // The premise, restated locally so this test fails loudly if the gate
-        // ever stops being version-dependent rather than passing vacuously.
-        let source = "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n";
-        let parse = |lang| {
+        let parse = |source, lang| {
             parse_with_options(
                 source,
                 ParseOptions {
@@ -4601,22 +4602,55 @@ mod tests {
                 },
             )
         };
-        let guessed = parse(LanguageVersion::Preview);
-        assert!(guessed.errors.is_empty(), "clean at the guessed version");
-        assert!(
-            !parse(LanguageVersion::V10_0).errors.is_empty(),
-            "and rejected one threshold down"
-        );
-        assert_eq!(
-            guessed.root.structure(),
-            parse(LanguageVersion::V10_0).root.structure(),
-            "with the same tree, which is why the shape gate cannot see it"
-        );
+        let guess = |source| {
+            SyntaxRecovery::of_guessed_version(
+                &parse(source, LanguageVersion::Preview),
+                source,
+                &HashSet::new(),
+                FileKind::Impl,
+            )
+        };
+        // The premises, restated locally so this test fails loudly if a gate
+        // ever changes class rather than passing vacuously.
+        for (source, below, recovery) in [
+            (
+                "module M\nlet f (x : System.String | null) = 1\n",
+                LanguageVersion::V8_0,
+                true,
+            ),
+            (
+                "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n",
+                LanguageVersion::V10_0,
+                false,
+            ),
+        ] {
+            let (guessed, rejected) = (
+                parse(source, LanguageVersion::Preview),
+                parse(source, below),
+            );
+            assert!(guessed.errors.is_empty(), "clean at the guessed version");
+            assert!(
+                !rejected.errors.is_empty()
+                    && rejected.errors.iter().all(|e| e.is_recovery() == recovery),
+                "and rejected one threshold down: {:?}",
+                rejected.errors
+            );
+            assert_eq!(
+                guessed.root.structure(),
+                rejected.root.structure(),
+                "with the same tree, which is why the shape gate cannot see it"
+            );
+        }
 
         assert_eq!(
-            SyntaxRecovery::of_guessed_version(&guessed, source, &HashSet::new(), FileKind::Impl),
+            guess("module M\nlet f (x : System.String | null) = 1\n"),
             SyntaxRecovery::Unretained,
-            "a guessed version proves nothing about a version-gated file"
+            "a guessed version proves nothing about a version-gated recovery"
+        );
+        assert_eq!(
+            guess("module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n"),
+            SyntaxRecovery::Reported([].into()),
+            "a legality error leaves the reading as it is"
         );
         // The contrast: ordinary source is version-invariant, so a guess is
         // still proof and the feature stays on for it.

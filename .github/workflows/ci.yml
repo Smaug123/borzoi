@@ -339,6 +339,9 @@ jobs:
         # pull request, where a regression can still be stopped. The third
         # holds the language-version feature gates to FCS at F# 4.6 over the
         # same corpus (`crates/cst/tests/manifests/feature_gate_corpus.txt`).
+        # The fourth parses every file at every language version and pins
+        # which ones parse differently, and how
+        # (`crates/cst/tests/manifests/version_dependence_census.txt`).
         # `lexfilter_corpus` is deliberately absent: its FCS side costs ~1.65 s
         # per file, hours over the corpus, and it is a histogram rather than an
         # assertion.
@@ -351,6 +354,8 @@ jobs:
             parser_corpus_diff:: -- --ignored --nocapture
           nix develop --command cargo test -p borzoi-cst --test all \
             parser_diff_feature_gates:: -- --ignored --nocapture
+          nix develop --command cargo test -p borzoi-cst --test all \
+            version_dependence_census:: -- --ignored --nocapture
 
       - name: Gate on parser recovery under deliberate damage
         if: steps.gate.outputs.run == 'true'
