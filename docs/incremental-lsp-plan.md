@@ -3034,7 +3034,51 @@ edit stales is now found by `semanticTokens E`'s validation, which compares
 items up to the edited one (index 10) before dropping the fold: 79
 allocations and 0.25 M. The cold rows move within their runs' spread.
 
-PLANTS_TABLE
+Planted, each caught, then removed (each run against `cargo test -p borzoi
+--lib --test all`):
+
+| plant | caught by |
+|---|---|
+| cached parses not checked against the evaluation | the pinned scripts, the generated unflushed, project-write and project-creation tests |
+| cached parses checked against the evaluation only, never their texts | 29 tests: every generated and pinned state-machine test, both `observed_counts` keystroke properties, `parse_cache`, a dozen `semantic` unit tests |
+| a refusal reported under any evaluation | `a_fold_refusal_does_not_outlive_the_project_that_caused_it`, `a_carried_fold_verdict_is_never_restated` |
+| no widened confirmation after a structural event | the installed-SDK pinned script, `a_watched_change_to_an_installed_import_reaches_the_env` |
+| the exempt reads recorded empty | the same two |
+| a structural event not ending the projects generation | the mid-sweep property, `the_broad_invalidations_drop_only_an_env_with_an_unrecorded_reader`, `invalidation_without_a_fold_still_owes_a_refresh` |
+| a moved generation keeping the envs with an unrecorded reader | the same two unit tests, three generated state-machine tests |
+| a hint distrusting no witness (6b's) | the `read_checks` model property and its non-vacuity check, `a_hint_asks_again_what_was_read_at_the_paths_it_names` |
+| a hint matching spellings only | the model property (a listing through a symlink) |
+| a hint not reaching the ownership walks' checker | `a_hint_asks_again_what_was_read_at_the_paths_it_names` (added for it) |
+| an env dropped by an event naming any read (6b's) | `a_save_that_changes_no_input_recomputes_nothing`, `a_watched_change_drops_only_an_env_that_read_its_path`, `an_event_names_an_env_only_through_a_stamp_it_read` |
+| an env never dropped by an event | `a_watched_rebuild_rebuilds_only_the_env_that_reads_it`, `sibling_rebuild_refreshes_the_assembly_env_after_watched_dll_change`, `an_event_names_an_env_only_through_a_stamp_it_read` |
+| a NuGet settings event keeping the evaluations | `a_nuget_settings_event_re_evaluates_every_project` (added for it) |
+| a structural event owing no token refresh | `diagnostic_refresh_precedes_semantic_tokens_refresh` |
+| the doc-file cache keyed by size and mtime, caching under a racy stamp | `a_same_size_rewrite_with_its_mtime_put_back_is_seen` |
+| the doc-file cache caching under a racy stamp | `nothing_is_cached_under_a_racy_stamp` (added for it) |
+
+#313's mutations, re-planted where their code still exists:
+
+| mutation | as planted now | caught by |
+|---|---|---|
+| M1 the parse key ignores `#if` symbols | the memo and the fold's cache both ignore them | every generated and pinned state-machine test, both `parses` properties, `shared_file_exposes_each_projects_active_if_branch` |
+| M2 a `.fsproj` watch event ignored | its events dropped before anything sees them | the mid-sweep property, two `lsp_integration` tests, five `server` unit tests |
+| M3 reuse past an export change | `same_export_contribution` always true | the pinned scripts, the unflushed test, two `semantic` unit tests |
+| M4 `didClose` not invalidating | `didClose` owes no refresh (it drops nothing now) | `every_source_sync_notification_owes_a_refresh` (added for it) |
+| M5 a watched source content change not invalidating | its events dropped | `watched_diagnostic_inputs_request_diagnostic_refresh`, `diagnostic_input_changes_owe_diagnostic_refresh`, two `workspace_diagnostic_sweep` tests |
+| M6 the `resultId` omits the symbols | as then | the pinned scripts, two generated tests, `result_id_changes_with_symbols`, `project_defines_change_busts_the_cache` |
+| M7 text sync owes no refresh | as then | `every_source_sync_notification_owes_a_refresh`, two `server` refresh tests |
+| M8 a `.dll` watch event ignored | its events dropped | `a_watched_rebuild_rebuilds_only_the_env_that_reads_it`, `sibling_rebuild_refreshes_the_assembly_env_after_watched_dll_change` |
+| M9 a structural change does not republish | as then | `push_client_retains_publish_diagnostics_lifecycle`, three `server` unit tests |
+| M10 a structural change owes no diagnostic refresh | as then | `watched_diagnostic_inputs_request_diagnostic_refresh`, three `server` unit tests |
+
+Four plants first passed every test: the hint skipping the ownership
+checker, the NuGet event keeping evaluations (the assertion on it was
+vacuous: the event is structural and ends the generation anyway), the racy
+doc-file cache, and M4. The tests named against them were added, and each
+then failed. M4 and M7 show a blind spot of `incremental_state_machine`: a
+comparison asks its direct queries before it compares what the client
+displays, and a query that reads the fold finds the edited text and owes the
+refresh itself, so a text sync that owes none is masked there.
 
 ### Stage 8: coalescing in the dispatch loop
 
