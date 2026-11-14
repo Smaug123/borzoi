@@ -1899,7 +1899,8 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
 /// running request passes a checkpoint (`docs/incremental-lsp-plan.md`,
 /// Stage 9). The env is one unit, from resolving its references to reading
 /// their DLLs (`build_env_from_dll_paths`, inside it).
-const UNIT_SPANS: [&str; 4] = [
+const UNIT_SPANS: [&str; 5] = [
+    "evaluate_project",
     "parse_compile_item",
     "build_assembly_env",
     "resolve_project",
@@ -1914,7 +1915,9 @@ struct SpanTrace {
     points: Vec<&'static str>,
     /// The index, among `points`, at which the notification was sent.
     sent_at: Option<usize>,
-    /// Units begun after the notification and before the run stopped.
+    /// Units begun after the notification was sent and before the loop
+    /// finished the run it stopped ([`borzoi::inbox::STOPPED_EVENT`], the
+    /// stopped step's last act).
     begun_after: Vec<&'static str>,
     /// `lsp.request` spans begun: one per run.
     runs: usize,
@@ -1928,7 +1931,7 @@ const REQUEST_SPAN_ID: u64 = 2;
 
 /// A subscriber that sends a notification the server ignores as the `at`th
 /// span the request's first run begins inside its handler does, and records
-/// which units begin before the request stops.
+/// which units begin before the stopped step ends.
 struct StopAtSpan {
     at: Option<usize>,
     input: borzoi::inbox::InboxSender,
@@ -1994,6 +1997,9 @@ impl tracing::Subscriber for StopAtSpan {
 struct LatencyScenario {
     name: &'static str,
     setup: Vec<Message>,
+    /// Project files rewritten after the setup, with no watch event, so the
+    /// request evaluates each again.
+    rewrite: Vec<PathBuf>,
     request: Message,
 }
 
@@ -2032,15 +2038,30 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
         .unwrap()
         .as_str()
         .to_string();
+    // And a third, `R`, for the scenario whose projects all evaluate again.
+    let r = world.root.join("R");
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::write(
+        r.join("R.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"F.fs\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    std::fs::write(r.join("F.fs"), "module F\n\nlet f = 1\n").unwrap();
+    let f = Uri::from_file_path(r.join("F.fs"))
+        .unwrap()
+        .as_str()
+        .to_string();
     vec![
         LatencyScenario {
             name: "a cold hover (parses, env, fold, inference)",
             setup: opens.clone(),
+            rewrite: Vec::new(),
             request: hover_c.clone(),
         },
         LatencyScenario {
             name: "cold references (the whole project, then its scan)",
             setup: opens.clone(),
+            rewrite: Vec::new(),
             request: request(
                 "references",
                 "textDocument/references",
@@ -2054,12 +2075,31 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
         LatencyScenario {
             name: "cold semantic tokens",
             setup: opens.clone(),
+            rewrite: Vec::new(),
             request: tokens_c("tokens"),
         },
         LatencyScenario {
             name: "a hover over a cached fold (inference only)",
             setup: opens.iter().cloned().chain([tokens_c("warm")]).collect(),
+            rewrite: Vec::new(),
             request: hover_c,
+        },
+        LatencyScenario {
+            name: "workspace symbols over three projects that all evaluate again",
+            setup: opens
+                .iter()
+                .cloned()
+                .chain([
+                    did_open(&d, "module D\n\nlet d = 1\n"),
+                    did_open(&f, "module F\n\nlet f = 1\n"),
+                ])
+                .collect(),
+            rewrite: vec![
+                world.root.join("P").join("P.fsproj"),
+                q.join("Q.fsproj"),
+                r.join("R.fsproj"),
+            ],
+            request: request("symbols", "workspace/symbol", json!({ "query": "" })),
         },
         LatencyScenario {
             name: "workspace symbols over two projects",
@@ -2071,6 +2111,7 @@ fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
                     did_open(&a, Src::A.text(0)),
                 ])
                 .collect(),
+            rewrite: Vec::new(),
             request: request("symbols", "workspace/symbol", json!({ "query": "" })),
         },
     ]
@@ -2086,6 +2127,14 @@ fn run_latency_case(
     let mut session = Session::start(&world.root, false);
     session.deliver(scenario.setup.clone());
     session.settle();
+    for project in &scenario.rewrite {
+        // A text this session has not evaluated.
+        static REWRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = REWRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let text = std::fs::read_to_string(project).unwrap();
+        let text = text.split("<!--").next().unwrap().trim_end().to_string();
+        std::fs::write(project, format!("{text}\n<!-- {n} -->\n")).unwrap();
+    }
     let trace = Arc::new(Mutex::new(SpanTrace::default()));
     let subscriber = StopAtSpan {
         at,
@@ -2111,8 +2160,9 @@ fn run_latency_case(
 /// The cancellation latency, over every point a request's handler passes: a
 /// notification that arrives as any span of the handler begins (the
 /// handler's own, each unit's, and every span inside them) stops the request
-/// once, before it begins another unit of work, and the request then answers
-/// as it does unstopped. Swept over every such span of a cold hover, cold
+/// once, no unit of work begins before the stopped step ends (the
+/// notification is handled next), and the request then answers as it does
+/// unstopped. Swept over every such span of a cold hover, cold
 /// references, cold semantic tokens, a hover whose fold is cached and whose
 /// inference is not, and `workspace/symbol` over two projects.
 #[test]
@@ -2127,6 +2177,16 @@ fn a_request_stops_for_a_notification_wherever_it_arrives() {
                 scenario.name
             );
             assert_eq!(unstopped.stopped, 0);
+            assert!(
+                unstopped
+                    .points
+                    .iter()
+                    .filter(|p| **p == "evaluate_project")
+                    .count()
+                    >= scenario.rewrite.len(),
+                "{}: the request evaluates each rewritten project again: {unstopped:?}",
+                scenario.name
+            );
             for at in 0..unstopped.points.len() {
                 let (trace, got) = run_latency_case(&world, &scenario, Some(at));
                 let point = unstopped.points[at];
@@ -2144,10 +2204,11 @@ fn a_request_stops_for_a_notification_wherever_it_arrives() {
                 );
                 assert!(
                     trace.begun_after.is_empty(),
-                    "{}: after the notification at {point} ({at}), the request began {:?} \
-                     before it stopped",
+                    "{}: after the notification at {point} ({at}), {:?} began before the \
+                     stopped step ended (its spans unstopped: {:?})",
                     scenario.name,
-                    trace.begun_after
+                    trace.begun_after,
+                    unstopped.points
                 );
                 assert_eq!(
                     got, want,

@@ -997,7 +997,6 @@ impl Dispatcher {
         message: Incoming,
         watch: &Watch,
     ) -> Result<Progress, Box<dyn Error + Send + Sync>> {
-        let mut progress = Progress::Handled;
         let state = &mut self.state;
         match (step, message) {
             (BatchStep::Exit { .. }, Incoming::Exit) => {
@@ -1106,6 +1105,32 @@ impl Dispatcher {
                                     }
                                 },
                             );
+                        let dispatch = match dispatch {
+                            Ok(dispatch) => dispatch,
+                            // What the run computed and cached stands; its
+                            // answer is not sent. Nor is anything else done
+                            // for it: what it owes the client (a moved
+                            // evaluation's response, the deferral report,
+                            // the refreshes) is derived from the state, and
+                            // the step that applies the notification it
+                            // stopped for does it, so the notification
+                            // waits for nothing more.
+                            Err(Superseded) => {
+                                self.epoch[index] = Some(Incoming::Request {
+                                    request: again,
+                                    document,
+                                });
+                                self.stopped = Some(index);
+                                state.end_generation();
+                                // The stopped step's last act.
+                                tracing::debug!(
+                                    name: crate::inbox::STOPPED_EVENT,
+                                    method = %method,
+                                    "a request stopped at a checkpoint"
+                                );
+                                return Ok(Progress::Stopped);
+                            }
+                        };
                         respond_to_moved_evaluations(state, connection);
                         // Before the reply, not after: a fold refusal is *why*
                         // this reply is degraded, and an explanation that
@@ -1114,35 +1139,20 @@ impl Dispatcher {
                         // client, so the shell reports what it observed.
                         refresh_project_deferrals(state, connection);
                         match dispatch {
-                            // What the run computed and cached stands; its
-                            // answer is not sent.
-                            Err(Superseded) => {
-                                tracing::debug!(
-                                    name: crate::inbox::STOPPED_EVENT,
-                                    method = %method,
-                                    "a request stopped at a checkpoint"
-                                );
-                                self.epoch[index] = Some(Incoming::Request {
-                                    request: again,
-                                    document,
-                                });
-                                self.stopped = Some(index);
-                                progress = Progress::Stopped;
-                            }
                             // Synchronous request: reply immediately.
-                            Ok(Dispatch::Reply(response)) => {
+                            Dispatch::Reply(response) => {
                                 enqueue_response(connection, &method, response)?;
                             }
                             // Cold SourceLink fetch: hand to the pool, which
                             // replies out-of-band when it completes. The loop
                             // never blocks on the network.
-                            Ok(Dispatch::Defer { id, pending }) => {
+                            Dispatch::Defer { id, pending } => {
                                 dispatch_fetch(connection, self.pool.as_ref(), id, pending)?;
                             }
                             // A sweep: the loop steps it while idle and replies
                             // when it completes. A client that asks again has
                             // given up on the older one.
-                            Ok(Dispatch::Sweep { id, sweep: started }) => {
+                            Dispatch::Sweep { id, sweep: started } => {
                                 if let Some(old) =
                                     self.sweep.replace(InFlightSweep::new(id, started))
                                 {
@@ -1161,7 +1171,7 @@ impl Dispatcher {
                 state.end_generation();
             }
         }
-        Ok(progress)
+        Ok(Progress::Handled)
     }
 }
 

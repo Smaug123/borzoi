@@ -91,6 +91,8 @@ pub fn handle_watched(
     // the *results* correct.
     let mut projects: Vec<PathBuf> = Vec::new();
     for src in &open_sources {
+        // Each ownership walk may evaluate a project: a unit of its own.
+        watch.check()?;
         if let Some(path) = &src.path
             && let Some(project) = state.workspace.owning_project(path)
             && !projects
@@ -100,7 +102,6 @@ pub fn handle_watched(
             projects.push(project);
         }
     }
-    watch.check()?;
 
     let mut out: Vec<SymbolInformation> = Vec::new();
     // Dedup by **symbol identity** (name + location), not by file path. A file

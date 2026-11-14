@@ -3500,9 +3500,10 @@ the stop:
   comes after the handler has returned, before its answer is sent. So an abandoned run keeps every unit it
   completed, and the next run finds them in the caches.
 - **An abandoned request is unanswered.** Its message goes back into the
-  epoch. The loop finishes the step as it finishes any (the response to a
-  moved evaluation, the owed refreshes, the deferral report, the end of the
-  generation), reads what has arrived and plans again. Stage 8's plan then
+  epoch, and the loop ends the generation and does nothing more for it: the
+  response to a moved evaluation, the deferral report and the owed
+  refreshes are derived from the state, and the step that applies the
+  notification does them. It reads what has arrived and plans again. Stage 8's plan then
   decides the request's fate as before: refused `RequestCancelled` if a later
   cancellation names it, `ContentModified` if a later text sync changes its
   document, otherwise run again, after the new notifications.
@@ -3595,10 +3596,14 @@ the re-run pays one unit at most again.
   (`inbox::never_superseded`). Hover computes its project prefix once
   (`FilePrefix`) and hands it to both of its project paths.
 - **A stop.** A handler's `Superseded` reaches `Dispatcher::execute`, which
-  puts the request back into the epoch unanswered, emits
-  `inbox::STOPPED_EVENT`, finishes the step as for any request (the moved
-  evaluations, the deferral report, the owed refreshes, the generation's
-  end) and returns `Progress::Stopped`. The next step reads what arrived and
+  puts the request back into the epoch unanswered,
+  ends the generation, emits `inbox::STOPPED_EVENT` and returns
+  `Progress::Stopped`, leaving the moved evaluations' response, the
+  deferral report and the owed refreshes to the next step (each step that
+  applies a notification does them), so that they cannot delay the
+  notification: re-walking every open buffer's owner after a moved
+  evaluation can evaluate other projects (found by the latency sweep's
+  three-project scenario). The next step reads what arrived and
   only then records the request as a `batch::Restart` with the size of the
   epoch, so the requests that arrived with the notification run before it.
   A stopped fold records no outcome, and puts back the stale parses its
@@ -3643,16 +3648,19 @@ The oracle, as built:
   the cancellation latency in units. A notification sent as any span of the
   request's handler begins (the handler's own, each unit's, every span
   inside them) stops the request once, before it begins another unit
-  (`parse_compile_item`, `build_assembly_env`, `resolve_project`,
-  `infer_project`), and the request then answers as it does unstopped. Swept
-  over every such span of a cold hover, cold references, cold semantic
-  tokens, a hover whose fold is cached and whose inference is not, and
-  `workspace/symbol` over two projects. Its first version sent the
+  (`evaluate_project`, `parse_compile_item`, `build_assembly_env`,
+  `resolve_project`, `infer_project`) before the stopped step ends, and the
+  request then answers as it does unstopped. Swept over every such span of a
+  cold hover, cold references, cold semantic tokens, a hover whose fold is
+  cached and whose inference is not, `workspace/symbol` over two projects,
+  and `workspace/symbol` over three whose project files were all rewritten. Its first version sent the
   notification only as a unit began, over the three cold requests; Codex
   found two units it let begin after a notification (the next project's
   first parse in `workspace/symbol`, and cold inference after a cached
-  prefix), and the plant of a missing checkpoint after the handler passed
-  it once every unit was followed by one.
+  prefix) and, in its third round, a third (the next ownership walk's
+  evaluation in `workspace/symbol`); and the plant of a missing checkpoint
+  after the handler passed it once every unit was followed by one. Each was
+  a scenario the sweep did not have, so each is now one of its scenarios.
 - `dispatch_coalescing::an_edit_that_arrives_mid_request_is_answered_before_it`:
   the gate in small. A change to `A` and a pull of `A` arrive at a hover on
   `C`'s first checkpoint; the hover stops, the pull is answered first, and
@@ -3675,6 +3683,8 @@ and the state machine's warm and stopping properties):
 | a stale answer: no checkpoint after the handler | the latency sweep, once it covered every span (a notification during references' scan) |
 | no checkpoint before a project's first parse (Codex) | the latency sweep, once it covered `workspace/symbol` over two projects |
 | no checkpoint between a cached prefix and the inference (Codex) | the latency sweep, once it covered a hover over a cached fold |
+| no checkpoint between `workspace/symbol`'s ownership walks (Codex) | the latency sweep, once it counted evaluations as units and covered three projects that all evaluate again |
+| a stopped run doing its follow-ups (a moved evaluation's response, the deferral report) before its step ends | the same scenario: re-walking every open buffer's owner evaluates the other two |
 | a stopped fold's partial parses cached as the project's | the latency sweep, the stopping state machine |
 | the stale parses lost on a stop (the rebuild's refresh decision) | `a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change` (added for it: it passed everything else) |
 | an unbounded inbox | `a_full_inbox_holds_the_sender_back` |
