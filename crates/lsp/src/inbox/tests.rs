@@ -290,7 +290,8 @@ fn an_unwatched_computation_is_never_stopped() {
 }
 
 /// The channel is bounded: a sender ahead of the loop by `capacity` messages
-/// waits, and the counter counts only what the channel took.
+/// waits until the loop takes one, and the counter counts a notification
+/// only once the channel took it.
 #[test]
 fn a_full_inbox_holds_the_sender_back() {
     let (sender, inbox) = channel(2);
@@ -313,9 +314,10 @@ fn a_full_inbox_holds_the_sender_back() {
     };
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert!(!sent.load(Ordering::SeqCst), "a full inbox takes no more");
-    let (watch, messages) = inbox.begin_step(usize::MAX);
-    assert_eq!(messages.len(), 2);
-    assert_eq!(watch.check(), Ok(()));
+    // Taking one makes room for the third, which can only be pushed, and so
+    // counted, after the counter was read.
+    let (watch, messages) = inbox.begin_step(1);
+    assert_eq!(messages.len(), 1);
     thread.join().unwrap();
     assert!(sent.load(Ordering::SeqCst));
     assert_eq!(
@@ -323,4 +325,7 @@ fn a_full_inbox_holds_the_sender_back() {
         Err(Superseded),
         "the third was counted once taken"
     );
+    let (watch, messages) = inbox.begin_step(usize::MAX);
+    assert_eq!(messages.len(), 2);
+    assert_eq!(watch.check(), Ok(()));
 }

@@ -991,6 +991,15 @@ impl Client {
     /// cost when all of them were waiting at once, and the answers to the
     /// requests among them, in order.
     fn burst(&mut self, steps: &[Step]) -> (Cost, Vec<Response>) {
+        // The client hands the burst to the inbox while the server is held,
+        // so a burst the inbox cannot hold would wait for a server waiting
+        // for it.
+        assert!(
+            steps.len() < INPUT_BUFFER,
+            "a burst of {} messages does not fit the server's inbox of {INPUT_BUFFER}: \
+             lower EDIT_COUNTS_BURST",
+            steps.len()
+        );
         arm(Gate::AtGeneration);
         let barrier = self
             .send_step(&Step::Request {

@@ -1093,11 +1093,19 @@ impl Dispatcher {
                         let again = request.clone();
                         // The last checkpoint follows the handler, so an
                         // answer is sent only if no notification arrived
-                        // before it was decided.
-                        let dispatch = handle_request(state, request, watch).and_then(|dispatch| {
-                            watch.check()?;
-                            Ok(dispatch)
-                        });
+                        // before it was decided. A sweep's start answers
+                        // nothing: the sweep answers when it completes, and
+                        // has its own rule for what arrives meanwhile.
+                        let dispatch =
+                            handle_request(state, request, watch).and_then(
+                                |dispatch| match dispatch {
+                                    Dispatch::Sweep { .. } => Ok(dispatch),
+                                    Dispatch::Reply(_) | Dispatch::Defer { .. } => {
+                                        watch.check()?;
+                                        Ok(dispatch)
+                                    }
+                                },
+                            );
                         respond_to_moved_evaluations(state, connection);
                         // Before the reply, not after: a fold refusal is *why*
                         // this reply is degraded, and an explanation that
