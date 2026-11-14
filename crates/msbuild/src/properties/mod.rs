@@ -847,8 +847,13 @@ fn infer_target_framework_identifier(tfm: &str) -> Option<&'static str> {
             parse_dotted_version(suffix).map(|_| ".NETCoreApp")
         } else if parse_compact_netcoreapp_version(suffix).is_some() {
             Some(".NETCoreApp")
-        } else {
+        } else if suffix.bytes().all(|b| b.is_ascii_digit()) {
+            // A compact .NET Framework version, as `GetTargetFrameworkVersion`
+            // reads it. NuGet gives any other suffix (`net47\n2`) up as
+            // `Unsupported`.
             Some(".NETFramework")
+        } else {
+            None
         }
     } else {
         None

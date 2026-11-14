@@ -568,6 +568,11 @@ fn tokenise(source: &str) -> Result<Vec<Token>, ()> {
                     i += 1;
                     continue;
                 };
+                if scanner_may_reject_property_expression(after, close) {
+                    tokens.push(Token::Unknown);
+                    i += 2 + close + 1;
+                    continue;
+                }
                 // MSBuild tolerates whitespace inside `$( … )` for
                 // *property-function* forms, but NOT for a simple property
                 // reference: `$( Foo )` (and `$(Foo )` / `$( Foo)`) is
@@ -643,6 +648,79 @@ fn tokenise(source: &str) -> Result<Vec<Token>, ()> {
         }
     }
     Ok(tokens)
+}
+
+/// Most `$(` a reference may nest before [`scanner_may_reject_property_expression`]
+/// declines rather than check each (a check per nested reference, each over
+/// the rest of the text).
+const MAX_NESTED_PROPERTY_EXPRESSIONS: usize = 32;
+
+/// Whether MSBuild's condition scanner may reject the unquoted `$(…)` whose
+/// text after the `$(` is `after`, closing at `close`
+/// (`Scanner.ScanForPropertyExpressionEnd`). It counts parentheses without
+/// regard to quotes, so it must close where we do; and it rejects an
+/// expression, or one nested in it, holding whitespace but no character
+/// outside an XML name (parentheses aside): `$(A B)` as much as `$( A)`.
+///
+/// Where unsure, this says it may: a non-ASCII character counts as possible
+/// whitespace and a possible name character, and `.` as a name character.
+fn scanner_may_reject_property_expression(after: &str, close: usize) -> bool {
+    let mut depth = 0usize;
+    let raw_close = after.char_indices().find_map(|(idx, ch)| match ch {
+        '(' => {
+            depth += 1;
+            None
+        }
+        ')' if depth == 0 => Some(idx),
+        ')' => {
+            depth -= 1;
+            None
+        }
+        _ => None,
+    });
+    if raw_close != Some(close) {
+        return true;
+    }
+    let ill_formed = |inner: &str| {
+        let mut whitespace = false;
+        let mut punctuation = false;
+        for c in inner.chars() {
+            match c {
+                '(' | ')' => {}
+                c if c.is_whitespace() || !c.is_ascii() => whitespace = true,
+                c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') => {}
+                _ => punctuation = true,
+            }
+        }
+        whitespace && !punctuation
+    };
+    let inner = &after[..close];
+    if ill_formed(inner) {
+        return true;
+    }
+    // A nested reference holds a `$`, which is punctuation to every reference
+    // around it, so each is judged by its own text alone.
+    let nested: Vec<usize> = inner.match_indices("$(").map(|(at, _)| at + 2).collect();
+    if nested.len() > MAX_NESTED_PROPERTY_EXPRESSIONS {
+        return true;
+    }
+    nested.into_iter().any(|start| {
+        let rest = &inner[start..];
+        let mut depth = 0usize;
+        let end = rest.char_indices().find_map(|(idx, ch)| match ch {
+            '(' => {
+                depth += 1;
+                None
+            }
+            ')' if depth == 0 => Some(idx),
+            ')' => {
+                depth -= 1;
+                None
+            }
+            _ => None,
+        });
+        end.is_none_or(|end| ill_formed(&rest[..end]))
+    })
 }
 
 fn find_balanced_property_expression_close(input: &str) -> Option<usize> {

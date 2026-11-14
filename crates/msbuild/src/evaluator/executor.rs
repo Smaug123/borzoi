@@ -115,8 +115,14 @@ const ITEM_LIST_PROPERTY: &str = "-ItemList-";
 
 struct Decline(String);
 
+/// A decline, its reason on one line: the expressions it quotes are read with
+/// their whitespace kept ([`expression_attribute`]), and are shown as the XML
+/// reader would give them, each tab, line break and CRLF a space.
 fn decline<T>(why: impl Into<String>) -> Result<T, Decline> {
-    Err(Decline(why.into()))
+    let why: String = why.into();
+    Err(Decline(
+        why.replace("\r\n", " ").replace(['\t', '\n', '\r'], " "),
+    ))
 }
 
 /// A target definition, parsed.
@@ -212,10 +218,10 @@ impl<'s, 'r> Engine<'s, 'r> {
                 .or_else(|e| decline(format!("target {name} does not parse alone: {e}")))?;
             let root = document.root_element();
             for (attribute, before) in [("BeforeTargets", true), ("AfterTargets", false)] {
-                let Some(raw) = root.attribute(attribute) else {
+                let Some(raw) = expression_attribute(root, attribute)? else {
                     continue;
                 };
-                let expanded = engine.expand(raw)?;
+                let expanded = engine.expand(&raw)?;
                 for named in expanded
                     .as_escaped()
                     .split(';')
@@ -250,7 +256,7 @@ impl<'s, 'r> Engine<'s, 'r> {
             next.extend(self.before.get(key).into_iter().flatten().cloned());
             next.extend(self.after.get(key).into_iter().flatten().cloned());
             let document = target.document()?;
-            if let Some(raw) = document.root_element().attribute("DependsOnTargets")
+            if let Some(raw) = expression_attribute(document.root_element(), "DependsOnTargets")?
                 && !raw.contains('$')
             {
                 next.extend(
@@ -410,10 +416,10 @@ impl<'s, 'r> Engine<'s, 'r> {
             return Ok(Vec::new());
         }
         self.entries[entry].state = EntryState::Execution;
-        let Some(raw) = root.attribute("DependsOnTargets") else {
+        let Some(raw) = expression_attribute(root, "DependsOnTargets")? else {
             return Ok(Vec::new());
         };
-        let expanded = self.expand(raw)?;
+        let expanded = self.expand(&raw)?;
         Ok(expanded
             .as_escaped()
             .split(';')
@@ -510,7 +516,18 @@ impl<'s, 'r> Engine<'s, 'r> {
                 "PropertyGroup" => self.property_group(child)?,
                 "ItemGroup" => self.item_group(child)?,
                 "Message" => self.message(child)?,
-                other => return decline(format!("target {target} runs {other}")),
+                // A task whose condition is false does not run: MSBuild neither
+                // binds it nor reads its parameters.
+                other => {
+                    // MSBuild looks for batching in a task's parameters before
+                    // its condition, and fails on batching it cannot do.
+                    if task_batches(child) {
+                        return decline(format!("target {target}'s {other} batches"));
+                    }
+                    if self.decide(child)? {
+                        return decline(format!("target {target} runs {other}"));
+                    }
+                }
             }
         }
         Ok(())
@@ -732,7 +749,7 @@ impl<'s, 'r> Engine<'s, 'r> {
 
     /// Decide `node`'s `Condition` (true when it has none).
     fn decide(&mut self, node: Node<'_, '_>) -> Result<bool, Decline> {
-        let Some(raw) = attribute(node, "Condition")? else {
+        let Some(raw) = expression_attribute(node, "Condition")? else {
             return Ok(true);
         };
         let raw = self.with_items(&raw, true)?;
@@ -768,10 +785,7 @@ impl<'s, 'r> Engine<'s, 'r> {
         if raw.contains("%(") {
             return decline(format!("{raw} reads metadata"));
         }
-        let Some(names) = plain_references(raw) else {
-            return decline(format!("{raw} calls a property function"));
-        };
-        for name in names {
+        for name in crate::properties::property_references(raw) {
             self.check_read(name)?;
             if self
                 .lookup
@@ -815,6 +829,13 @@ impl<'s, 'r> Engine<'s, 'r> {
     fn with_items(&mut self, raw: &str, condition: bool) -> Result<String, Decline> {
         if references_private(raw) {
             return decline(format!("{raw} reads a property no project can write"));
+        }
+        // MSBuild expands properties, functions included, before items, so a
+        // function receives an item reference in its arguments as text.
+        if item_reference_in_property(raw) {
+            return decline(format!(
+                "{raw} passes an item reference to a property function"
+            ));
         }
         // The tables hold identities decoded, and MSBuild expands a list from
         // their escaped spellings, which decoding loses. In a value that
@@ -877,15 +898,15 @@ impl<'s, 'r> Engine<'s, 'r> {
         Ok(out)
     }
 
-    /// Every reference in `raw` is a plain `$(Name)` the run may read.
+    /// Every property `raw` reads, a function's receiver or one in its
+    /// arguments, is one the run may read. Which functions run is the walk's
+    /// expression evaluator's business: what it does not model it reports,
+    /// and the run declines ([`Self::substitute`], [`Self::decide`]).
     fn check_references(&self, raw: &str) -> Result<(), Decline> {
         if raw.contains("@(") || raw.contains("%(") {
             return decline(format!("{raw} reads metadata or an item expression"));
         }
-        let Some(names) = plain_references(raw) else {
-            return decline(format!("{raw} calls a property function"));
-        };
-        for name in names {
+        for name in crate::properties::property_references(raw) {
             self.check_read(name)?;
         }
         Ok(())
@@ -1039,4 +1060,115 @@ fn may_assemble(escaped: &str) -> bool {
 /// escaped (raw, it would have split), as re-escaping spells it.
 fn respellable(identity: &str) -> bool {
     identity.trim() == identity && !identity.contains(['%', '*', '?', '@', '$', '(', ')', '\''])
+}
+
+/// The quote characters of MSBuild's expressions: a condition's `'`, and the
+/// `'`, `"` and `` ` `` a property function's string arguments may use.
+const QUOTES: [char; 3] = ['\'', '"', '`'];
+
+/// `node`'s attribute `name` holding an expression (a condition, a target
+/// list), as MSBuild reads it: the source text with its entities decoded and
+/// its whitespace kept. MSBuild normalises neither attribute values nor line
+/// ends (probed: a quoted CRLF reaches a property function as two characters,
+/// a lone CR as one), so a tab, line feed or carriage return reaches the
+/// expression as itself, where the XML reader's value has a space for each
+/// (and for each CRLF); that value serves only to check that this is the one
+/// difference. A character reference or an entity other than XML's five
+/// declines. (The walk still reads its conditions normalised: #750.)
+fn expression_attribute(node: Node<'_, '_>, name: &str) -> Result<Option<String>, Decline> {
+    let Some(attr) = node.attributes().find(|a| a.name() == name) else {
+        return Ok(None);
+    };
+    let raw = node
+        .document()
+        .input_text()
+        .get(attr.range_value())
+        .unwrap_or_default();
+    let Some(text) = decode_predefined_entities(raw) else {
+        return decline(format!(
+            "the {name} {raw} holds a character reference or an entity of its own"
+        ));
+    };
+    if text.replace("\r\n", "\n").replace(['\t', '\n', '\r'], " ") != attr.value() {
+        return decline(format!(
+            "the {name} {raw} reads apart from the XML reader's value"
+        ));
+    }
+    Ok(Some(text))
+}
+
+/// `raw` with XML's five predefined entities decoded; `None` for any other
+/// `&`, a character reference among them.
+fn decode_predefined_entities(raw: &str) -> Option<String> {
+    const ENTITIES: [(&str, char); 5] = [
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&amp;", '&'),
+        ("&quot;", '"'),
+        ("&apos;", '\''),
+    ];
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let (entity, c) = ENTITIES.iter().find(|(e, _)| rest.starts_with(e))?;
+        out.push(*c);
+        rest = &rest[entity.len()..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Whether an `@(` in `raw` sits inside a `$(…)` (a property function's
+/// receiver or arguments). Parentheses count from each `$(`, except inside a
+/// quoted argument, and an `@(` anywhere before the `$(…)` closes counts,
+/// quoted or not.
+fn item_reference_in_property(raw: &str) -> bool {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut open: Vec<usize> = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if !open.is_empty() && c == '@' && next == Some('(') {
+            return true;
+        }
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if !open.is_empty() && QUOTES.contains(&c) => quote = Some(c),
+            None if c == '$' && next == Some('(') => {
+                open.push(1);
+                i += 2;
+                continue;
+            }
+            None if c == '(' => {
+                if let Some(depth) = open.last_mut() {
+                    *depth += 1;
+                }
+            }
+            None if c == ')' => {
+                if let Some(depth) = open.last_mut() {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        open.pop();
+                    }
+                }
+            }
+            None => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether a task element's parameters or children mention metadata, which
+/// MSBuild batches on.
+fn task_batches(task: Node<'_, '_>) -> bool {
+    task.descendants().any(|node| {
+        node.attributes().any(|a| a.value().contains("%("))
+            || (node.is_text() && node.text().is_some_and(|t| t.contains("%(")))
+    })
 }

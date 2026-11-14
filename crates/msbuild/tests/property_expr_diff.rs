@@ -27,9 +27,9 @@ mod common;
 use borzoi_msbuild::test_support::{PropertyMap, substitute};
 use common::case_axis::{CaseContext, non_ascii_lookalike, respell_case, respell_keys};
 use common::{
-    CONTROLLED_PROPERTY_NAMES, ExpandVerdict, Oracle, SplitMix64,
+    CONTROLLED_PROPERTY_NAMES, ExpandVerdict, Oracle, SplitMix64, breaks_inside_quote,
     check_expand_certain_implies_exact, gen_expand_props, gen_expand_value, gen_grammar_value,
-    soak_parameters,
+    respell_whitespace, soak_parameters,
 };
 
 fn props(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -210,6 +210,18 @@ fn hand_picked_corners() {
         ),
         (
             "$([MSBuild]::GetTargetFrameworkIdentifier('net8.0'))",
+            props(&[]),
+            ExpandVerdict::Exact,
+        ),
+        // A line break inside a compact version: NuGet gives the TFM up as
+        // `Unsupported`.
+        (
+            "$([MSBuild]::GetTargetFrameworkIdentifier('net47\n2'))",
+            props(&[]),
+            ExpandVerdict::Partial,
+        ),
+        (
+            "$([MSBuild]::GetTargetFrameworkIdentifier('net472'))",
             props(&[]),
             ExpandVerdict::Exact,
         ),
@@ -1054,4 +1066,70 @@ fn get_file_name_without_extension_sweep() {
         Some("Default")
     );
     assert!(exact >= 1000, "too few committed cases: {exact}");
+}
+
+/// What one run of [`whitespace_variant_sweep`] saw.
+#[derive(Default, Debug)]
+struct WhitespaceCensus {
+    /// Committed expansions whose respelling put a tab or line feed somewhere.
+    committed_respelt: usize,
+    /// Of those, cases with one inside a quoted argument, where MSBuild reads
+    /// it as itself.
+    committed_inside_quote: usize,
+}
+
+fn whitespace_variant_sweep(
+    oracle: &mut Oracle,
+    rng: &mut SplitMix64,
+    cases: usize,
+) -> WhitespaceCensus {
+    let mut census = WhitespaceCensus::default();
+    for _ in 0..cases {
+        let props = gen_expand_props(rng);
+        let value = match rng.below(2) {
+            0 => gen_expand_value(rng),
+            _ => gen_grammar_value(rng),
+        };
+        let respelt = respell_whitespace(rng, &value);
+        let verdict = check_expand_certain_implies_exact(oracle, &respelt, &props);
+        if verdict == ExpandVerdict::Exact && respelt != value {
+            census.committed_respelt += 1;
+            census.committed_inside_quote += usize::from(breaks_inside_quote(&respelt));
+        }
+    }
+    census
+}
+
+/// The whitespace axis over expressions, at a fixed seed: each generated
+/// value with its spaces respelt as tabs and line feeds, which MSBuild reads
+/// literally in a condition or a target list (it does not normalise attribute
+/// values), held to certain-implies-exact.
+#[test]
+fn whitespace_variant_sweep_fixed_seed() {
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(0x0007_ab1f_e0f0);
+    let census = whitespace_variant_sweep(&mut oracle, &mut rng, 3000);
+    eprintln!("property-body whitespace-variant sweep: {census:?}");
+    // Observed at this seed: 296 respelt, 13 inside a quote.
+    assert!(
+        census.committed_respelt >= 200,
+        "only {} committed cases were respelt — the check is testing nothing",
+        census.committed_respelt
+    );
+    assert!(
+        census.committed_inside_quote >= 8,
+        "only {} committed cases broke a line inside a quote",
+        census.committed_inside_quote
+    );
+}
+
+/// Fresh-seed twin of [`whitespace_variant_sweep_fixed_seed`].
+#[test]
+#[ignore = "fresh-seed soak; run it when touching the property-expression evaluator"]
+fn whitespace_variant_sweep_soak() {
+    let (seed, cases) = soak_parameters("property-body whitespace-variant", 40_000);
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(seed);
+    let census = whitespace_variant_sweep(&mut oracle, &mut rng, cases);
+    eprintln!("property-body whitespace-variant soak: {census:?}");
 }

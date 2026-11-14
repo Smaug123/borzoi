@@ -457,7 +457,7 @@
 10.0.401 resolved hooked/App.fsproj reads property _TargetFrameworkVersionWithoutV	value agrees
 10.0.401 resolved hooked/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	value agrees
 10.0.401 resolved hooked/App.fsproj retains its targets	42 as MSBuild ran them, 0 not exact
-10.0.401 resolved hooked/App.fsproj runs GenerateRestoreGraphFile	declines:  $(MSBuildProjectFullPath.EndsWith('.metaproj')) != 'true' AND $(-ItemList-RestoreGraphProjectInputItems) == ''  calls a property function
+10.0.401 resolved hooked/App.fsproj runs GenerateRestoreGraphFile	declines:  '%(RestoreGraphProjectInputItems.Extension)' != '.metaproj'                    AND '%(RestoreGraphProjectInputItems.Extension)' != '.shproj'                    AND '%(RestoreGraphProjectInputItems.Extension)' != '.vcxitems'                    AND '%(RestoreGraphProjectInputItems.Extension)' != '.vdproj'                    AND '%(RestoreGraphProjectInputItems.Extension)' != ''  reads metadata or an item expression
 10.0.401 resolved net10/App.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
@@ -685,4 +685,4 @@
 10.0.401 resolved net10/App.fsproj reads property _TargetFrameworkVersionWithoutV	value agrees
 10.0.401 resolved net10/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	value agrees
 10.0.401 resolved net10/App.fsproj retains its targets	42 as MSBuild ran them, 0 not exact
-10.0.401 resolved net10/App.fsproj runs GenerateRestoreGraphFile	declines:  $(MSBuildProjectFullPath.EndsWith('.metaproj')) != 'true' AND $(-ItemList-RestoreGraphProjectInputItems) == ''  calls a property function
+10.0.401 resolved net10/App.fsproj runs GenerateRestoreGraphFile	declines:  '%(RestoreGraphProjectInputItems.Extension)' != '.metaproj'                    AND '%(RestoreGraphProjectInputItems.Extension)' != '.shproj'                    AND '%(RestoreGraphProjectInputItems.Extension)' != '.vcxitems'                    AND '%(RestoreGraphProjectInputItems.Extension)' != '.vdproj'                    AND '%(RestoreGraphProjectInputItems.Extension)' != ''  reads metadata or an item expression

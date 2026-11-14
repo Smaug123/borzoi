@@ -1601,3 +1601,40 @@ pub fn check_target(
         }
     }
 }
+
+/// `text` with each space respelt, now and then, as a tab, line feed, carriage
+/// return or CRLF, and one of those (or a space) now and then inserted between
+/// two characters.
+///
+/// MSBuild reads a project's XML without attribute-value or line-end
+/// normalisation, so a condition or property function it evaluates can hold
+/// any of them wherever its author wrote one: whitespace between tokens, or a
+/// character inside a quoted string. An evaluator handed the raw attribute
+/// text must agree with MSBuild on both.
+pub fn respell_whitespace(rng: &mut SplitMix64, text: &str) -> String {
+    const WHITESPACE: [&str; 5] = [" ", "\t", "\n", "\r", "\r\n"];
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if !out.is_empty() && rng.below(12) == 0 {
+            out.push_str(rng.pick(&WHITESPACE));
+        }
+        if c == ' ' {
+            out.push_str(rng.pick(&WHITESPACE));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether `text` holds a tab, line feed or carriage return inside a
+/// `'`-quoted run, where MSBuild reads it as itself rather than as whitespace.
+pub fn breaks_inside_quote(text: &str) -> bool {
+    let mut quoted = false;
+    text.chars().any(|c| {
+        if c == '\'' {
+            quoted = !quoted;
+        }
+        quoted && matches!(c, '\t' | '\n' | '\r')
+    })
+}

@@ -34,7 +34,7 @@ const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// reference as `$(A)$(B)`, which MSBuild expands as such.
 /// `@(I)` and `@(J)` read item lists (an `Include` copies them), and a
 /// transform is an item expression the executor declines.
-const VALUES: [&str; 18] = [
+const VALUES: [&str; 21] = [
     "x",
     "y",
     "$(A)z",
@@ -56,8 +56,13 @@ const VALUES: [&str; 18] = [
     "$(-ItemList-J)",
     // A list run into text: with `J` holding a lone `%`, MSBuild reads `A`.
     "@(J)41",
+    // Property functions: one the walk models, a static one, and one MSBuild
+    // throws on.
+    "$(A.ToUpper())",
+    "$([System.String]::Concat('p', $(A)))",
+    "$(A.Substring(9))",
 ];
-const CONDITIONS: [&str; 8] = [
+const CONDITIONS: [&str; 17] = [
     "'$(A)' == 'x'",
     "'$(A)' != 'x'",
     "'$(B)' == ''",
@@ -65,6 +70,24 @@ const CONDITIONS: [&str; 8] = [
     "'$(Gated)' == 'g'",
     "'@(I)' == ''",
     "@(J) != ''",
+    // Property functions, which the walk's expression evaluator decides.
+    "'$(A.ToUpper())' == 'X'",
+    "$(A.EndsWith('x'))",
+    // An entity, and line breaks outside and inside a quoted string.
+    "'$(A)' != '&lt;'",
+    "'$(A)' == 'x'\n   and '$(B)' == ''",
+    // False in MSBuild, which keeps the line break; true once an XML reader
+    // normalises it to a space.
+    "'x\ny' == 'x y'",
+    // The same with its quotes spelt as entities.
+    "&apos;x\ny&apos; == &apos;x y&apos;",
+    // A property function's quoted argument breaking a line: with `A` as
+    // " x ", false in MSBuild and true once normalised; and its quotes spelt
+    // as entities.
+    "$(A.Contains(`x\n`))",
+    "$(A.Contains(&quot;x\n&quot;))",
+    // MSBuild passes a function the item reference as text.
+    "$([System.String]::IsNullOrEmpty('@(J)'))",
     "Exists('nowhere')",
 ];
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
@@ -92,11 +115,14 @@ fn label(rng: &mut SplitMix64) -> &'static str {
 
 fn condition(rng: &mut SplitMix64) -> String {
     if rng.below(3) == 0 {
-        // `Exists` (which the executor declines) only now and then.
+        // Mostly one of the first five, which the executor decides; now and
+        // then any but the last; `Exists` (which it declines) rarely.
         let pick = if rng.below(20) == 0 {
             CONDITIONS.len() - 1
-        } else {
+        } else if rng.below(3) == 0 {
             rng.below(CONDITIONS.len() - 1)
+        } else {
+            rng.below(5)
         };
         format!(" Condition=\"{}\"", CONDITIONS[pick])
     } else {
@@ -125,10 +151,11 @@ fn project(rng: &mut SplitMix64) -> String {
         ""
     };
     let mut out = format!("<Project{initial}>\n  <PropertyGroup>\n");
-    // `A=@` and `B=(I)` assemble an item reference as `$(A)$(B)`.
+    // `A=@` and `B=(I)` assemble an item reference as `$(A)$(B)`; a padded
+    // `A` tells a line break in a quoted argument from a space.
     out.push_str(&format!(
         "    <A>{}</A>\n",
-        rng.pick(&["x", "y", "x", "y", "@"])
+        rng.pick(&["x", "y", "x", "y", "@", " x "])
     ));
     match rng.below(8) {
         0..=3 => out.push_str("    <B>b</B>\n"),
@@ -237,7 +264,7 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
         }
         out.push_str(&format!("  <Target Name=\"{name}\"{attributes}>\n"));
         for _ in 0..rng.below(3) {
-            match rng.below(12) {
+            match rng.below(13) {
                 0..=6 => {
                     out.push_str(&format!("    <PropertyGroup{}>\n", condition(rng)));
                     for _ in 0..1 + rng.below(2) {
@@ -262,7 +289,14 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
                     "    <Message Text=\"$(A)\" Importance=\"{}\" />\n",
                     rng.pick(&["low", "high", " Normal ", "invalid"])
                 )),
-                _ => out.push_str("    <Error Condition=\"false\" Text=\"no\" />\n"),
+                // Batching MSBuild cannot do fails the build whatever the condition.
+                12 => out.push_str("    <Error Condition=\"false\" Text=\"%(M)\" />\n"),
+                // A task the executor does not run, behind a condition that is
+                // false (it does not run in MSBuild either) or true.
+                _ => out.push_str(&format!(
+                    "    <Error Condition=\"{}\" Text=\"no\" />\n",
+                    rng.pick(&["false", "'$(A)' == 'nope'", "true"])
+                )),
             }
         }
         out.push_str("  </Target>\n");
@@ -600,6 +634,68 @@ fn identities_decoding_loses_the_spelling_of() {
                <ItemGroup><I Include="$(C)" /></ItemGroup>
              </Target>
            </Project>"#,
+    ];
+    let mut oracle = Oracle::spawn();
+    for xml in CASES {
+        check(&mut oracle, xml, &mut Tally::default());
+    }
+}
+
+/// Expressions the XML reader and MSBuild read apart: a line break inside
+/// any of MSBuild's quotes (`'`, `"`, `` ` ``), nested ones too, which XML
+/// attribute normalisation turns into a space, in a condition and in a
+/// target list; a quote spelt as an entity; and an item list inside a
+/// property function's quoted argument, past parentheses the quote holds.
+/// Each run may decline; if it runs, it must be MSBuild's.
+#[test]
+fn quoted_expressions_read_as_msbuild_reads_them() {
+    const CASES: [&str; 7] = [
+        "<Project>
+           <PropertyGroup><A>x y</A></PropertyGroup>
+           <Target Name=\"T0\"
+                   Condition=\"$([System.String]::IsNullOrEmpty('$(A.TrimStart('x\ny'))'))\">
+             <PropertyGroup><C>ran</C></PropertyGroup>
+           </Target>
+         </Project>",
+        "<Project>
+           <PropertyGroup><A>x y</A></PropertyGroup>
+           <Target Name=\"T0\" Condition=\"$(A.Split(`\n`).Length) == 2\">
+             <PropertyGroup><C>ran</C></PropertyGroup>
+           </Target>
+         </Project>",
+        "<Project>
+           <PropertyGroup><A>x y</A></PropertyGroup>
+           <Target Name=\"T0\" DependsOnTargets=\"T$(A.Split('\n').Length)\" />
+           <Target Name=\"T1\"><PropertyGroup><C>one</C></PropertyGroup></Target>
+           <Target Name=\"T2\"><PropertyGroup><C>two</C></PropertyGroup></Target>
+         </Project>",
+        "<Project>
+           <PropertyGroup><A>x y z</A></PropertyGroup>
+           <Target Name=\"T0\" DependsOnTargets=\"T1\" />
+           <Target Name=\"T1\"><PropertyGroup><C>one</C></PropertyGroup></Target>
+           <Target Name=\"T2\" AfterTargets='T$(A.Split(\"\t\").Length)'>
+             <PropertyGroup><C>two</C></PropertyGroup>
+           </Target>
+         </Project>",
+        "<Project>
+           <PropertyGroup><A>x y</A></PropertyGroup>
+           <Target Name=\"T0\" Condition=\"$(A.Split(&quot;\n&quot;).Length) == 2\">
+             <PropertyGroup><C>ran</C></PropertyGroup>
+           </Target>
+         </Project>",
+        "<Project>
+           <PropertyGroup><A>x y</A></PropertyGroup>
+           <Target Name=\"T0\" Condition=\"$(A.Split(&apos;\n&apos;).Length) == 2\">
+             <PropertyGroup><C>ran</C></PropertyGroup>
+           </Target>
+         </Project>",
+        "<Project>
+           <PropertyGroup><A>)) j </A></PropertyGroup>
+           <ItemGroup><J Include=\"j\" /></ItemGroup>
+           <Target Name=\"T0\" Condition=\"'$(A.Contains(`)) @(J) `))' == 'true'\">
+             <PropertyGroup><C>ran</C></PropertyGroup>
+           </Target>
+         </Project>",
     ];
     let mut oracle = Oracle::spawn();
     for xml in CASES {
