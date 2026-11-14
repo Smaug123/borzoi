@@ -843,6 +843,8 @@ struct Session {
     input: borzoi::inbox::InboxSender,
     /// Requests whose runs stopped at a checkpoint.
     stops: usize,
+    /// The methods of every request the server sent the client.
+    server_requests: Vec<String>,
 }
 
 impl Session {
@@ -882,6 +884,7 @@ impl Session {
             published: BTreeMap::new(),
             owed_acks: Vec::new(),
             stops: 0,
+            server_requests: Vec::new(),
         }
     }
 
@@ -1018,7 +1021,10 @@ impl Session {
                     .or_default()
                     .push(response);
             }
-            Message::Request(request) => self.owed_acks.push(request.id),
+            Message::Request(request) => {
+                self.server_requests.push(request.method);
+                self.owed_acks.push(request.id);
+            }
             Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
                 let uri = n.params["uri"].as_str().unwrap().to_string();
                 let mut view = n.params.clone();
@@ -2189,5 +2195,68 @@ fn the_epoch_holds_at_most_its_bound() {
             assert!(epochs_ended <= 1, "the rest fits in one more epoch");
         }
         assert_eq!(epochs_ended, 1, "the epoch ended once at its bound");
+    });
+}
+
+/// A rebuild that stops still owes what the finished rebuild owes: a closed
+/// Compile item rewritten on disk with no watch event stales the fold, and
+/// the request that finds it stale owes the client a semantic-token refresh,
+/// whether its rebuild finishes in that run or stops at a parse and finishes
+/// in the next (the stale parses that decide the refresh survive the stop).
+#[test]
+fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
+    on_server_stack(|| {
+        for stop in [None, Some(0)] {
+            let mut world = World::new();
+            let a = world.uri(Doc::Src(Src::A));
+            let c = world.uri(Doc::Src(Src::C));
+            let tokens_c = || {
+                request(
+                    "tokens",
+                    "textDocument/semanticTokens/full",
+                    json!({ "textDocument": { "uri": c } }),
+                )
+            };
+            let mut session = Session::start(&world.root, false);
+            session.deliver(vec![
+                did_open(&a, Src::A.text(0)),
+                did_open(&c, Src::C.text(0)),
+            ]);
+            session.settle();
+            session.deliver(vec![tokens_c()]);
+            session.settle();
+            session.server_requests.clear();
+            // `B` is closed: no sync announces this.
+            world.write(Src::B, 1);
+            let trace = Arc::new(Mutex::new(UnitTrace::default()));
+            let subscriber = StopAtUnit {
+                at: stop,
+                input: session.input.clone(),
+                trace: Arc::clone(&trace),
+            };
+            let answers =
+                tracing::subscriber::with_default(subscriber, || session.deliver(vec![tokens_c()]));
+            assert_eq!(error_code(&answers, "tokens"), None);
+            let trace = std::mem::take(&mut *trace.lock().unwrap());
+            assert_eq!(
+                trace.stopped,
+                usize::from(stop.is_some()),
+                "the rebuild stopped as planned: {trace:?}"
+            );
+            assert!(
+                trace.units.first() == Some(&"parse_compile_item"),
+                "the request rebuilt the parses: {trace:?}"
+            );
+            let refreshes = session
+                .server_requests
+                .iter()
+                .filter(|method| *method == "workspace/semanticTokens/refresh")
+                .count();
+            assert_eq!(
+                refreshes, 1,
+                "stopping at {stop:?}: the unannounced change owes one token refresh, sent {:?}",
+                session.server_requests
+            );
+        }
     });
 }
