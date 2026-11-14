@@ -4056,6 +4056,43 @@ The final head differs from 282c5e50 only in what a stop settles, which
 in this script is nothing (the evaluation moved, so no fold is kept
 stale).
 
+**With the cutoffs** (the follow-up above, merged at db3128a9), measured
+on the box the same way: the keystroke script and the bursts three runs
+each, `blocked-edit` five, each row the minimum. Stage 9 alone and the
+cutoffs alone (7547cb2a, with this stage's harness) beside them:
+
+| per keystroke (WoofWare.Incremental) | Stage 8 | Stage 9 | combined |
+|---|---:|---:|---:|
+| `didChange E` | 0.11 M | 0.13 M | 0.01 M |
+| `diagnostic E` | 3.57 M | 3.57 M | 3.57 M |
+| `diagnostic L` | 2.77 M | 2.75 M | 2.77 M |
+| `semanticTokens E` | 9.74 M | 9.78 M | 9.77 M |
+| `semanticTokens L` | 13.57 M | 13.59 M | 13.58 M |
+| `hover L` | 8.89 M | 8.92 M | 8.93 M |
+| **total** | **38.69 M** | **38.81 M** | **38.78 M** |
+
+| burst, whole | Stage 8 | Stage 9 | combined |
+|---|---:|---:|---:|
+| 4 keystrokes | 89.6 M | 89.4 M | 89.1 M |
+| 16 keystrokes | 300.1 M | 302.4 M | 299.4 M |
+
+| `blocked-edit`: the edit waited | Stage 8 | cutoffs alone | Stage 9 alone | **combined** | budget |
+|---|---:|---:|---:|---:|---:|
+| WoofWare.Incremental | 3,436.2 M | 990.7 M | 379.8 M | **377.5 M** | 50 M |
+| WoofWare.PawPrint.Domain | 3,941.5 M | 825.9 M | 356.4 M | **379.3 M** | 50 M |
+
+The combined window is 381.3 M and 388.0 M, of which 294.5 M and 295.0 M
+come before the edit is sent; the request stopped once in every round, and
+`diagnostic E` was answered first. Together the two cut the wait to about
+a ninth of Stage 8's and well below the cutoffs alone, but not below Stage 9
+alone: what the cutoffs remove (the env rebuilt after the defines moved) is
+work a stopped request no longer does before the edit is handled. What is
+left is what Stage 9 alone left: the re-evaluation before the edit is sent
+(about 295 M), the rest of the evaluation unit the edit arrives in (31 M,
+`checks_and_exempt`), and the new evaluation's first confirmation, which
+`diagnostic E` pays (2,397 and 2,448 `stat`s). The gate fails by about 7
+times.
+
 **Departures.**
 
 - **No worker and no snapshot.** The plan sketched a worker running
