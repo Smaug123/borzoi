@@ -2699,21 +2699,24 @@ The plan's headline, per round:
 
 | round of | instructions 6a | 6b | allocs 6a | 6b | envs built 6a | 6b |
 |---|---:|---:|---:|---:|---:|---:|
-| a build of the unrelated project (its two output DLLs' events) | 3,114.8 M | **26.1 M** | 3,819,086 | 5,636 | 1 | **0** |
-| a save of the unrelated project's `.fsproj` | 3,647.9 M | **1,226.6 M** | 3,967,669 | 581,684 | 1 | **0** |
+| a build of the unrelated project (its two output DLLs' events) | 3,114.8 M | **37.6 M** | 3,819,086 | 7,128 | 1 | **0** |
+| a save of the unrelated project's `.fsproj` | 3,647.9 M | **1,238.2 M** | 3,967,669 | 583,168 | 1 | **0** |
 
 | row, per round | build 6a | 6b | save 6a | 6b |
 |---|---:|---:|---:|---:|
-| `didChangeWatchedFiles` | 154.4 M | 1.0 M | 481.4 M | 329.4 M |
-| `diagnostic E` | 2.6 M | 2.7 M | 56.1 M | 56.4 M |
-| `diagnostic L` | 2.7 M | 2.7 M | 2.7 M | 2.8 M |
-| `semanticTokens E` | 2,307.6 M | 5.5 M | 2,464.0 M | 198.1 M |
-| `semanticTokens L` | 555.6 M | 7.1 M | 554.3 M | 551.0 M |
-| `hover L` | 88.6 M | 6.8 M | 88.4 M | 87.9 M |
+| `didChangeWatchedFiles` | 154.4 M | 1.0 M | 481.4 M | 328.0 M |
+| `diagnostic E` | 2.6 M | 2.6 M | 56.1 M | 55.9 M |
+| `diagnostic L` | 2.7 M | 2.7 M | 2.7 M | 2.7 M |
+| `semanticTokens E` | 2,307.6 M | 17.0 M | 2,464.0 M | 213.5 M |
+| `semanticTokens L` | 555.6 M | 7.0 M | 554.3 M | 550.5 M |
+| `hover L` | 88.6 M | 6.7 M | 88.4 M | 87.2 M |
 
 A build of a project the measured one does not reference builds no env and
-folds nothing: each fold-reading request confirms the env (10 `stat`s) and
-serves the cached fold. 6a dropped every env on the `.dll` event (the
+folds nothing. The first fold-reading request after the event confirms the
+env widened to its installed contents (352 `stat`s, about 10 M: the price
+of covering an in-place change to an installed version under any
+spelling), the rest confirm it with 10 `stat`s, and all serve the cached
+fold. 6a dropped every env on the `.dll` event (the
 154 M of `didChangeWatchedFiles` is freeing it) and the next request built
 it and folded cold. A save builds no env either; what is left (1.23 G) is
 everything else a structural event still drops: every evaluation (the
@@ -2725,28 +2728,30 @@ The keystroke:
 
 | message, per keystroke | instructions 6a | 6b | allocs 6a | 6b | av.stat |
 |---|---:|---:|---:|---:|---:|
-| `didChange E` | 0.14 M | 0.13 M | 99 | 99 | 0 |
-| `diagnostic E` | 3.39 M | 3.37 M | 247 | 247 | 0 |
-| `diagnostic L` (`unchanged`) | 2.67 M | 2.65 M | 84 | 84 | 0 |
-| `semanticTokens E` | 8.40 M | 9.06 M | 4,928 | 4,932 | 10 |
-| `semanticTokens L` | 12.47 M | 13.04 M | 11,443 | 11,447 | 10 |
-| `hover L` | 7.69 M | 8.36 M | 3,878 | 3,886 | 10 |
-| **keystroke total** | **34.90 M** | **36.68 M** | 20,679 | 20,695 | **30** |
+| `didChange E` | 0.14 M | 0.16 M | 99 | 99 | 0 |
+| `diagnostic E` | 3.39 M | 3.41 M | 247 | 247 | 0 |
+| `diagnostic L` (`unchanged`) | 2.67 M | 2.68 M | 84 | 84 | 0 |
+| `semanticTokens E` | 8.40 M | 9.05 M | 4,928 | 4,932 | 10 |
+| `semanticTokens L` | 12.47 M | 13.09 M | 11,443 | 11,447 | 10 |
+| `hover L` | 7.69 M | 8.38 M | 3,878 | 3,886 | 10 |
+| **keystroke total** | **34.90 M** | **36.82 M** | 20,679 | 20,695 | **30** |
 
 Each message that reads the fold confirms the env once: 10 `stat`s and
 nothing else (the entry's evaluation checks among its reads were confirmed
 by the workspace earlier in the same generation, through the same checker,
-so they cost nothing more), about 0.6 M instructions and 4 allocations. A keystroke costs 1.8 M (5%) more. The plan's Stage 7 estimate
-("roughly 130 `stat`s per fold-reading request in total") put this part at
-about 50: the installed-version exemption and the shared checker make it 10.
+so they cost nothing more), about 0.65 M instructions and 4 allocations. A
+keystroke costs 1.9 M (5.5%) more. The plan's Stage 7 estimate ("roughly
+130 `stat`s per fold-reading request in total") put this part at about 50:
+the installed-version exemption and the shared checker make it 10.
 
 The cold rows: the env is built in `semanticTokens E (cold)` as before, now
-also turning its 385 reads into checks (55 M and 14,700 allocations more:
-classifying each read's path against the installed versions, and a `stat`
-of each package's commit marker), and the first confirmation, in `semanticTokens L (cold)`,
-asks each check's query once and takes its witness (2,087 `stat`s, 33
-listings, 27 canonicalisations; 50 M), as an evaluation's first confirmation
-does (Stage 3b). From then on it is the 10 `stat`s.
+also turning its reads into checks and exempt reads (67 M and 20,600
+allocations more: classifying each read's path against the installed
+versions, and 175 `stat`s of the packages' commit markers), and the first
+confirmation, in `semanticTokens L (cold)`, asks each check's query once and
+takes its witness (2,377 `stat`s, 33 listings, 27 canonicalisations; 52 M),
+as an evaluation's first confirmation does (Stage 3b). From then on it is
+the 10 `stat`s.
 
 ### Stage 7: delete the hand-wired invalidation
 
