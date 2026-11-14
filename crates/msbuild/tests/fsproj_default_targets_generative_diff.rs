@@ -22,8 +22,11 @@ use common::{Oracle, SplitMix64};
 
 const NAME: &str = "MSBuildProjectDefaultTargets";
 /// MSBuild stores the unescaped text as the escaped value, so `%2541` reads
-/// back as `A`.
-const VALUES: [&str; 9] = [
+/// back as `A`. Blanks and separators set the property but list no target,
+/// so a later root may still set it.
+const VALUES: [&str; 11] = [
+    " ; ",
+    "  ",
     "A",
     " A ; B ",
     "%41",
@@ -46,7 +49,7 @@ fn default_targets(rng: &mut SplitMix64) -> String {
 }
 
 /// The entry project and the two files it may import.
-fn tree(rng: &mut SplitMix64) -> [(&'static str, String); 3] {
+fn tree(rng: &mut SplitMix64) -> Vec<(&'static str, String)> {
     let mut entry = format!("<Project{}>\n", default_targets(rng));
     if rng.below(2) == 0 {
         entry.push_str("  <PropertyGroup><P>p</P></PropertyGroup>\n");
@@ -71,7 +74,16 @@ fn tree(rng: &mut SplitMix64) -> [(&'static str, String); 3] {
     };
     let a = imported(rng);
     let b = imported(rng);
-    [("p.proj", entry), ("a.props", a), ("b.targets", b)]
+    let mut files = vec![("p.proj", entry), ("a.props", a), ("b.targets", b)];
+    // A `Directory.Build.props` beside an SDK-less project, which MSBuild
+    // never imports and the walk splices in.
+    if rng.below(5) == 0 {
+        files.push((
+            "Directory.Build.props",
+            format!("<Project{}>\n</Project>\n", default_targets(rng)),
+        ));
+    }
+    files
 }
 
 #[derive(Default)]
@@ -82,7 +94,7 @@ struct Tally {
     committed_unset: usize,
 }
 
-fn check(oracle: &mut Oracle, files: &[(&str, String); 3], tally: &mut Tally) {
+fn check(oracle: &mut Oracle, files: &[(&str, String)], tally: &mut Tally) {
     tally.cases += 1;
     let dir = tempfile::tempdir().unwrap();
     let root = host_fs::canonicalize(dir.path()).unwrap();

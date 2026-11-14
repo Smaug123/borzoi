@@ -2007,16 +2007,20 @@ stop at opacity.
 rests on the reserved `MSBuildProjectDefaultTargets`. The walk sets it as
 MSBuild's `Evaluator.UpdateDefaultTargets` does. The first project or
 import root, in depth-first import order and before its own implicit
-imports, whose `DefaultTargets` expands (properties only) to something sets
+imports, whose `DefaultTargets` expands (properties only) to anything sets
 it, unescaped and untrimmed. MSBuild stores that unescaped text as the
-escaped value, so `%2541` reads back as `A`, and nothing changes it after.
-On SDK projects it is `Build`, from `Microsoft.Common.targets`. A root whose
-expansion the walk cannot vouch for, or one reached after the walk passed
-content it could not see, leaves it unset and inexact.
+escaped value, so `%2541` reads back as `A`. The first that lists a target
+settles it. Blanks or separators alone leave it open to a later root. On SDK
+projects it is `Build`, from `Microsoft.Common.targets`. It is left unset
+and inexact, settling the offer, by a root whose expansion the walk cannot
+vouch for, by a root in a `Directory.Build.*` file the walk spliced in
+itself, or by opacity while the offer is open.
 `fsproj_default_targets_generative_diff` holds it to MSBuild over entry and
 imported roots, literal, padded, escaped, list, empty and property-expanded
-values, and an import the walk cannot decide. Trimming, the last root
-winning, ignoring opacity, or re-escaping each fails its soak.
+values, blanks and separators, a `Directory.Build.props` beside an SDK-less
+project, and an import the walk cannot decide. Each of these fails its soak:
+trimming, the last root winning, settling on blanks, latching in a splice,
+ignoring opacity, or re-escaping.
 
 #### A₁.4: the task leaves
 

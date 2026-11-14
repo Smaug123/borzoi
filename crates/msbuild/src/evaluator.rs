@@ -3346,6 +3346,13 @@ impl<'r> State<'r> {
         if self.walk_opaque.is_none() {
             self.walk_opaque = Some(cause);
         }
+        // Content the walk could not see may hold the root that settles
+        // `MSBuildProjectDefaultTargets` ([`latch_default_targets`]): an offer
+        // still open settles with the property unset.
+        if !self.default_targets_decided {
+            self.default_targets_decided = true;
+            self.lookup.remove("MSBuildProjectDefaultTargets");
+        }
     }
 
     /// Why an undecided import gate makes the walk opaque: the root its
@@ -6354,16 +6361,21 @@ fn resolve_property_import_target(
 /// silently (see below). The depth increment/decrement pair only runs
 /// on the happy path.
 /// Offer `root`'s `DefaultTargets` to `MSBuildProjectDefaultTargets`, as
-/// MSBuild's `Evaluator.UpdateDefaultTargets` does: the first project or
-/// import root, in depth-first import order and before its own implicit
-/// imports, whose `DefaultTargets` expands (properties only) to something
-/// sets it, unescaped and untrimmed, and nothing changes it after. MSBuild
-/// stores that unescaped text as the property's escaped value.
+/// MSBuild's `Evaluator.UpdateDefaultTargets` does. Roots are offered in
+/// depth-first import order, each before its own implicit imports. A root
+/// whose `DefaultTargets` expands (properties only) to anything sets the
+/// property to that text, unescaped and untrimmed; MSBuild stores the
+/// unescaped text as the escaped value. The offer settles at the first root
+/// whose expansion lists a target (split on `;`, each trimmed), and nothing
+/// changes the property after; a root that sets it to blanks or separators
+/// alone leaves the offer open.
 ///
-/// A root whose expansion the walk cannot vouch for (an undecided or
-/// unpinned read), or one reached after the walk passed content it could
-/// not see (which may have set it first), ends the offer without a value:
-/// the name stays unset, and reads of it stay inexact.
+/// A root the walk cannot vouch for settles the offer with the property
+/// unset, so reads of it stay inexact. That is one whose expansion reads an
+/// undecided or unpinned value, one reached after the walk passed content it
+/// could not see (which may have set it first), and one in a
+/// `Directory.Build.*` file the walk spliced in itself, which MSBuild
+/// imports only when an SDK chain reaches the point that file stands for.
 fn latch_default_targets(root: Node<'_, '_>, state: &mut State<'_>) {
     if state.default_targets_decided {
         return;
@@ -6372,15 +6384,24 @@ fn latch_default_targets(root: Node<'_, '_>, state: &mut State<'_>) {
         return;
     };
     let expansion = item_pass::expand_silent(raw, state);
-    if expansion.had_issue() || expansion.unpinned_root.is_some() || state.walk_opaque.is_some() {
+    if expansion.had_issue()
+        || expansion.unpinned_root.is_some()
+        || state.walk_opaque.is_some()
+        || state.active_directory_build_splice.is_some()
+    {
         state.default_targets_decided = true;
+        state.lookup.remove("MSBuildProjectDefaultTargets");
         return;
     }
     if expansion.value.is_empty() {
         return;
     }
-    state.default_targets_decided = true;
     let value = expansion.value.unescape();
+    state.default_targets_decided = expansion
+        .value
+        .as_escaped()
+        .split(';')
+        .any(|target| !properties::escaping::unescape(target).trim().is_empty());
     state
         .lookup
         .insert_escaped("MSBuildProjectDefaultTargets", Escaped::from_xml(value));
