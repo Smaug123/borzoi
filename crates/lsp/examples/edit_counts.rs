@@ -143,7 +143,7 @@
 //! * `EDIT_COUNTS_BURST` (keystroke script only): each round queues this many
 //!   keystrokes, each with the requests a pull client sends after it, while
 //!   the server is held between two messages, then lets it go: the whole
-//!   burst is waiting when the server next reads the connection. A round's
+//!   burst is waiting when the server next reads its inbox. A round's
 //!   row is the whole burst, and the run prints how its requests were
 //!   answered (with a result, `ContentModified`, `RequestCancelled`).
 //!

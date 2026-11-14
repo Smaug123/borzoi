@@ -28,8 +28,8 @@
 //! fourteen thousand projects and a quarter of an hour. So the sweep is a
 //! [`Sweep`] value advanced one unit at a time by [`Sweep::step`] — one
 //! directory read, one project evaluated, or one file diagnosed — and the
-//! dispatch loop (`crate::server::run_with_fetcher`) looks at the connection
-//! between units. An interactive request waits for at most one unit, a
+//! dispatch loop (`crate::server::run_inbox`) looks at its inbox between
+//! units. An interactive request waits for at most one unit, a
 //! `$/cancelRequest` or a newer sweep ends this one, and a hang-up or `exit`
 //! abandons it. Nothing bounds the sweep's *total* run time; what is bounded is
 //! how long it can hold anything else up.

@@ -1742,7 +1742,7 @@ fn a_superseded_change_publishes_nothing() {
     });
 }
 
-/// Sends messages on the connection (the closure it holds) when the server
+/// Sends messages to the loop (the closure it holds) when the server
 /// ends its first generation: as a client's messages arrive while the loop is
 /// handling one.
 type Sending = Box<dyn FnOnce() + Send>;
@@ -1777,7 +1777,7 @@ impl tracing::Subscriber for SendAtFirstGeneration {
     fn exit(&self, _: &tracing::span::Id) {}
 }
 
-/// The loop reads the connection again before each message it handles: a
+/// The loop reads its inbox again before each message it handles: a
 /// change that arrives while it handles an earlier message refuses a request
 /// it had read before the change arrived.
 #[test]

@@ -7,8 +7,9 @@
 > Stage 4a (ownership listings are observed and counted), Stage 4b
 > (ownership is memoised), Stage 5 (one parse per text), Stages 6a and 6b
 > (env read sets, targeted assembly invalidation), Stage 7 (the
-> hand-wired invalidation deleted) and Stage 8 (coalescing in the dispatch
-> loop) implemented; Stage 9's gate measured, and failed. Tracks
+> hand-wired invalidation deleted), Stage 8 (coalescing in the dispatch
+> loop) and Stage 9 (a running request stops for a notification)
+> implemented; Stage 9's gate is still not met (see its measurement). Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -3565,6 +3566,47 @@ the re-run pays one unit at most again.
   notification, and one that the edit's pull is answered before the request
   it interrupted.
 - `blocked-edit`, measured on both projects.
+
+**Implemented** (`crates/lsp/src/inbox.rs`, `crates/lsp/src/server.rs`,
+`crates/lsp/src/batch.rs`, `crates/lsp/src/semantic.rs`, the handlers):
+
+- **The inbox.** `inbox::forward` is the input thread: it takes each message
+  from the transport into a channel of 1,024 and counts each notification
+  after the message is in the channel. `server::run_with_fetcher` starts it,
+  so `main` no longer buffers its input itself; `server::run_inbox` is the
+  loop over an inbox, which tests and `edit_counts` drive through an
+  `InboxSender` of their own. The handover is a description
+  (`inbox::handover`: push, then count), which `InboxSender::send` performs
+  and the interleaving test schedules action by action.
+- **The step.** `Dispatcher::step` reads the counter, then what is waiting
+  (`Inbox::begin_step`), plans, and runs the next step; a request runs with
+  the `Watch` holding the count read.
+- **The checkpoints.** `Watch::check` emits `inbox::CHECKPOINT_EVENT`, then
+  compares. The fold's entry points have watched variants
+  (`SemanticState::parses_for_project_watched`,
+  `resolved_prefix_and_env_watched`, `inferred_prefix_watched`) that check
+  after confirming the evaluation, before each Compile item after the first,
+  after the parses, after the env, after the fold and after the inference,
+  each unit cached first. The handlers that fold (`hover`, `definition`,
+  `references`, `completion`, `semanticTokens`, `workspace/symbol`) take a
+  watch (`handle_watched`) and check after finding the owning project; the
+  loop checks once more after the handler returns. Every other caller keeps
+  the unwatched entry points, which no checkpoint can stop
+  (`inbox::never_superseded`). Hover computes its project prefix once
+  (`FilePrefix`) and hands it to both of its project paths.
+- **A stop.** A handler's `Superseded` reaches `Dispatcher::execute`, which
+  puts the request back into the epoch unanswered, emits
+  `inbox::STOPPED_EVENT`, finishes the step as for any request (the moved
+  evaluations, the deferral report, the owed refreshes, the generation's
+  end) and returns `Progress::Stopped`. The next step reads what arrived and
+  only then records the request as a `batch::Restart` with the size of the
+  epoch, so the requests that arrived with the notification run before it.
+  A stopped fold records no outcome, and puts back the stale parses its
+  rebuild needs to decide the refresh it owes.
+- **The plan** takes the restarts (`batch::plan`'s `restarts`): a restarted
+  request runs after every request the epoch held when it stopped and
+  before any read later, and its fate is still decided by what arrived after
+  it.
 
 ## Non-goals
 

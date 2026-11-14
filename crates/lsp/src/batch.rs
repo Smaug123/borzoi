@@ -2,11 +2,11 @@
 //! Stage 8): what to do with the messages the loop has read and not yet
 //! handled, decided as a pure function of those messages.
 //!
-//! The loop ([`crate::server::run_with_fetcher`]) reads every message waiting
-//! on the connection before it handles one, and again before each message it
-//! handles after that. The messages it holds are one **epoch**: it starts with
-//! the first message read while nothing was pending and ends when every
-//! message read since has been handled. [`plan`] orders the epoch's messages
+//! The loop ([`crate::server::run_inbox`]) reads every message waiting in its
+//! inbox ([`crate::inbox`]) before it handles one, and again before each
+//! message it handles after that. The messages it holds are one **epoch**: it
+//! starts with the first message read while nothing was pending and ends when
+//! every message read since has been handled. [`plan`] orders the epoch's messages
 //! and decides each one's fate; the loop executes the first step whose message
 //! it has not yet handled, reads what has arrived since, plans again, and so
 //! on.
