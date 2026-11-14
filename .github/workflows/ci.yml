@@ -896,6 +896,20 @@ jobs:
           nix develop --command cargo test -p borzoi-sema --test all \
             infer_corpus_diff:: -- --ignored --nocapture
 
+      - name: Gate on everything inference publishes over the corpus
+        if: steps.gate.outputs.run == 'true'
+        # Every corpus file's inference (alone, and in a fold of its
+        # directory) spelled in full and pinned by digest per file in
+        # `crates/sema/tests/manifests/infer_corpus_dump.txt`: the
+        # byte-identical oracle a refactor of inference is held to. It grades
+        # nothing against FCS; a moved line names the file whose output moved.
+        # The bundle is for the FSharp.Core it ships, which the env reads.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-sema --test all \
+            infer_corpus_dump:: -- --ignored --nocapture
+
       - name: Gate on incremental inference over a corpus sample
         if: steps.gate.outputs.run == 'true'
         # Inference's incremental fold must equal the cold fold after edits to
