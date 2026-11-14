@@ -111,15 +111,19 @@ const HEADERS: &[(&str, usize)] = &[("type T =", 9), ("type [<A>]\nT =", 4)];
 
 /// Where the representation and the item sit: the representation's column on
 /// its own line under the header (`None`: on the `=` line, at its [`HEADERS`]
-/// column), and the item's column. They cover an item aligned with the
-/// representation, deeper than it, and shallower.
-const LAYOUTS: &[(Option<usize>, usize)] = &[
-    (Some(4), 4),
-    (Some(4), 5),
-    (Some(4), 8),
-    (Some(4), 2),
-    (None, 4),
-    (None, 9),
+/// column), and the item's column (`None`: on the representation's last line,
+/// after it, with any further item lines at the column it starts at). They
+/// cover an item aligned with the representation, deeper than it, shallower,
+/// and on the same line.
+const LAYOUTS: &[(Option<usize>, Option<usize>)] = &[
+    (Some(4), Some(4)),
+    (Some(4), Some(5)),
+    (Some(4), Some(8)),
+    (Some(4), Some(2)),
+    (Some(4), None),
+    (None, Some(4)),
+    (None, Some(9)),
+    (None, None),
 ];
 
 /// A following module-level declaration, which pins where the type's block
@@ -133,6 +137,8 @@ struct Cell {
     repr_col: usize,
     item_col: usize,
     trailer: bool,
+    /// Whether the item continues the representation's last line.
+    same_line: bool,
 }
 
 /// The issue a cell's divergence is recorded under, if it is one this grid
@@ -144,29 +150,33 @@ fn known(cell: &Cell) -> Option<&'static str> {
         // A `let` undented from the type body, at the end of the file: FCS
         // takes it as a module-level declaration.
         (Item::Let, Less) if !cell.trailer && cell.shape != Shape::InlineIl => Some("#558"),
-        // A class `let` indented deeper than a union, enum, abbreviation or
-        // object model, before a module-level declaration, and one aligned
-        // with a lone case or an inline-IL abbreviation.
+        // A class `let` indented deeper than (or on the line of) a union,
+        // enum, abbreviation or object model, before a module-level
+        // declaration, and one aligned with a lone case or an inline-IL
+        // abbreviation. On an object model's line the `let` agrees.
         (Item::Let, Greater)
             if cell.trailer
                 && matches!(
                     cell.shape,
-                    Shape::Union
-                        | Shape::Enum
-                        | Shape::LoneCase
-                        | Shape::Abbrev
-                        | Shape::ObjectModel
-                ) =>
+                    Shape::Union | Shape::Enum | Shape::LoneCase | Shape::Abbrev
+                )
+                || cell.trailer && cell.shape == Shape::ObjectModel && !cell.same_line =>
         {
             Some("#647")
         }
         (Item::Let, Equal) if matches!(cell.shape, Shape::LoneCase | Shape::InlineIl) => {
             Some("#647")
         }
-        // An item indented deeper than an object model's last member, before a
-        // module-level declaration.
-        (Item::Member | Item::Override | Item::Do, Greater)
+        // An item indented deeper than (or on the line of) an object model's
+        // last member, before a module-level declaration. On its line a `do`
+        // agrees.
+        (Item::Member | Item::Override, Greater)
             if cell.trailer && cell.shape == Shape::ObjectModel =>
+        {
+            Some("#647")
+        }
+        (Item::Do, Greater)
+            if cell.trailer && cell.shape == Shape::ObjectModel && !cell.same_line =>
         {
             Some("#647")
         }
@@ -202,8 +212,23 @@ fn cells() -> Vec<Cell> {
                                 }
                             }
                         }
-                        for line in item_lines {
-                            source.push_str(&indent(item_col, line));
+                        let same_line = item_col.is_none();
+                        let item_col = match item_col {
+                            Some(col) => col,
+                            None => {
+                                // Continue the representation's last line.
+                                source.pop();
+                                let line_start = source.rfind('\n').map_or(0, |n| n + 1);
+                                source.push(' ');
+                                source.len() - line_start
+                            }
+                        };
+                        for (i, line) in item_lines.iter().enumerate() {
+                            if i == 0 && same_line {
+                                source.push_str(&format!("{line}\n"));
+                            } else {
+                                source.push_str(&indent(item_col, line));
+                            }
                         }
                         source.push_str(trailer);
                         out.push(Cell {
@@ -213,6 +238,7 @@ fn cells() -> Vec<Cell> {
                             repr_col: repr_col.unwrap_or(inline_col),
                             item_col,
                             trailer: !trailer.is_empty(),
+                            same_line,
                         });
                     }
                 }
