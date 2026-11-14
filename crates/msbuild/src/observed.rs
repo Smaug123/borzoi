@@ -204,18 +204,18 @@ impl Read {
     /// A racy stamp ([`FileStamp::racy`]) holds only while the file's bytes
     /// are the ones the read that took it saw, which it carries a digest of
     /// when a whole-file read took it; otherwise it never holds: the file
-    /// may have changed since within the same timestamp tick. A stamp that
-    /// failed otherwise than by absence is asked again as the whole-file
-    /// read it may have been ([`read_stamped_now`]): a file that can be
-    /// `stat`ed and not read keeps failing the read, not the `stat`.
+    /// may have changed since within the same timestamp tick. The stamp of
+    /// a file a whole-file read could not read ([`FileStamp::unreadable`])
+    /// is asked again as that read ([`read_stamped_now`]): asked as a
+    /// `stat`, it would succeed, and never hold.
     pub fn still_holds(&self) -> bool {
         match &self.observation {
+            Observation::Stamp(Ok(stamp)) if stamp.unreadable => {
+                same_unreadable(stamp, &read_stamped_now(&self.path))
+            }
             Observation::Stamp(Ok(stamp)) if stamp.racy => stamp
                 .digest
                 .is_some_and(|digest| racy_content_now(&self.path, digest).0),
-            Observation::Stamp(Err(failure)) if !failure.is_absent() => {
-                read_stamped_now(&self.path) == self.observation
-            }
             _ => answer_now(&self.path, &self.observation) == self.observation,
         }
     }
@@ -351,6 +351,12 @@ pub struct FileStamp {
     /// ([`bytes_digest`]), recorded only for a racy stamp a whole-file read
     /// took.
     pub digest: Option<u128>,
+    /// The whole-file read this stamp was taken for failed: the file could be
+    /// `stat`ed and not opened or read ([`read_stamped`]). Such a read
+    /// depends on the file staying unreadable, which only that read can say:
+    /// a permission is no stamp field, and an I/O error can clear with none
+    /// moving.
+    pub unreadable: bool,
 }
 
 impl FileStamp {
@@ -368,6 +374,7 @@ impl FileStamp {
             ctime_ns,
             racy: racy(mtime_ns, ctime_ns),
             digest: None,
+            unreadable: false,
         }
     }
 
@@ -386,6 +393,7 @@ impl FileStamp {
             ctime_ns: None,
             racy: true,
             digest: None,
+            unreadable: false,
         }
     }
 }
@@ -407,23 +415,47 @@ pub fn bytes_digest(bytes: &[u8]) -> u128 {
 /// failed after that, and for a racy stamp a digest of the bytes.
 pub fn read_stamped_now(path: &Path) -> Observation {
     let (stamp, bytes) = stamped_bytes(path);
-    Observation::Stamp(recorded_stamp(stamp, &bytes))
+    Observation::Stamp(recorded_stamp(path, stamp, &bytes))
 }
 
-/// The stamp a whole-file read records ([`read_stamped`]): the open file's
-/// stamp, the read's failure if it failed after that, and for a racy stamp
-/// a digest of the bytes read.
+/// Whether `now`, a whole-file read's record ([`read_stamped_now`]), is the
+/// file `recorded` was, still unreadable: the same stamp fields bar
+/// raciness. The failing read is what an unreadable stamp rests on, as the
+/// digest is for a readable racy one, so a stamp racy then or now holds
+/// while the read keeps failing.
+pub fn same_unreadable(recorded: &FileStamp, now: &Observation) -> bool {
+    let Observation::Stamp(Ok(now)) = now else {
+        return false;
+    };
+    now.unreadable
+        && FileStamp {
+            racy: recorded.racy,
+            ..*now
+        } == *recorded
+}
+
+/// The stamp a whole-file read of `path` records ([`read_stamped`]): the
+/// open file's stamp, with a digest of the bytes read when it is racy; and
+/// when the file could not be opened or read, its stamp marked
+/// [`FileStamp::unreadable`] (taken by a `stat`, when it could not be
+/// opened), or the `stat`'s failure, as [`stamp`] would record it.
 fn recorded_stamp(
+    path: &Path,
     stamp: Result<FileStamp, Failure>,
     bytes: &Result<Vec<u8>, Failure>,
 ) -> Result<FileStamp, Failure> {
+    let unreadable = |stamp: FileStamp| FileStamp {
+        unreadable: true,
+        ..stamp
+    };
     match (stamp, bytes) {
-        (Ok(_), Err(failure)) => Err(failure.clone()),
         (Ok(stamp), Ok(bytes)) if stamp.racy => Ok(FileStamp {
             digest: Some(bytes_digest(bytes)),
             ..stamp
         }),
-        (stamp, _) => stamp,
+        (Ok(stamp), Ok(_)) => Ok(stamp),
+        (Ok(stamp), Err(_)) => Ok(unreadable(stamp)),
+        (Err(_), _) => stamp_of(path).map(unreadable),
     }
 }
 
@@ -739,7 +771,7 @@ pub fn stamp(observer: &Observer, path: &Path) -> Result<FileStamp, Failure> {
 /// recorded with its failure.
 pub fn read_stamped(observer: &Observer, path: &Path) -> Result<Vec<u8>, Failure> {
     let (stamp, bytes) = stamped_bytes(path);
-    let recorded = recorded_stamp(stamp, &bytes);
+    let recorded = recorded_stamp(path, stamp, &bytes);
     observer.record_open(path, Observation::Stamp(recorded));
     bytes
 }

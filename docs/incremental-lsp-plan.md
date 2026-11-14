@@ -2440,13 +2440,21 @@ WoofWare.Incremental with the on-disk cache off).
   records the stamp (and digest) its bytes rest on, and under a racy stamp
   the cache is not asked at all (an answer resting on a racy stamp could
   never be confirmed again; found by Codex).
-- **A failed whole-file read is asked again as one.** `read_stamped` of a
-  DLL that can be `stat`ed and not read records the read's failure as the
-  stamp's answer; asked again as a `stat`, it succeeded, so it never held
-  and the env was rebuilt, and the client refreshed, in every generation.
-  `Read::still_holds` and `ReadChecks::holds` now ask a stamp that failed
-  otherwise than by absence as the whole-file read
-  (`read_stamped_now`; found by Codex).
+- **An unreadable DLL's stamp says so.** `read_stamped` of a DLL that can
+  be `stat`ed and not read recorded the open's failure as the stamp's
+  answer; asked again as a `stat`, it succeeded, so it never held, and the
+  env was rebuilt and the client refreshed in every generation. Asking every
+  failed stamp as a whole-file read instead was wrong the other way: a
+  `stat` that failed (a directory above denying search) and then succeeded,
+  the file still unreadable, held. So the two are told apart in the record:
+  a whole-file read that could not open or read the file records the file's
+  stamp marked `FileStamp::unreadable` (by a `stat`, when it could not
+  open it), or the `stat`'s failure, exactly as `stamp` would. An unreadable
+  stamp is asked again as the read (`read_stamped_now`, compared by
+  `same_unreadable`, raciness aside: the failing read is what it rests on),
+  is never a fact, and so never trusted inside an installed version; a
+  failed stamp is asked as a `stat`, as before (both found by Codex, in two
+  rounds).
 - **A generation number is a workspace's.** An entry confirmed in
   generation `n` is trusted for the rest of `n` only while the workspace
   confirming it owns its checks (`Workspace::owns`): a replaced workspace

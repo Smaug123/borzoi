@@ -87,7 +87,11 @@ pub fn a_fact(observation: &Observation) -> bool {
             .all(|entry| matches!(entry, Listed::Entry { kind: Ok(_), .. })),
         Observation::Listing(Err(failure)) => failure.is_absent(),
         Observation::Canonical(answer) => answered_or_absent(answer),
-        Observation::Stamp(answer) => answered_or_absent(answer) && !observation.is_racy_stamp(),
+        Observation::Stamp(answer) => {
+            answered_or_absent(answer)
+                && !observation.is_racy_stamp()
+                && !answer.as_ref().is_ok_and(|stamp| stamp.unreadable)
+        }
     }
 }
 
@@ -119,8 +123,8 @@ pub trait Probe: Disk {
         None
     }
     /// What a whole-file read of `path` records now
-    /// (`borzoi_msbuild::observed::read_stamped_now`): how a stamp that
-    /// failed otherwise than by absence is asked again. A disk that cannot
+    /// (`borzoi_msbuild::observed::read_stamped_now`): how the stamp of a
+    /// file such a read could not read is asked again. A disk that cannot
     /// read answers as a `stat` would.
     fn read_stamped(&self, path: &Path, query: &Observation) -> Observation {
         self.answer(path, query)
@@ -277,25 +281,26 @@ impl<D: Probe> ReadChecks<D> {
         let read = &check.read;
         // A racy stamp speaks for the file only when it was taken; what it
         // saw is confirmed by the file's contents, when it says what they were.
+        // The stamp of a file a whole-file read could not read is asked
+        // again as that read: asked as a `stat`, it would succeed, and never
+        // hold again with nothing changing. The read is what it rests on, so
+        // whether the stamp was racy then or is now does not enter into it.
         if let Observation::Stamp(Ok(recorded)) = &read.observation
-            && recorded.racy
-        {
-            return self.racy_stamp_holds(check, recorded);
-        }
-        // A stamp that failed otherwise than by absence may be a whole-file
-        // read that failed after a `stat` succeeded: asked as a `stat`, it
-        // would never hold again with nothing changing.
-        if let Observation::Stamp(Err(failure)) = &read.observation
-            && !failure.is_absent()
+            && recorded.unreadable
         {
             let mut counts = self.counts.get();
             counts.opens += 1;
             self.counts.set(counts);
-            return self
+            let now = self
                 .files
                 .disk()
-                .read_stamped(&read.path, &read.observation)
-                == read.observation;
+                .read_stamped(&read.path, &read.observation);
+            return borzoi_msbuild::observed::same_unreadable(recorded, &now);
+        }
+        if let Observation::Stamp(Ok(recorded)) = &read.observation
+            && recorded.racy
+        {
+            return self.racy_stamp_holds(check, recorded);
         }
         if let Observation::Text(recorded) = &read.observation {
             return self.files.text_answer(&read.path) == *recorded;
