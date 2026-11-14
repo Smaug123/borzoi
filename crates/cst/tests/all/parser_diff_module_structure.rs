@@ -4269,24 +4269,28 @@ fn diff_ast_val_field_attr_then_plain() {
 // `SynBinding.attributes` — FCS's `opt_attributes opt_access classDefnBindings`
 // (`pars.fsy:2004`), the same `localBindings` carrier as the module-level `let`
 // (phase 10.5). The `static let` form (`pars.fsy:2009`) shares the carrier.
-// Shapes ground-truthed with `fcs-dump`. Several same-line forms below are FCS
-// recovery parses (`ParseHadErrors = true`) even though the projected
-// `SynBinding` shape is useful to pin; the offside forms remain clean.
+// Shapes ground-truthed with `fcs-dump`. A same-line `[<A>] let` with another
+// item after it is an FS0058 error: the raw `let` opens a non-block
+// `CtxtLetDecl`, which offside does not pop (FCS pops only a block let's,
+// `LexFilter.fs:1939`), so the next item at the body's column is offside of
+// it. The projected `SynBinding` shape still agrees; the offside forms are
+// clean.
 
 /// Phase 10.7l — the canonical same-line `[<VolatileField>] let mutable …`
 /// (the `[<…>]` and `let` on one line: the `let` arrives as a *raw* `Token::Let`
 /// once `parse_attribute_lists` has consumed the run).
 #[test]
 fn diff_ast_class_local_let_attr_volatile() {
-    assert_asts_match_fcs_rejects_ours_accepts(
+    assert_asts_match_with_diagnostic(
         "type Foo private (i : int) =\n  [<VolatileField>] let mutable foo = i\n  member _.Foo = foo\n",
+        58,
     );
 }
 
 /// Phase 10.7l — an attribute on a plain (immutable) class-local `let`.
 #[test]
 fn diff_ast_class_local_let_attr_plain() {
-    assert_asts_match_fcs_rejects_ours_accepts("type T() =\n  [<A>] let x = 1\n  member _.X = x\n");
+    assert_asts_match_with_diagnostic("type T() =\n  [<A>] let x = 1\n  member _.X = x\n", 58);
 }
 
 /// Phase 10.7l — the offside `[<A>]⏎let …` layout (the attribute on its own
@@ -4299,32 +4303,33 @@ fn diff_ast_class_local_let_attr_offside() {
 /// Phase 10.7l — a multi-attribute list (`[<A; B>]`) on a class-local `let`.
 #[test]
 fn diff_ast_class_local_let_attr_multi() {
-    assert_asts_match_fcs_rejects_ours_accepts(
-        "type T() =\n  [<A; B>] let x = 1\n  member _.X = x\n",
-    );
+    assert_asts_match_with_diagnostic("type T() =\n  [<A; B>] let x = 1\n  member _.X = x\n", 58);
 }
 
 /// Phase 10.7l — two attribute lists ahead of a class-local `let`.
 #[test]
 fn diff_ast_class_local_let_attr_two_lists() {
-    assert_asts_match_fcs_rejects_ours_accepts(
+    assert_asts_match_with_diagnostic(
         "type T() =\n  [<A>]\n  [<B>] let x = 1\n  member _.X = x\n",
+        58,
     );
 }
 
 /// Phase 10.7l — a class-local-`let` attribute with an argument (composing 10.5b).
 #[test]
 fn diff_ast_class_local_let_attr_arg() {
-    assert_asts_match_fcs_rejects_ours_accepts(
+    assert_asts_match_with_diagnostic(
         "type T() =\n  [<CompiledName(\"X\")>] let x = 1\n  member _.X = x\n",
+        58,
     );
 }
 
 /// Phase 10.7l — an attribute on a class-local `let rec`.
 #[test]
 fn diff_ast_class_local_let_attr_rec() {
-    assert_asts_match_fcs_rejects_ours_accepts(
+    assert_asts_match_with_diagnostic(
         "type T() =\n  [<A>] let rec f x = f x\n  member _.M = 1\n",
+        58,
     );
 }
 
@@ -4333,8 +4338,9 @@ fn diff_ast_class_local_let_attr_rec() {
 /// empty), mirroring the module-level projection.
 #[test]
 fn diff_ast_class_local_let_attr_and_chain() {
-    assert_asts_match_fcs_rejects_ours_accepts(
+    assert_asts_match_with_diagnostic(
         "type T() =\n  [<A>] let rec a = 1\n  and b = 2\n  member _.S = a + b\n",
+        58,
     );
 }
 
@@ -4357,8 +4363,9 @@ fn diff_ast_class_local_let_attr_only() {
 /// the first carries attributes (the second's binding `attributes` is empty).
 #[test]
 fn diff_ast_class_local_let_attr_then_plain() {
-    assert_asts_match_fcs_rejects_ours_accepts(
+    assert_asts_match_with_diagnostic(
         "type T() =\n  [<A>] let x = 1\n  let y = 2\n  member _.S = x + y\n",
+        58,
     );
 }
 

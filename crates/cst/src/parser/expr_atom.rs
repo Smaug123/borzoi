@@ -994,7 +994,13 @@ impl<'src> Parser<'src> {
     ///
     /// Caller must have verified `peek()` is `Virtual::Let` or (at body top
     /// level) a raw `Token::Let`/`Token::Use`.
-    pub(super) fn parse_module_let(&mut self) {
+    ///
+    /// Returns whether the next declaration needs no separator: a raw `let`
+    /// (one with no `ODECLEND`) whose block closed cleanly. FCS's `moduleDefns`
+    /// takes definitions with no separator between them, and while the raw
+    /// `let`'s non-block `CtxtLetDecl` is open (offside does not pop it) the
+    /// lex filter inserts no `OBLOCKSEP` before the next one.
+    pub(super) fn parse_module_let(&mut self) -> bool {
         let let_span = self
             .peek()
             .map(|(_, s)| s.clone())
@@ -1074,7 +1080,7 @@ impl<'src> Parser<'src> {
             self.builder.start_node_at(cp, SyntaxKind::LET_OR_USE_EXPR);
             self.builder.finish_node(); // LET_OR_USE_EXPR
             self.builder.finish_node(); // EXPR_DECL
-            return;
+            return false;
         }
         if let Some(term_idx) = explicit_in_terminator {
             // The expression form (`let x = e in body`) is the only shape where
@@ -1104,7 +1110,7 @@ impl<'src> Parser<'src> {
                 self.builder.start_node_at(cp, SyntaxKind::LET_OR_USE_EXPR);
                 self.builder.finish_node(); // LET_OR_USE_EXPR
                 self.builder.finish_node(); // EXPR_DECL
-                return;
+                return false;
             }
             // Decl-flat `let x = e in⏎ <sibling>`: a flat `SynModuleDecl.Let`.
             // Claim the swallowed `in` as a clean `IN_TOK` (+ the RHS-close
@@ -1114,7 +1120,7 @@ impl<'src> Parser<'src> {
             self.builder.start_node_at(cp, SyntaxKind::LET_DECL);
             self.builder.finish_node();
             self.close_binder_binding();
-            return;
+            return false;
         }
         // Plain `let x = e` (no explicit `in`) or a recovered RHS: a flat
         // `SynModuleDecl.Let`.
@@ -1122,7 +1128,9 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
         if clean && owns_block {
             self.close_module_let_block(block_let);
+            return !block_let;
         }
+        false
     }
 
     /// Take a cleanly parsed module-level `let`'s RHS-close `BlockEnd`, the

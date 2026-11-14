@@ -661,18 +661,15 @@ impl<'a> Filter<'a> {
         // `CtxtLetDecl (true, _) :: _`, so a non-block let (the
         // `let x = 1 in x` shape) keeps the binding open through `;;`
         // and only pops via the dedicated IN arm or force-closure.
-        if let Some(Context::LetDecl { block_let, pos }) = self.head().cloned() {
-            let is_semi_semi =
-                block_let && matches!(&tt.token, TokenContent::Real(TokenKind::SemiSemi));
-            if is_semi_semi || self.is_offside_of(&tt, Self::is_let_continuator(&tt.token), pos.col)
-            {
-                self.pop_ctxt();
-                if block_let {
-                    return Step::Emit(self.insert_token(Virtual::DeclEnd, tt));
-                }
-                self.delay_token(tt);
-                return Step::Restart;
-            }
+        if let Some(Context::LetDecl {
+            block_let: true,
+            pos,
+        }) = self.head().cloned()
+            && (matches!(&tt.token, TokenContent::Real(TokenKind::SemiSemi))
+                || self.is_offside_of(&tt, Self::is_let_continuator(&tt.token), pos.col))
+        {
+            self.pop_ctxt();
+            return Step::Emit(self.insert_token(Virtual::DeclEnd, tt));
         }
 
         // CtxtWithAsLet offside-pop: token starts at or left of the

@@ -926,7 +926,7 @@ impl<'src> Parser<'src> {
                     self.bump_into(SyntaxKind::ERROR);
                     continue;
                 }
-                self.parse_module_let();
+                let separated = self.parse_module_let();
                 // A trailing `;` inside the binding's `typedSequentialExpr` RHS
                 // (`let x = a;`) is absorbed by the RHS block, so it never reaches
                 // the loop's `Semi` arm. The following decl is still separated the
@@ -942,7 +942,11 @@ impl<'src> Parser<'src> {
                 // directly after the `in` yields a `SynModuleDecl.Expr(LetOrUse)`,
                 // while an `in` followed by a dedented sibling stays a flat
                 // `SynModuleDecl.Let` with the `in` claimed as a bare terminator.
-                needs_sep = true;
+                //
+                // A raw `let` whose block closed is the exception: the lex filter
+                // puts no `OBLOCKSEP` after it, and the next declaration follows
+                // with none (see `parse_module_let`).
+                needs_sep = !separated;
                 seen_decl = true;
                 seen_non_hash_decl = true;
                 continue;
