@@ -137,6 +137,10 @@ This is a Cargo workspace with nine members:
   exact answer that is not the definition MSBuild's target table keeps
   panics. `fsproj_target_definitions_generative_diff` holds those answers to
   the same table on generated import graphs.
+  `fsproj_target_execution_generative_diff` holds A₁.3c's executor (the
+  probe's `execute`) to the oracle's `runTargets` op, which builds targets
+  in-process and reports the targets that started and the properties and
+  items left; the census pins where the executor stops on each cone.
   `fsproj_generic_items_generative_diff` holds the generic item tables the
   probe reads, metadata included, to the `itemsMeta` op on generated
   projects.

@@ -83,6 +83,8 @@ use super::{
     SdkPaths, SdkResolution, SdkResolveError, SdkResolver,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod executor;
 mod item_pass;
 mod item_spec;
 #[cfg(any(test, feature = "test-support"))]
@@ -3663,6 +3665,7 @@ impl<'r> State<'r> {
             reads::TargetDefinition {
                 file,
                 range: node.range(),
+                xml: node.document().input_text()[node.range()].to_owned(),
             },
         ));
     }

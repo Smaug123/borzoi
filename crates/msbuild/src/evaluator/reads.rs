@@ -35,6 +35,9 @@ pub struct ReadProbe {
     pub item_types: Vec<String>,
     /// Target names, in any case.
     pub targets: Vec<String>,
+    /// Targets to run on the evaluation, and what to read after
+    /// ([`super::executor`]).
+    pub execute: Option<super::executor::ExecutionProbe>,
 }
 
 /// What the walk's reads saw, keyed by the names as the probe spelt them.
@@ -43,6 +46,8 @@ pub struct EvaluationReads {
     pub properties: BTreeMap<String, PropertyRead>,
     pub items: BTreeMap<String, ItemRead>,
     pub targets: BTreeMap<String, TargetRead>,
+    /// The run [`ReadProbe::execute`] asked for, if it asked.
+    pub execution: Option<super::executor::ExecutionRead>,
 }
 
 /// The definition of one target a build would run: the last `<Target>` of
@@ -82,6 +87,8 @@ pub struct TargetDefinition {
     pub file: PathBuf,
     /// The element's byte range in that file's text.
     pub range: Range<usize>,
+    /// The element's text, as the file spells it.
+    pub xml: String,
 }
 
 /// A read of one property at the end of the walk.
@@ -171,10 +178,15 @@ impl State<'_> {
             .iter()
             .map(|name| (name.clone(), self.read_target(name)))
             .collect();
+        let execution = probe
+            .execute
+            .as_ref()
+            .map(|execute| super::executor::execute(self, execute));
         EvaluationReads {
             properties,
             items,
             targets,
+            execution,
         }
     }
 
@@ -192,7 +204,7 @@ impl State<'_> {
     /// splice is a fallback the walk makes only when no chain reached its
     /// import point first, so MSBuild never makes it.
     /// Otherwise whatever the file defines or steers is the walk's alone.
-    fn read_target(&self, name: &str) -> TargetRead {
+    pub(super) fn read_target(&self, name: &str) -> TargetRead {
         let definition = self
             .target_definitions
             .iter()
@@ -215,7 +227,7 @@ impl State<'_> {
         }
     }
 
-    fn read_property(&self, name: &str) -> PropertyRead {
+    pub(super) fn read_property(&self, name: &str) -> PropertyRead {
         let trust = self.trust_of(name);
         if trust.reference_is_untrusted() {
             let cause = trust
@@ -268,7 +280,7 @@ impl State<'_> {
             )
     }
 
-    fn read_items(&self, item_type: &str) -> ItemRead {
+    pub(super) fn read_items(&self, item_type: &str) -> ItemRead {
         let key = item_key(item_type);
         let row = |item: &EvaluatedItem| ItemRow {
             identity: item.identity.clone(),
@@ -447,6 +459,7 @@ mod tests {
             properties: properties.iter().map(|p| (*p).to_owned()).collect(),
             item_types: item_types.iter().map(|i| (*i).to_owned()).collect(),
             targets: Vec::new(),
+            execute: None,
         };
         let walked = crate::parse_fsproj_probed(
             &source,
