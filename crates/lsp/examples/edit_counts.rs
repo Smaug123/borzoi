@@ -151,7 +151,9 @@
 //!   the server is held between two messages, then lets it go: the whole
 //!   burst is waiting when the server next reads its inbox. A round's
 //!   row is the whole burst, and the run prints how its requests were
-//!   answered (with a result, `ContentModified`, `RequestCancelled`).
+//!   answered (with a result, `ContentModified`, `RequestCancelled`), and of
+//!   those answered with a result, how many ran and how many were answered
+//!   from an identical request's run.
 //!
 //! The **a.built** column counts the envs built (each a cold resolution of a
 //! project's references and a projection of every DLL they name),
@@ -312,6 +314,13 @@ static EMPTY_ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 
 /// Requests whose runs stopped at a checkpoint ([`STOPPED_EVENT`]).
 static STOPS: AtomicU64 = AtomicU64::new(0);
+
+/// The span `borzoi::server::handle_request` opens around each request it
+/// runs. Identical requests answered from one run open one between them.
+const REQUEST_SPAN: &str = "lsp.request";
+
+/// Requests run ([`REQUEST_SPAN`]).
+static REQUESTS_RUN: AtomicU64 = AtomicU64::new(0);
 
 /// Whether to print every generation's instructions as it ends
 /// (`EDIT_COUNTS_GENERATIONS`), and the process's count at the last one.
@@ -503,7 +512,7 @@ impl tracing::Subscriber for FoldObserver {
         (metadata.is_span()
             && matches!(
                 metadata.name(),
-                PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN | ENV_RESOLVED_AGAIN_SPAN
+                PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN | ENV_RESOLVED_AGAIN_SPAN | REQUEST_SPAN
             ))
             || (metadata.is_event()
                 && matches!(
@@ -512,7 +521,9 @@ impl tracing::Subscriber for FoldObserver {
                 ))
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        if counted() && span.metadata().name() == ENV_RESOLVED_AGAIN_SPAN {
+        if span.metadata().name() == REQUEST_SPAN {
+            REQUESTS_RUN.fetch_add(1, Relaxed);
+        } else if counted() && span.metadata().name() == ENV_RESOLVED_AGAIN_SPAN {
             ENVS_RESOLVED_AGAIN.fetch_add(1, Relaxed);
         } else if counted() && span.metadata().name() == ENV_BUILD_SPAN {
             let mut count = DllCount(None);
@@ -1013,9 +1024,9 @@ impl Client {
 
     /// Queue `steps` while the server is held between two messages, then let
     /// it go, and wait for every answer and a settle: what handling them
-    /// cost when all of them were waiting at once, and the answers to the
-    /// requests among them, in order.
-    fn burst(&mut self, steps: &[Step]) -> (Cost, Vec<Response>) {
+    /// cost when all of them were waiting at once, the answers to the
+    /// requests among them, in order, and how many requests ran.
+    fn burst(&mut self, steps: &[Step]) -> (Cost, Vec<Response>, usize) {
         // The client hands the burst to the inbox while the server is held,
         // so a burst the inbox cannot hold would wait for a server waiting
         // for it.
@@ -1036,15 +1047,17 @@ impl Client {
         await_held("the end of a barrier's generation");
         let ids: Vec<RequestId> = steps.iter().filter_map(|s| self.send_step(s)).collect();
         let before = Reading::now();
+        let runs_before = REQUESTS_RUN.load(Relaxed);
         release();
         let mut all = ids.clone();
         all.push(barrier);
         let mut answers = self.collect(&all);
         answers.pop();
+        let runs = REQUESTS_RUN.load(Relaxed) - runs_before;
         self.settle();
         let cost = before.since(&Reading::now());
         self.check(&cost);
-        (cost, answers)
+        (cost, answers, runs as usize)
     }
 
     /// Stage 9's measurement: send `tokens`, and once the server is held at
@@ -1499,12 +1512,13 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
     (pick(u64::min), pick(u64::max))
 }
 
-/// How a burst's requests were answered.
+/// How a burst's requests were answered, and how many of them ran.
 #[derive(Default)]
 struct Census {
     results: usize,
     content_modified: usize,
     cancelled: usize,
+    runs: usize,
 }
 
 impl Census {
@@ -1877,7 +1891,8 @@ fn main() {
                 steps.push(semantic_tokens(&l));
                 steps.push(hover(&l, hover_at));
             }
-            let (cost, answers) = client.burst(&steps);
+            let (cost, answers, runs) = client.burst(&steps);
+            census.runs += runs;
             assert!(
                 cost.lookups.0 > 0,
                 "no request of burst {k} reached the project fold"
@@ -1984,8 +1999,13 @@ fn main() {
     println!("{:<34} {}", format!("{total} max"), columns(&max));
     if burst.is_some() {
         println!(
-            "burst answers: {} with a result, {} ContentModified, {} RequestCancelled",
-            census.results, census.content_modified, census.cancelled
+            "burst answers: {} with a result ({} runs, {} from another's run), {} ContentModified, \
+             {} RequestCancelled",
+            census.results,
+            census.runs,
+            census.results - census.runs,
+            census.content_modified,
+            census.cancelled
         );
     }
     if script == Script::OwnComment {
