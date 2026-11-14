@@ -83,6 +83,8 @@ use super::{
     SdkPaths, SdkResolution, SdkResolveError, SdkResolver,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod executor;
 mod item_pass;
 mod item_spec;
 #[cfg(any(test, feature = "test-support"))]
@@ -1222,6 +1224,15 @@ fn collect_local_overrides(root: Node<'_, '_>) -> HashSet<String> {
 /// props/targets stubs aren't expected to carry an `Sdk` attribute of
 /// their own.
 fn walk_doc_body(root: Node<'_, '_>, current_file_dir: &Path, state: &mut State<'_>) {
+    // The executor does not run `InitialTargets` yet; it declines a project
+    // any of whose files names some.
+    #[cfg(any(test, feature = "test-support"))]
+    if root
+        .attribute("InitialTargets")
+        .is_some_and(|targets| !targets.trim().is_empty())
+    {
+        state.initial_targets_named = true;
+    }
     // A top-level `<Sdk Name="X"/>` element is the `Sdk` attribute's
     // sibling form: MSBuild imports X's `Sdk.props` before everything in
     // this file and `Sdk.targets` after it, wherever the element sits
@@ -1764,6 +1775,14 @@ struct State<'r> {
     /// whether an SDK chain reached the import point each stands in for.
     #[cfg(any(test, feature = "test-support"))]
     directory_build_splices: reads::DirectoryBuildSplices,
+    /// Whether a file the walk reached names `InitialTargets`, which MSBuild
+    /// runs before any target a build asks for.
+    #[cfg(any(test, feature = "test-support"))]
+    initial_targets_named: bool,
+    /// The `TaskName` of every `<UsingTask>` the walk reached: the executor
+    /// runs a built-in task only where none may rebind it.
+    #[cfg(any(test, feature = "test-support"))]
+    using_task_names: Vec<String>,
     /// What the walk knows, or doesn't, about each property's stored value —
     /// keyed by lowercase property name. All three forward-uncertainty channels
     /// live in the one [`Trust`] value, so a name cannot be marked on one
@@ -2215,6 +2234,10 @@ impl<'r> State<'r> {
             target_definitions: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             directory_build_splices: reads::DirectoryBuildSplices::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            initial_targets_named: false,
+            #[cfg(any(test, feature = "test-support"))]
+            using_task_names: Vec::new(),
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: None,
@@ -2778,6 +2801,10 @@ impl<'r> State<'r> {
                 target_definitions: _,
             #[cfg(any(test, feature = "test-support"))]
                 directory_build_splices: _,
+            #[cfg(any(test, feature = "test-support"))]
+                initial_targets_named: _,
+            #[cfg(any(test, feature = "test-support"))]
+                using_task_names: _,
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
@@ -3663,6 +3690,7 @@ impl<'r> State<'r> {
             reads::TargetDefinition {
                 file,
                 range: node.range(),
+                xml: node.document().input_text()[node.range()].to_owned(),
             },
         ));
     }
@@ -3984,6 +4012,10 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             #[cfg(any(test, feature = "test-support"))]
             if node.tag_name().name() == "Target" {
                 state.record_target_definition(node);
+            } else {
+                state
+                    .using_task_names
+                    .push(node.attribute("TaskName").unwrap_or_default().to_owned());
             }
             state.push(
                 DiagnosticKind::UnsupportedConstruct {

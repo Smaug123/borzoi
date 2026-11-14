@@ -89,7 +89,7 @@ Compile order. This mirrors the "reusable outside this repo" framing of
 binary as the only impure consumer.
 
 Name resolution is the crate's first module (`resolve`); inference has landed as
-`crates/sema/src/infer.rs` in the same crate. They are separated by module, not by
+`crates/sema/src/infer/` in the same crate. They are separated by module, not by
 crate, because inference consumes the resolver's output directly and
 there is no third-party consumer that wants one without the other (the
 boundary cost analysis from `gospel.md` — module boundaries are cheap,
@@ -227,13 +227,16 @@ differential](#validation-milestone--large-corpus-fcs-differential).
 
 ### D8. Inference substrate: `ena` worklist, not SMT
 
-Phase 3 inference is **constraint generation → worklist solve**, not F#'s
-mutually-recursive elaborator and not an external solver. Generation is a pure
-fold over the resolved AST producing an inert `Vec<Constraint>`; it needs lexical
-resolution (Phases 1–2, done) but **not** types. Crucially, type-directed name
-resolution (`expr.Foo`) is *not* resolved during the fold: it emits a *suspended*
-`HasMember(receiver, name, result)` constraint. The solver discharges equality
-constraints by union-find, and each suspended member constraint is **keyed by its
+Phase 3 inference is **a fold that unifies as it walks, plus a worklist for
+what it suspends**, not F#'s mutually-recursive elaborator and not an external
+solver. The fold walks the resolved AST and unifies each equality by union-find
+at the point it generates it, so a later step of the walk reads a table that
+already holds every equality the walk met before it (#662: FCS takes its
+order-dependent decisions at a point in its checking order, so a solve that sees
+the relations only at a binding's end cannot reproduce them).
+What the fold cannot decide where it meets it, it suspends as an inert
+`Constraint`. Type-directed name resolution (`expr.Foo`) is one: it emits a
+*suspended* `HasMember(receiver, name, result)` constraint, **keyed by its
 receiver type variable and woken when unification makes that variable concrete**,
 at which point the member is looked up against the `Entity`/`Member` model. That
 wake step is the *only* place inference and name resolution meet; everywhere else
@@ -390,7 +393,7 @@ top-level values/functions. Staged breakdown (1.1–1.4) in
 ### Phase 3 — best-effort inference (hover + dot-completion) — in progress (scoped)
 
 The first phase that needs a real (if partial) type system, structured as
-**generate → solve** (see [D8](#d8-inference-substrate-ena-worklist-not-smt)),
+**a unifying walk plus a worklist** (see [D8](#d8-inference-substrate-ena-worklist-not-smt)),
 best-effort: annotate expression ranges with `Ty` where it can,
 `Unknown`/`Deferred` otherwise (hover/completion degrade gracefully, D5).
 The work is *scoped by the census evidence* in

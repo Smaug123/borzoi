@@ -1948,6 +1948,62 @@ that way (39 to 42 each). The two multi-targeting outer builds are opaque.
 No target in these cones is defined twice, so the override rule is held by
 the generator, not the census.
 
+##### A₁.3c: the schedule and intrinsic groups — first slice
+
+The executor (`evaluator/executor.rs`, test builds only, behind the probe's
+`execute`) runs targets over a copy of the walk's end state. It ports
+MSBuild's own algorithm rather than a reading of the documentation, because
+the two differ where it matters:
+- **The schedule** is `TargetBuilder`'s stack. When a target comes up, its
+  after-targets go beneath it, then the target, then its before-targets, then
+  its dependencies on top. A target's condition is decided when its
+  dependencies are worked out (`TargetEntry.GetDependencies`). A false one
+  completes it as skipped, with no dependencies, and its before- and
+  after-targets still run. A skipped target is decided again the next time
+  it comes up; an executed one never runs again. An after-target already
+  anywhere on the stack is not pushed again, and a dependency or
+  before-target already in its parent chain is a circular-dependency error.
+- **The definitions** are the walk's retained ones. Each name keeps its last,
+  standing where that last one does, and the before- and after-maps are
+  built from them in that order, with `BeforeTargets`/`AfterTargets`
+  expanded against the evaluation and dropped where the named target does
+  not exist (`Evaluator.ReadTargetElement`,
+  `AddBeforeAndAfterTargetMappings`).
+- **Bodies**: intrinsic `PropertyGroup`s, `ItemGroup` `Include`s without
+  batching (each new item taking its type's item-definition defaults beneath
+  its own metadata, `Label` not metadata), and `Message` with the parameters
+  it accepts. Text and attributes are read by the walk's own XML rules:
+  padding kept, and a value that XML normalisation or entity decoding
+  touched declines, as does inner XML.
+
+It declines everything else: another task, a built-in task a `UsingTask`
+may rebind, an empty request (the default targets), `InitialTargets` (not
+run yet),
+`Inputs`/`Outputs`/`Returns`, a backslash in an item identity or metadatum
+(MSBuild's Unix path fixup may respell it),
+`%(…)` and `@(…)` (including one properties assemble, which MSBuild then
+expands as such), a property function, `MSBuildThisFile*` (which name the
+defining file inside a target), a read of any value the walk does not vouch
+for, a write to a reserved or global property, and a graph in which a target
+can bring itself up again through hooks or literal dependencies. MSBuild
+hangs on some of those graphs (two targets `AfterTargets` each other).
+
+The oracle's `runTargets` op builds targets in-process and reports every
+target that started, in order, with the properties and items left.
+`fsproj_target_execution_generative_diff` generates target graphs
+(dependencies literal or read from a property, hooks literal or expanded,
+redefinitions, cycles, conditions on what earlier targets write) and holds
+every committed run to it. The scheduling rules above came out of its
+failures. Its soak fails when any of the three push rules is changed.
+
+The census runs `GenerateRestoreGraphFile` on every cone and pins where the
+executor stops. Today every single-target cone stops at one hook,
+`Microsoft.Common.CurrentVersion.targets`'s
+`BeforeTargets="$(BuildDependsOn);Build;$(RebuildDependsOn);…"`.
+`RebuildDependsOn` rests on the reserved `MSBuildProjectDefaultTargets`,
+which the walk does not seed. The two multi-targeting outer builds stop at
+opacity.
+
 #### A₁.4: the task leaves
 
 These are the 23 non-built-in tasks of stage 8's census. (`RemoveDuplicates`

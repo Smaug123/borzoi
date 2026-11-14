@@ -119,7 +119,7 @@ const PARAM_TYPES: [PTy; 11] = [
 /// parenthesised as an argument list) and a human tag for failure messages.
 ///
 /// The single-argument shapes cover every **ground literal** our inference types
-/// (`infer.rs::literal_ty`) plus the four **factory values** bound in the F#
+/// (`literal_ty`, in `infer/literals.rs`) plus the four **factory values** bound in the F#
 /// prelude (`o`/`b`/`d`/`xs` — an `obj`, a `BaseTy`, a `DerivedTy` and an
 /// `int[]`, none of which has literal syntax). The unit and multi-argument
 /// shapes exercise the arity window (FCS's direct-unit-syntax reading, the

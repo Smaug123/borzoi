@@ -11,11 +11,10 @@
 ## Substrate (reference)
 
 Per [D8](type-checker-plan.md#d8-inference-substrate-ena-worklist-not-smt),
-inference is **generate → solve**: generation is a pure fold over the resolved
-AST producing an inert `Vec<Constraint>`; the solver discharges equality
-constraints by union-find (`ena`), with type-directed member lookup (`expr.Foo`)
-and function application deferred to *suspended* constraints woken when a
-receiver / callee type becomes concrete. `infer_file` only ever emits **ground**
+inference is **a unifying walk plus a worklist**: a fold over the resolved AST
+unifies each equality by union-find (`ena`) where it generates it, with
+type-directed member lookup (`expr.Foo`) and argument checks deferred to
+*suspended* constraints woken when a receiver / callee type becomes concrete. `infer_file` only ever emits **ground**
 types (`Ty::is_ground`), so an inference `Ty::Var` never reaches a consumer — the
 D5 "say nothing when unsure" contract is enforced at read-off. Each new stage
 lands on its own branch, stacked as necessary, so a reviewer can review each in

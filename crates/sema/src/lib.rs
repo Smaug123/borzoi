@@ -30,9 +30,9 @@
 //! no expected type can retarget it) and leaving everything else Deferred (the
 //! same say-nothing-when-unsure contract resolution uses). It too is
 //! differentially tested against FCS, via the expression-type oracle. Under the
-//! hood it runs the plan's generate→solve pipeline (Stage 3.2a): the `unify`
-//! module's [`ena`]-backed union-find substrate solves an inert constraint set,
-//! the foundation the rest of the HM spine builds on.
+//! hood the `unify` module's [`ena`]-backed union-find substrate unifies each
+//! equality as the walk generates it, the foundation the rest of the HM spine
+//! builds on.
 
 mod assembly_env;
 mod binders;

@@ -478,3 +478,53 @@ fn a_type_declared_twice_types_nothing_of_either() {
     check(&sources, &[], &mut tally);
     assert_clean(&tally, 0);
 }
+
+/// A field read woken at a binding's end decides the members chained on it in
+/// the same pass of the solve as the field, before the argument checks after
+/// them in the source fire: FCS reads `r.F` and then `.Length` at the access,
+/// knowing `r`'s annotated type, whatever `idf 1` beside it does. A member
+/// resolved only after a check that ends later in the source would be one FCS
+/// could not resolve (FS0072), and the solve would then fire no check at all,
+/// leaving `idf 1` and the function untyped.
+///
+/// The grid crosses access chains (a member on a field, on a field of a
+/// field, a field of a field, a method on a field, and a control with no
+/// record) with where a polymorphic argument check sits (after the access,
+/// before it, nested in a later tuple) and what it checks. Each function must
+/// commit, and what it commits must be FCS's.
+#[test]
+fn a_member_chained_on_a_field_is_resolved_before_later_checks() {
+    const ACCESSES: &[(&str, &str)] = &[
+        ("r: R", "r.F.Length"),
+        ("q: Q", "q.G.F.Length"),
+        ("q: Q", "q.G.N"),
+        ("r: R", "r.F.ToUpper()"),
+        ("s: string", "s.Length"),
+    ];
+    const CHECKS: &[&str] = &["idf 1", "idf \"s\"", "idf (idf 2.0)"];
+    let mut src = String::from(
+        "module M\n\
+         type R = { F: string; N: int }\n\
+         type Q = { G: R }\n\
+         let idf x = x\n",
+    );
+    let mut cells: Vec<Cell> = Vec::new();
+    for (param, access) in ACCESSES {
+        for arg in CHECKS {
+            for body in [
+                format!("({access}, {arg})"),
+                format!("({arg}, {access})"),
+                format!("({access}, ({arg}, 0))"),
+            ] {
+                let line = src.matches('\n').count() as u32 + 1;
+                let name = format!("f{}", cells.len());
+                src.push_str(&format!("let {name} ({param}) = {body}\n"));
+                cells.push((line, name, true, body));
+            }
+        }
+    }
+    let sources = vec![("Use.fs".to_string(), src)];
+    let mut tally = Tally::default();
+    check(&sources, &cells, &mut tally);
+    assert_clean(&tally, cells.len());
+}

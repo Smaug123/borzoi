@@ -96,9 +96,18 @@ mod tests {
         let ((), spent) = cpu_timed(|| spin_for(Duration::from_millis(100)));
         let wall = wall.elapsed();
         assert!(spent >= Duration::from_millis(100), "{spent:?}");
+        // The two readings come from different clocks: the thread's CPU time
+        // from the scheduler's accounting, the wall time from the monotonic
+        // clocksource. Neither is ordered against the other to the
+        // microsecond (a VM's least of all), so the CPU time can read a few
+        // microseconds past the wall time it ran in. A millisecond of slack
+        // absorbs that skew and still fails a clock that counts the whole
+        // process's time while other threads run, which reads milliseconds
+        // high over a 100 ms spin.
+        let skew = Duration::from_millis(1);
         assert!(
-            spent <= wall,
-            "{spent:?} of CPU time in {wall:?} of wall time"
+            spent <= wall + skew,
+            "{spent:?} of CPU time in {wall:?} of wall time, beyond {skew:?} of skew between the clocks"
         );
     }
 }
