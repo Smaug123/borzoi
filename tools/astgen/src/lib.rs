@@ -27,7 +27,10 @@
 //! From the union's lock and the feature table, [`facade`] derives a lock per
 //! language version and generates that version's facade from it: a module
 //! owning every node type and enum of the version's surface, whose accessors
-//! re-cast the union's.
+//! re-cast the union's. A published facade is frozen: its lock, once stamped,
+//! is the generator's input and never its output ([`facade::PUBLISHED`],
+//! [`facade::FREEZE_EPOCH`]), and [`consumer`] writes the frozen consumer
+//! fixture that compiles against it.
 //!
 //! Output is checked in (one file per [`Category`], the facades, under
 //! `crates/cst/src/syntax/generated/`, and the locks) and kept honest by a
@@ -46,6 +49,7 @@ use std::process::Command;
 use borzoi_spawn::BoundedCommand;
 
 pub mod accessors;
+pub mod consumer;
 pub mod facade;
 pub mod features;
 pub mod lock;

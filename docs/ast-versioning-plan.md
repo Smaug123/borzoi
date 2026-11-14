@@ -4,9 +4,10 @@
 > work is an eight-PR sequence ([PR sequence](#pr-sequence)), of which PR 1 (the
 > feature table, #15), PR 2 (diagnostic classes), PR 3 (faithful gates, #21),
 > PR 4 (the union behind `unstable-union`, #13, #670), PR 5 (astgen owns every
-> node) and PR 6 (a deep facade per language version, `Parse::view`) have
-> landed. Earlier stages that still stand: `LanguageVersion` as a parse input
-> (#592/#597/#606) and the LSP's `<LangVersion>` wiring (#613). The goal:
+> node), PR 6 (a deep facade per language version, `Parse::view`) and PR 7
+> (the freeze: `v4_6` … `v10` published) have landed. Earlier stages that
+> still stand: `LanguageVersion` as a parse input (#592/#597/#606) and the
+> LSP's `<LangVersion>` wiring (#613). The goal:
 > before the next F# compiler upgrade (a new language version), every earlier
 > language version has a stable, exhaustive typed facade, and the upgrade
 > itself is the proof that the scheme extends.
@@ -158,12 +159,16 @@ How a facade is built (`tools/astgen/src/facade.rs`):
   `unstable-union`. A dispatch enum carries only its surface's variants; a
   value enum is copied, with its docs from astgen's tables.
 - An accessor is one line: call the union accessor its lock line delegates to
-  and re-cast the result. A re-cast that can fail (a dispatch enum narrower
-  than the union's, a value enum one of whose variants can fail, a node whose
-  union counterpart casts more kinds) drops the element: an `Option` becomes
-  `None`, an iterator or `Vec` skips it. So `v4_6::TupleType::segments()`
-  leaves out a segment holding a `WithNull`, and an `InterpStringPart::Fill`
-  over an out-of-surface expression is skipped.
+  and re-cast the result. Re-casting a node or a dispatch enum is taken to be
+  able to fail, even where the union holds nothing more today: the union gains
+  kinds and variants whenever a construct is modelled, and this keeps a
+  facade's code a function of its own lock, so the union's growth leaves a
+  published facade byte-identical. A value enum's re-cast can fail when the
+  union's has a variant the facade lacks or one of its variants' bare fields
+  can. A failed re-cast drops the element: an `Option` becomes `None`, an
+  iterator or `Vec` skips it. So `v4_6::TupleType::segments()` leaves out a
+  segment holding a `WithNull`, and an `InterpStringPart::Fill` over an
+  out-of-surface expression is skipped.
 - The generator refuses, naming it, what it cannot re-cast mechanically: an
   accessor returning a fallible type bare (no container to absorb the drop),
   and a facade node, variant, value variant or accessor delegate with no
@@ -191,42 +196,141 @@ also its delegate, `union.<method>`), sorted with no duplicates, so a lock has
 one spelling (`tools/astgen/src/lock.rs`). An alias's lock is the single line
 `alias-of <module>`. A kind
 set is the `node` lines of the variant's node. Because every fact is its own
-line, what a frozen surface may take — a new accessor, a new kind for an
-existing node — is an added line, and anything else removes or rewrites one.
+line, what a frozen surface may take — a new accessor, a new kind for a node
+(or a new node type), a new trait on a value enum — is an added line, and
+anything else removes or rewrites one.
 The union's own lock, `crates/cst/facades/union.lock`, is always
-regenerated. Each facade's lock, `crates/cst/facades/vN.lock`, is derived from
-it: every node all of whose kinds the table's live `Kind` rows admit at the
-version, the variants over those, and every accessor whose owner and return
-type survive, delegating to the union accessor of its own name. A delegate
-that names another union accessor is how a published facade survives a
-rename.
+regenerated. A facade's lock is *derived* from it: every node all of whose
+kinds the table's live `Kind` rows admit at the version, the variants over
+those, and every accessor whose owner and return type survive, delegating to
+the union accessor of its own name. A delegate that names another union
+accessor is how a published facade survives a rename.
 
-- An **unpublished** facade's lock is derived and regenerated freely.
-- A **published** facade (astgen's `PUBLISHED` list, empty until PR 7) is
-  generated *from* its lock: the generator reads it and never writes it, and
-  the staleness test checks `code == gen(lock)`. Every facade's code is a
-  function of its lock and the union's already (astgen's
-  `code_is_a_function_of_the_lock` re-reads each derived lock from its text and
-  regenerates identically), so publishing changes only who writes the lock.
+- An **unpublished** facade's lock (`v11`, `preview`) is derived and
+  regenerated freely.
+- A **published** facade (astgen's `PUBLISHED`: `v4_6` … `v10`) is frozen.
+  Its lock is derived and written once, at publication, stamped
+  `# freeze-epoch: N` with astgen's `FREEZE_EPOCH`; from then on the generator
+  reads it and never writes it, and the staleness test checks
+  `code == gen(lock)`. A facade's code depends on the union only for whether
+  the union still backs its lock (D4's re-casts), so publishing changes only
+  who writes the lock, which astgen's `a_published_lock_round_trips` checks.
+
+A frozen lock is still held to the surface its version would derive today,
+on the principle that a published facade never breaks, not that it keeps up
+with the union. On every generation astgen derives it and compares:
+
+- A derived **accessor** or **derive** the lock lacks is *opt-in*: leaving it
+  out breaks no caller and leaves no node unreadable, so the frozen facade
+  simply does not offer it until someone appends the line. Routine work that
+  adds union accessors touches no frozen lock; the generator prints a count
+  of what each frozen facade may opt into (`facade::opt_in`).
+- Everything that would break the frozen facade or open a hole fails:
+  a derived **kind** the lock does not cast (a new kind for one of its nodes,
+  or a new node type), whose nodes would read as holes no gate covers; a
+  new **variant** of a frozen enum or value enum; a line **locked but no
+  longer derived** (an accessor whose union delegate is gone or changed
+  shape, a kind gone or moved to another node); and a frozen **alias**
+  whose version's surface no longer equals its head's. Each must be
+  appended to the lock (a kind) or recorded in `ACCEPTED_DIVERGENCES`
+  (`tools/astgen/src/facade.rs`) with the reason the frozen facade keeps its
+  surface. Until then astgen fails, listing each line and these choices; an
+  acceptance that no longer matches a divergence fails too. What an
+  acceptance touches (a kind, a value enum) is carried into the property
+  suite's table, which holds it in that facade to the round trip alone. A
+  compat line (an accessor whose delegate names another method) is not a
+  divergence.
+
+An unpublished version never aliases a published head: an alias's versions
+are its head's `Facade::VERSIONS`, so the head's frozen code would otherwise
+follow whatever the unpublished version derives. `v11` is therefore its own
+facade until it is published, and only then may it become an alias of `v9`.
 
 Checks:
 
-1. a CI script, with its own test, diffs every published lock against the merge
-   base and allows only appended accessor lines and additions to a variant's
-   kind set;
-2. generic P2/P3 over every (facade, enum) pair;
-3. a frozen consumer fixture per published facade — an exhaustive,
-   wildcard-free `match` on every enum and a typed call of every accessor —
-   generated once, at publish.
+1. `tools/ci/facade-lock-check.sh` (CI's `facade-locks` job; its test,
+   `facade-lock-check.test.sh`, runs in the lint job) diffs every published
+   lock against the pull request's base. It allows only added `accessor`,
+   `node` and `derive` records, and an accessor's delegate may change (no
+   caller sees it; it is how a published accessor survives a union rename);
+   a removed or rewritten record, an added `enum` or `value` record, an
+   `alias-of` added, dropped or retargeted (an alias's type identity is part
+   of the contract), and a lock deleted, unstamped or restamped all fail. A
+   consumer fixture present at the base must be byte-identical. A lock first
+   stamped, or a fixture first added, is a publication and passes.
+2. Generic P2/P3 over every (facade, enum) pair (`facade_properties`).
+3. A frozen consumer fixture per distinct published facade,
+   `crates/cst/tests/all/facade_consumers/<module>.rs`, written with the lock
+   at publication and never regenerated: an exhaustive, wildcard-free `match`
+   on every dispatch enum and value enum, every payload's type spelled out, a
+   typed call of every accessor, each value enum's derives and each type's
+   handle traits. cst's test binary compiles it. astgen's
+   `every_published_facade_has_a_covering_consumer_fixture` checks that each
+   distinct published facade has one, stamped at its lock's epoch, matching
+   exactly the lock's variants and calling only its accessors (an accessor
+   appended later is one the fixture never saw).
+4. The **synthetic-feature test** (astgen's
+   `a_new_language_version_leaves_every_published_facade_byte_identical`):
+   in memory, a feature at a new "12.0" whose one `Kind` is a new expression,
+   added to the table, the union and the version list, and a new union
+   accessor on a node every facade has. Every published facade's code, lock
+   and fixture regenerate byte-identically and nothing fails; each frozen
+   head may opt into the accessor; the new facade's surface is the one before
+   plus exactly that variant, and preview's its own plus the variant and the
+   accessor. It is the compiler upgrade in miniature, run on every change.
 
-The only re-baseline route is an explicit `FREEZE_EPOCH` bump, allowed until
-the first external release. cargo-semver-checks was considered and rejected:
-the lock is both narrower (only the facades) and stronger (it is the
+The only re-baseline route is raising `FREEZE_EPOCH`, allowed until the first
+external release: a lock or fixture stamped with an older epoch is derived and
+written afresh, as at publication, and the CI check waives its rules for a
+change that raises the constant. cargo-semver-checks was considered and
+rejected: the lock is both narrower (only the facades) and stronger (it is the
 generator's input).
 
 What freezing costs: a *modelling* fix to a published surface is a breaking
 change, so it lands in the union and in unpublished facades, and the published
 `vN` keeps its original, possibly imperfect shape.
+
+### Publishing a facade
+
+The runbook, for the compiler upgrade and after it.
+
+**Publishing a new version's facade** (`v11` after the upgrade). Once the
+table and the union model everything the new compiler adds, add the module to
+`PUBLISHED` in `tools/astgen/src/facade.rs` and run
+`cargo run -p borzoi-astgen --example generate`. The lock is derived one last
+time and written stamped, and if the version is a distinct facade its consumer
+fixture is written beside it and declared in `facade_consumers/mod.rs`. If its
+surface equals the previous published head's, it is published as an alias of
+it, sharing those types for good. Commit the lock and the fixture; the CI
+check treats them as a publication. A published alias needs a published head.
+
+**Opting into union growth.** A frozen facade does not offer an accessor or
+derive the union gained after its publication. `cargo run -p borzoi-astgen
+--example generate` prints how many lines each frozen facade may opt into, and
+`facade::opt_in` lists them; to offer one, copy it into the lock in its sorted
+place and regenerate (the fixture stays as it is). Nothing requires it.
+
+**Evolving a published facade.** When astgen fails on a frozen facade's
+divergence, it lists each line under what can be done with it:
+
+- *A kind it would read as a hole*: a new kind for one of its nodes, or a new
+  node type. Append it to the lock (an allowed addition, which every consumer
+  survives), or accept it with the reason.
+- *No allowed evolution adds it*: a new variant of a frozen enum. The frozen
+  facade does not get it, and the node reads there as an absent child. Record
+  it in `ACCEPTED_DIVERGENCES` with the reason.
+- *Locked but no longer derived*: the union or the table moved something the
+  frozen facade keeps. If the union still backs it, the facade keeps reading
+  it; accept it with the reason. If the union accessor was renamed, give the
+  frozen accessor a delegate, `union.<new name>`, in place of an acceptance.
+  If the union no longer backs it at all, the generator says the facade
+  "cannot be generated from its lock"; that needs a hand-written compat shim.
+
+**Re-baselining** (only before the first external release). Raise
+`FREEZE_EPOCH` and regenerate: every published lock and fixture is rewritten
+from today's derivation, the fixture of a facade that is no longer distinct is
+removed, and `ACCEPTED_DIVERGENCES` should then be empty. The CI check passes
+the change because the constant rose.
 
 ### D7. The substrate is the floor: incomplete, never wrong
 
@@ -246,7 +350,8 @@ wrongness**: a consumer can always drop to `.syntax()`.
 `LanguageVersion` (astgen reads the version list from the feature table's
 parser, so a new version brings its facade), each behind the cargo feature of
 its name. A version whose derived lock equals the previous run's is
-`pub use super::vX::*`, recorded as `alias-of` in its lock — so shared type
+`pub use super::vX::*` (unless it is unpublished and the run's head is
+published, D6), recorded as `alias-of` in its lock — so shared type
 identity between aliases is part of the contract (accepted). An alias's
 feature also compiles, and so exposes, the module it aliases. `preview` is
 never an alias and never aliased, and sits behind `unstable-preview` (D11), so
@@ -254,9 +359,10 @@ no stable facade's `VERSIONS` names the preview version.
 
 The distinct surfaces are {4.6, 4.7} (`v4_6`), {5, 6, 7} (`v5`, adding
 `Expr::InterpString`), {8} (`v8`, adding `Expr::DotLambda`, `Expr::WhileBang`
-and `Type::Intersection`), {9, 10, 11} (`v9`, adding `Type::WithNull`) and
-`preview` (adding `Expr::IndexFromEnd`). A
-kind with no FCS `LanguageFeature` gets no interval, so it is in every facade
+and `Type::Intersection`), {9, 10, 11} (`v9`, adding `Type::WithNull`; it
+serves 9.0 and 10.0, and the unpublished `v11` has the same surface but its
+own types until it is published) and `preview` (adding `Expr::IndexFromEnd`).
+A kind with no FCS `LanguageFeature` gets no interval, so it is in every facade
 (`Expr::Typar` is in all of them).
 
 ### D9. Gate and surface are different questions; diagnostics carry a class
@@ -527,6 +633,12 @@ diagnostic for its feature" rather than "under a `Legality` one".
   `LanguageVersion` (D8), each generated from its derived lock (D4, D6);
   `Parse::view` over the sealed `Facade` trait; `syntax::preview` behind
   `unstable-preview`; P2–P4 over every facade (`facade_properties`).
+- **PR 7 — the freeze** (D6): `v4_6` … `v10` published, their locks stamped
+  at `FREEZE_EPOCH` 1 and read, never written, with each frozen lock held to
+  its version's derivation; a consumer fixture per distinct published facade;
+  `tools/ci/facade-lock-check.sh` in CI; the synthetic-feature test; node and
+  dispatch-enum re-casts taken to be fallible, so a facade's code is a
+  function of its own lock.
 
 ## PR sequence
 
@@ -548,12 +660,13 @@ diagnostic for its feature" rather than "under a `Legality` one".
 7. **Freeze**: `PUBLISHED = v4_6 … v10`, the CI lock check, consumer fixtures,
    and a permanent synthetic-feature test (a fake feature and kind at "12.0",
    in memory: every published facade regenerates byte-identically, and the new
-   facade differs by exactly that variant).
-8. **The compiler upgrade** — the proof; `v11` is published after it.
+   facade differs by exactly that variant). *Landed.*
+8. **The compiler upgrade** — the proof; `v11` is published after it
+   ([Publishing a facade](#publishing-a-facade)).
 
 ## Still to do
 
-Everything in PRs 7 and 8 above. Beyond them:
+Everything in PR 8 above. Beyond them:
 
 - **Stale issues.** #14 (facades below 8.0) and #12 (`Parse::view`) are done
   by PR 6, and #17 (preview) is decided (D11).

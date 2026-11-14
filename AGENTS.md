@@ -23,8 +23,18 @@ This is a Cargo workspace with nine members:
   its name (`unstable-preview` for `preview`) and read through
   `Parse::view::<syntax::vN::ParsedInput>()`. A facade owns every node type
   and enum of its version's surface; `tools/astgen` generates each from its
-  lock (`crates/cst/facades/vN.lock`), which today is derived from the union's,
-  and a version whose surface equals an earlier one's is an alias of it. The
+  lock (`crates/cst/facades/vN.lock`), and a version whose surface equals an
+  earlier one's is an alias of it. An unpublished facade's lock (`v11`,
+  `preview`) is derived from the union's and regenerated freely. The facades
+  up to `v10` are **published**: frozen, their locks astgen's input rather
+  than its output, changing only by the additions
+  `tools/ci/facade-lock-check.sh` allows, each distinct one with a frozen
+  consumer fixture (`tests/all/facade_consumers/`) that must keep compiling.
+  A union accessor or derive added later is opt-in for a frozen facade, but
+  a union change that would break one or open a hole in it fails astgen until
+  the lock takes it or `ACCEPTED_DIVERGENCES` records why not; see "Publishing a
+  facade" in `docs/ast-versioning-plan.md`, which is also the runbook for
+  publishing a new language version's facade. The
   typed AST the facades re-cast — the *union* of every language version's
   surface (`ImplFile`, `Expr`, `Pat`, `Type`, `ModuleDecl`, …, in
   `syntax/union.rs` and `syntax/generated/`) — gains a variant whenever a
