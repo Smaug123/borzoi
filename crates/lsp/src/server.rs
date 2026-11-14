@@ -40,13 +40,14 @@ use lsp_types::{
     TextDocumentSyncKind,
 };
 
-use crate::batch::{Incoming, Refusal, Shape, Step as BatchStep, TextSync};
+use crate::batch::{Incoming, Refusal, Restart, Shape, Step as BatchStep, TextSync};
 use crate::diagnostics::FileDiagnostics;
 use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
     DefinitionOutcome, PendingFetch, default_source_fetcher, location_for_pending, url_location,
 };
 use crate::handlers::workspace_diagnostic::{Step, Sweep};
+use crate::inbox::{Inbox, Superseded, Watch};
 use crate::observed::Unobserved;
 use crate::parses::ParseMemo;
 use crate::project_deferral;
@@ -686,13 +687,29 @@ pub fn run(connection: Connection, state: State) -> Result<(), Box<dyn Error + S
 /// request / notification handlers. Returns cleanly when the peer sends
 /// `exit`, or hangs up.
 ///
-/// Before it handles a message, the loop reads every message waiting on the
-/// connection, and it decides what to do with what it holds by
+/// The connection is read by a thread of its own ([`crate::inbox::forward`]),
+/// which counts the notifications it hands over; [`run_inbox`] is the loop.
+pub fn run_with_fetcher(
+    connection: Connection,
+    state: State,
+    fetcher: Option<Arc<dyn SourceFetcher>>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let inbox = crate::inbox::forward(connection.receiver.clone(), INPUT_BUFFER);
+    run_inbox(&connection, inbox, state, fetcher)
+}
+
+/// The dispatch loop over `inbox`, answering through `connection`'s sender
+/// (its receiver is not read: the messages arrive through `inbox`).
+///
+/// Before it handles a message, the loop reads every message waiting in the
+/// inbox, and it decides what to do with what it holds by
 /// [`crate::batch::plan`]: notifications first, a superseded text sync applied
 /// without its diagnostics, a cancelled request answered `RequestCancelled`
 /// and a request whose document has a newer change answered
 /// `ContentModified`, neither of them run. The [`Dispatcher`] executes the
-/// plan one step at a time, reading the connection again before each.
+/// plan one step at a time, reading the inbox again before each. A request
+/// that is running stops at its next checkpoint once a notification arrives,
+/// and is planned again with it ([`crate::inbox`]).
 ///
 /// `state` is owned for the lifetime of the loop. `main.rs` constructs it
 /// (and stamps it with the client's capabilities) before calling in; tests
@@ -709,12 +726,13 @@ pub fn run(connection: Connection, state: State) -> Result<(), Box<dyn Error + S
 /// tests use to inject a fake (or barrier) fetcher and exercise deferral without
 /// a network. `fetcher = None` (a `--no-default-features` build) builds no
 /// pool, and go-to-definition never defers, so behaviour is identical to before.
-pub fn run_with_fetcher(
-    connection: Connection,
+pub fn run_inbox(
+    connection: &Connection,
+    inbox: Inbox,
     state: State,
     fetcher: Option<Arc<dyn SourceFetcher>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut dispatcher = Dispatcher::start(&connection, state, fetcher);
+    let mut dispatcher = Dispatcher::start(connection, inbox, state, fetcher);
     loop {
         if !dispatcher.has_pending() {
             // Nothing read is left to handle: wait for a message, or, while a
@@ -722,17 +740,17 @@ pub fn run_with_fetcher(
             // the sweep whenever nothing is waiting, so any message waits
             // behind at most one sweep step.
             let first = if dispatcher.sweep_in_flight() {
-                match connection.receiver.try_recv() {
+                match dispatcher.inbox.try_recv() {
                     Ok(msg) => msg,
                     // The peer hung up: nobody is left to read the report.
                     Err(err) if err.is_disconnected() => break,
                     Err(_) => {
-                        dispatcher.step_sweep(&connection)?;
+                        dispatcher.step_sweep(connection)?;
                         continue;
                     }
                 }
             } else {
-                match connection.receiver.recv() {
+                match dispatcher.inbox.recv() {
                     Ok(msg) => msg,
                     // The peer hung up.
                     Err(_) => break,
@@ -741,46 +759,18 @@ pub fn run_with_fetcher(
             dispatcher.admit([first]);
         }
         // Everything else already waiting joins the plan before the next
-        // step runs.
-        let room = MAX_PENDING.saturating_sub(dispatcher.pending_len());
-        dispatcher.admit(connection.receiver.try_iter().take(room));
-        if dispatcher.step(&connection)? == Progress::Exit {
+        // step runs ([`Dispatcher::step`]).
+        if dispatcher.step(connection)? == Progress::Exit {
             return Ok(());
         }
     }
     Ok(())
 }
 
-/// How many decoded messages [`buffer_input`] holds ahead of the loop.
+/// How many decoded messages the input thread holds ahead of the loop
+/// ([`crate::inbox::forward`]). A full inbox holds the reader back, so a
+/// client further ahead waits in the transport.
 pub const INPUT_BUFFER: usize = 1024;
-
-/// `receiver`'s messages, taken as soon as they arrive by a thread of their
-/// own and held in a buffer of [`INPUT_BUFFER`] for the loop to read.
-///
-/// `lsp-server`'s stdio transport hands each message over a rendezvous
-/// channel and reads the next from stdin only once the last was taken. Read
-/// directly, a burst the client has sent would sit in stdin while the loop
-/// handles its first message, and the loop would find nothing waiting to plan
-/// with it ([`crate::batch`]). The buffer decodes eagerly, so what the loop
-/// finds waiting is what the client has sent, up to the bound. A full buffer
-/// holds the reader back, so a client further ahead waits in stdin. The
-/// thread ends when the input ends or the loop drops the buffer.
-pub fn buffer_input(
-    receiver: crossbeam_channel::Receiver<Message>,
-) -> crossbeam_channel::Receiver<Message> {
-    let (sender, buffered) = crossbeam_channel::bounded(INPUT_BUFFER);
-    std::thread::Builder::new()
-        .name("borzoi-input".to_string())
-        .spawn(move || {
-            for message in receiver {
-                if sender.send(message).is_err() {
-                    break;
-                }
-            }
-        })
-        .expect("spawn the input thread");
-    buffered
-}
 
 /// The most messages one epoch holds, handled or not ([`crate::batch`]).
 /// Once it holds this many the loop reads no more until it has handled them
@@ -788,13 +778,17 @@ pub fn buffer_input(
 /// in the messages held, paid again each time more arrive). A client this far
 /// ahead is pathological; what the bound gives up is coalescing across the
 /// boundary, and a request may then run while a newer change waits unread.
-const MAX_PENDING: usize = 4096;
+pub const MAX_PENDING: usize = 4096;
 
 /// What [`Dispatcher::step`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Progress {
     /// It handled one message.
     Handled,
+    /// It ran a request that stopped at a checkpoint, because a notification
+    /// arrived while it ran ([`crate::inbox`]): the request is unhandled
+    /// again, and the next step plans it with what arrived.
+    Stopped,
     /// It had nothing left to handle.
     Idle,
     /// It handled `exit`: the session is over.
@@ -806,11 +800,15 @@ pub enum Progress {
 /// deferred-fetch pool, and the messages read and not yet handled (the epoch,
 /// [`crate::batch`]) with the plan for them.
 ///
-/// [`run_with_fetcher`] reads the connection and calls [`Self::admit`],
+/// [`run_inbox`] waits on the inbox and calls [`Self::admit`],
 /// [`Self::step`] and [`Self::step_sweep`]; a test can call them with batches
-/// of its own choosing.
+/// of its own choosing, and send through the inbox to reach a request while
+/// it runs.
 pub struct Dispatcher {
     state: State,
+    /// Where messages arrive, with the count of notifications handed over
+    /// that a running request watches.
+    inbox: Inbox,
     /// Dropped with the dispatcher, which closes its queue and joins its
     /// workers (see `FetchPool::drop`).
     pool: Option<FetchPool>,
@@ -832,8 +830,15 @@ pub struct Dispatcher {
     shapes: Vec<Shape>,
     /// Whether `shutdown` was acknowledged before the epoch began.
     epoch_shutting_down: bool,
+    /// The requests of the epoch whose runs stopped at a checkpoint, each
+    /// with how many messages the epoch held after the loop read what had
+    /// arrived: the plan runs each again behind those.
+    restarts: Vec<Restart>,
+    /// The request whose run stopped in the last step, waiting for the next
+    /// step to read what arrived before it becomes a [`Restart`].
+    stopped: Option<usize>,
     /// [`crate::batch::plan`] of [`Self::epoch`], made again whenever a
-    /// message joins it.
+    /// message joins it or a request stops.
     plan: Vec<BatchStep>,
 }
 
@@ -847,6 +852,7 @@ impl Dispatcher {
     /// threads.
     pub fn start(
         connection: &Connection,
+        inbox: Inbox,
         state: State,
         fetcher: Option<Arc<dyn SourceFetcher>>,
     ) -> Self {
@@ -861,12 +867,15 @@ impl Dispatcher {
             .map(|fetcher| FetchPool::new(connection, fetcher, FETCH_WORKERS, FETCH_QUEUE_DEPTH));
         Dispatcher {
             state,
+            inbox,
             pool,
             shutting_down: false,
             sweep: None,
             epoch: Vec::new(),
             shapes: Vec::new(),
             epoch_shutting_down: false,
+            restarts: Vec::new(),
+            stopped: None,
             plan: Vec::new(),
         }
     }
@@ -884,8 +893,12 @@ impl Dispatcher {
             self.epoch.push(Some(message));
         }
         if self.epoch.len() > before {
-            self.plan = crate::batch::plan(&self.shapes, self.epoch_shutting_down);
+            self.replan();
         }
+    }
+
+    fn replan(&mut self) {
+        self.plan = crate::batch::plan(&self.shapes, &self.restarts, self.epoch_shutting_down);
     }
 
     /// Forget the epoch, every message of which is handled, and begin the
@@ -893,6 +906,8 @@ impl Dispatcher {
     fn end_epoch(&mut self) {
         self.epoch.clear();
         self.shapes.clear();
+        self.restarts.clear();
+        self.stopped = None;
         self.plan.clear();
         self.epoch_shutting_down = self.shutting_down;
     }
@@ -920,12 +935,30 @@ impl Dispatcher {
         self.sweep.is_some()
     }
 
-    /// Handle the next message of the plan, or end the epoch when every
-    /// message of it is handled.
+    /// Read what is waiting in the inbox into the epoch, then handle the next
+    /// message of the plan, or end the epoch when every message of it is
+    /// handled.
+    ///
+    /// The count of notifications is read before the waiting messages
+    /// ([`Inbox::begin_step`]), and a request this step runs watches it: a
+    /// notification that arrives later stops the run at its next checkpoint
+    /// ([`Progress::Stopped`]).
     pub fn step(
         &mut self,
         connection: &Connection,
     ) -> Result<Progress, Box<dyn Error + Send + Sync>> {
+        let room = MAX_PENDING.saturating_sub(self.pending_len());
+        let (watch, arrived) = self.inbox.begin_step(room);
+        self.admit(arrived);
+        if let Some(index) = self.stopped.take() {
+            // After reading what arrived while it ran, so that it waits
+            // behind every request that came with the notification.
+            self.restarts.push(Restart {
+                index,
+                held: self.epoch.len(),
+            });
+            self.replan();
+        }
         let Some(step) = self.next_step() else {
             self.end_epoch();
             return Ok(Progress::Idle);
@@ -933,7 +966,7 @@ impl Dispatcher {
         let message = self.epoch[step.index()]
             .take()
             .expect("the next step's message is not yet handled");
-        self.execute(connection, step, message)
+        self.execute(connection, step, message, &watch)
     }
 
     /// Do one step of the sweep in flight: a unit of work of its own, so a
@@ -962,7 +995,9 @@ impl Dispatcher {
         connection: &Connection,
         step: BatchStep,
         message: Incoming,
+        watch: &Watch,
     ) -> Result<Progress, Box<dyn Error + Send + Sync>> {
+        let mut progress = Progress::Handled;
         let state = &mut self.state;
         match (step, message) {
             (BatchStep::Exit { .. }, Incoming::Exit) => {
@@ -1051,9 +1086,18 @@ impl Dispatcher {
                             .sender
                             .send(Message::Response(ok_response(id, &())))?;
                     }
-                    (BatchStep::Run { .. }, Incoming::Request { request, .. }) => {
+                    (BatchStep::Run { index }, Incoming::Request { request, document }) => {
                         let method = request.method.clone();
-                        let dispatch = handle_request(state, request);
+                        // Kept for a run that stops: the request is then
+                        // unhandled again, and runs or is refused later.
+                        let again = request.clone();
+                        // The last checkpoint follows the handler, so an
+                        // answer is sent only if no notification arrived
+                        // before it was decided.
+                        let dispatch = handle_request(state, request, watch).and_then(|dispatch| {
+                            watch.check()?;
+                            Ok(dispatch)
+                        });
                         respond_to_moved_evaluations(state, connection);
                         // Before the reply, not after: a fold refusal is *why*
                         // this reply is degraded, and an explanation that
@@ -1062,20 +1106,35 @@ impl Dispatcher {
                         // client, so the shell reports what it observed.
                         refresh_project_deferrals(state, connection);
                         match dispatch {
+                            // What the run computed and cached stands; its
+                            // answer is not sent.
+                            Err(Superseded) => {
+                                tracing::debug!(
+                                    name: crate::inbox::STOPPED_EVENT,
+                                    method = %method,
+                                    "a request stopped at a checkpoint"
+                                );
+                                self.epoch[index] = Some(Incoming::Request {
+                                    request: again,
+                                    document,
+                                });
+                                self.stopped = Some(index);
+                                progress = Progress::Stopped;
+                            }
                             // Synchronous request: reply immediately.
-                            Dispatch::Reply(response) => {
+                            Ok(Dispatch::Reply(response)) => {
                                 enqueue_response(connection, &method, response)?;
                             }
                             // Cold SourceLink fetch: hand to the pool, which
                             // replies out-of-band when it completes. The loop
                             // never blocks on the network.
-                            Dispatch::Defer { id, pending } => {
+                            Ok(Dispatch::Defer { id, pending }) => {
                                 dispatch_fetch(connection, self.pool.as_ref(), id, pending)?;
                             }
                             // A sweep: the loop steps it while idle and replies
                             // when it completes. A client that asks again has
                             // given up on the older one.
-                            Dispatch::Sweep { id, sweep: started } => {
+                            Ok(Dispatch::Sweep { id, sweep: started }) => {
                                 if let Some(old) =
                                     self.sweep.replace(InFlightSweep::new(id, started))
                                 {
@@ -1094,7 +1153,7 @@ impl Dispatcher {
                 state.end_generation();
             }
         }
-        Ok(Progress::Handled)
+        Ok(progress)
     }
 }
 
@@ -1421,13 +1480,21 @@ pub enum Dispatch {
 /// sweep (unbounded work the loop must not block on); every other request
 /// replies synchronously.
 ///
+/// `watch` stops the run at a checkpoint once a notification has arrived
+/// since it began ([`Superseded`]); a sweep's start is not stopped, since the
+/// sweep has its own answer to what arrives while it is in flight.
+///
 /// Every run opens the `lsp.request` span, whoever calls it: a request
 /// answered without running opens none.
-pub fn handle_request(state: &mut State, req: Request) -> Dispatch {
+pub fn handle_request(
+    state: &mut State,
+    req: Request,
+    watch: &Watch,
+) -> Result<Dispatch, Superseded> {
     let _request_span = tracing::info_span!("lsp.request", method = %req.method).entered();
     if req.method == WorkspaceDiagnosticRequest::METHOD {
         let id = req.id.clone();
-        return match extract::<WorkspaceDiagnosticRequest>(req) {
+        return Ok(match extract::<WorkspaceDiagnosticRequest>(req) {
             Ok((id, params)) => Dispatch::Sweep {
                 id,
                 sweep: Sweep::new(state, params),
@@ -1437,34 +1504,41 @@ pub fn handle_request(state: &mut State, req: Request) -> Dispatch {
                 lsp_server::ErrorCode::InvalidParams,
                 format!("workspace diagnostic params: {err:?}"),
             )),
-        };
+        });
     }
     if req.method == GotoDefinition::METHOD {
         let id = req.id.clone();
-        return match extract::<GotoDefinition>(req) {
-            Ok((id, params)) => match crate::handlers::definition::handle(state, params) {
-                DefinitionOutcome::Ready(resp) => Dispatch::Reply(ok_response(id, &resp)),
-                DefinitionOutcome::Deferred(pending) => Dispatch::Defer { id, pending },
-            },
+        return Ok(match extract::<GotoDefinition>(req) {
+            Ok((id, params)) => {
+                match crate::handlers::definition::handle_watched(state, params, watch)? {
+                    DefinitionOutcome::Ready(resp) => Dispatch::Reply(ok_response(id, &resp)),
+                    DefinitionOutcome::Deferred(pending) => Dispatch::Defer { id, pending },
+                }
+            }
             Err(err) => Dispatch::Reply(err_response(
                 id,
                 lsp_server::ErrorCode::InvalidParams,
                 format!("definition params: {err:?}"),
             )),
-        };
+        });
     }
-    Dispatch::Reply(handle_request_sync(state, req))
+    Ok(Dispatch::Reply(handle_request_sync(state, req, watch)?))
 }
 
 /// The synchronous request handlers — everything except a *deferred*
 /// go-to-definition and a `workspace/diagnostic` sweep (which `handle_request`
-/// intercepts above). Always produces a response to send immediately.
-fn handle_request_sync(state: &mut State, req: Request) -> Response {
+/// intercepts above). Produces a response to send immediately, unless `watch`
+/// stops the run.
+fn handle_request_sync(
+    state: &mut State,
+    req: Request,
+    watch: &Watch,
+) -> Result<Response, Superseded> {
     let id = req.id.clone();
-    match req.method.as_str() {
+    Ok(match req.method.as_str() {
         HoverRequest::METHOD => match extract::<HoverRequest>(req) {
             Ok((id, params)) => {
-                let resp = crate::handlers::hover::handle(state, params);
+                let resp = crate::handlers::hover::handle_watched(state, params, watch)?;
                 ok_response(id, &resp)
             }
             Err(err) => err_response(
@@ -1475,7 +1549,7 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
         },
         Completion::METHOD => match extract::<Completion>(req) {
             Ok((id, params)) => {
-                let resp = crate::handlers::completion::handle(state, params);
+                let resp = crate::handlers::completion::handle_watched(state, params, watch)?;
                 ok_response(id, &resp)
             }
             Err(err) => err_response(
@@ -1497,7 +1571,7 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
         },
         References::METHOD => match extract::<References>(req) {
             Ok((id, params)) => {
-                let resp = crate::handlers::references::handle(state, params);
+                let resp = crate::handlers::references::handle_watched(state, params, watch)?;
                 references_response(id, &resp)
             }
             Err(err) => err_response(
@@ -1508,7 +1582,7 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
         },
         WorkspaceSymbolRequest::METHOD => match extract::<WorkspaceSymbolRequest>(req) {
             Ok((id, params)) => {
-                let resp = crate::handlers::workspace_symbol::handle(state, params);
+                let resp = crate::handlers::workspace_symbol::handle_watched(state, params, watch)?;
                 ok_response(id, &resp)
             }
             Err(err) => err_response(
@@ -1519,7 +1593,7 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
         },
         SemanticTokensFullRequest::METHOD => match extract::<SemanticTokensFullRequest>(req) {
             Ok((id, params)) => {
-                let resp = crate::handlers::semantic_tokens::handle(state, params);
+                let resp = crate::handlers::semantic_tokens::handle_watched(state, params, watch)?;
                 ok_response(id, &resp)
             }
             Err(err) => err_response(
@@ -1544,7 +1618,7 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
             lsp_server::ErrorCode::MethodNotFound,
             format!("unhandled request: {method}"),
         ),
-    }
+    })
 }
 
 /// What a `workspace/didChangeWatchedFiles` batch did to the caches.

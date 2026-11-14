@@ -36,6 +36,7 @@ use borzoi_cst::syntax::{AstNode, ImplFile};
 use lsp_types::{SymbolInformation, Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse};
 
 use crate::handlers::{file_export_symbols, symbol_information};
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::server::State;
 
@@ -52,6 +53,16 @@ struct OpenSource {
 /// nothing matches), so a stale client symbol panel clears rather than sticking
 /// with the previous answer.
 pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<WorkspaceSymbolResponse> {
+    never_superseded(handle_watched(state, params, &Watch::unwatched()))
+}
+
+/// [`handle`], stopping at a checkpoint once `watch` sees a notification
+/// ([`crate::inbox`]).
+pub fn handle_watched(
+    state: &mut State,
+    params: WorkspaceSymbolParams,
+    watch: &Watch,
+) -> Result<Option<WorkspaceSymbolResponse>, Superseded> {
     // Unicode lowercase (not ASCII-only): F# identifiers can be non-ASCII, so a
     // `CAFÉ` query must fold to match `café`.
     let query = params.query.to_lowercase();
@@ -89,6 +100,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
             projects.push(project);
         }
     }
+    watch.check()?;
 
     let mut out: Vec<SymbolInformation> = Vec::new();
     // Dedup by **symbol identity** (name + location), not by file path. A file
@@ -119,7 +131,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
                 docs,
                 ..
             } = &mut *state;
-            match semantic.parses_for_project(project, workspace, docs) {
+            match semantic.parses_for_project_watched(project, workspace, docs, watch)? {
                 Some(p) => p.clone(),
                 None => continue,
             }
@@ -176,7 +188,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         );
     }
 
-    Some(WorkspaceSymbolResponse::Flat(out))
+    Ok(Some(WorkspaceSymbolResponse::Flat(out)))
 }
 
 /// A symbol's identity for cross-source dedup: its name, the URI it lives in,

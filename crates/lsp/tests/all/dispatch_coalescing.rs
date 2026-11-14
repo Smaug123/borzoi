@@ -34,6 +34,16 @@
 //! steps run between them, as the loop reads messages that arrive while it
 //! works: those batches are held to exactly once and to the final state.
 //!
+//! Others arrive **while a request runs** (Stage 9): a prefix is handed over,
+//! and the rest is sent through the inbox at a generated checkpoint of
+//! whichever request is running then, as the input thread hands over a
+//! message that arrives mid-request. The running request stops at that
+//! checkpoint and is planned again with the rest. Such a batch is held to
+//! exactly once and to the final state, and every request answered after
+//! the rest arrived is held to the whole batch's specification: its fate,
+//! and, answered with a result, the sequential session's answer after the
+//! whole batch.
+//!
 //! The world is one SDK-less project of three sources, each reading the one
 //! before it (`A.x`, `B.y`), so an edit to one changes what requests on the
 //! others answer; `A` is also opened under a second URI, path-equal to the
@@ -49,6 +59,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use borzoi::inbox::CHECKPOINT_EVENT;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::server::{Dispatcher, Progress, SERVER_STACK_BYTES, State};
 use borzoi::uri::UriExt as _;
@@ -263,6 +274,10 @@ struct Batch {
     /// When non-empty, the coalescing session is handed the batch in chunks of
     /// these sizes (the last takes the rest), each followed by this many steps.
     chunks: Vec<(usize, usize)>,
+    /// When set (and `chunks` is empty), the coalescing session is handed the
+    /// first `prefix` messages, and the rest arrives at its `checkpoint`th
+    /// checkpoint from then on, while a request runs.
+    mid_run: Option<(usize, usize)>,
 }
 
 #[derive(Clone)]
@@ -278,6 +293,9 @@ impl fmt::Debug for Case {
             writeln!(f, "batch {i}: writes {:?}", batch.writes)?;
             if !batch.chunks.is_empty() {
                 writeln!(f, "  chunks {:?}", batch.chunks)?;
+            }
+            if let Some(mid_run) = batch.mid_run {
+                writeln!(f, "  mid-run (prefix, checkpoint) {mid_run:?}")?;
             }
             for op in &batch.ops {
                 writeln!(f, "  {op:?}")?;
@@ -348,16 +366,19 @@ fn batch_strategy(last: bool) -> impl Strategy<Value = Batch> {
         proptest::collection::vec(op_strategy(), 1..14),
         tail,
         prop_oneof![
-            3 => Just(vec![]),
-            1 => proptest::collection::vec((1usize..5, 0usize..4), 1..4),
+            3 => Just((vec![], None)),
+            1 => proptest::collection::vec((1usize..5, 0usize..4), 1..4)
+                .prop_map(|chunks| (chunks, None)),
+            3 => (1usize..8, 0usize..4).prop_map(|mid_run| (vec![], Some(mid_run))),
         ],
     )
-        .prop_map(|(writes, mut ops, tail, chunks)| {
+        .prop_map(|(writes, mut ops, tail, (chunks, mid_run))| {
             ops.extend(tail);
             Batch {
                 writes,
                 ops,
                 chunks,
+                mid_run,
             }
         })
 }
@@ -722,7 +743,36 @@ struct Seen {
     publishes: BTreeMap<String, usize>,
 }
 
-struct Counter(Arc<Mutex<Seen>>);
+struct Counter(Arc<Mutex<Seen>>, Option<Arc<Mutex<MidRun>>>);
+
+/// A batch's rest, waiting to be sent through the inbox at a checkpoint.
+struct MidRun {
+    /// Checkpoints to pass before sending.
+    countdown: usize,
+    rest: Option<Vec<Message>>,
+    input: borzoi::inbox::InboxSender,
+    client: crossbeam_channel::Receiver<Message>,
+    /// How many messages the server had sent the client when the rest was
+    /// sent: those were sent before it arrived.
+    sent_before: Option<usize>,
+}
+
+impl MidRun {
+    /// At a checkpoint: send the rest once the countdown runs out.
+    fn checkpoint(&mut self) {
+        if self.rest.is_none() {
+            return;
+        }
+        if self.countdown > 0 {
+            self.countdown -= 1;
+            return;
+        }
+        self.sent_before = Some(self.client.len());
+        for message in self.rest.take().unwrap() {
+            self.input.send(message).expect("the inbox is alive");
+        }
+    }
+}
 
 struct UriField(Option<String>);
 
@@ -747,7 +797,8 @@ impl tracing::Subscriber for Counter {
         }
     }
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.is_span() && matches!(metadata.name(), "lsp.request" | "publish_diagnostics")
+        (metadata.is_span() && matches!(metadata.name(), "lsp.request" | "publish_diagnostics"))
+            || (metadata.is_event() && metadata.name() == CHECKPOINT_EVENT)
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let mut seen = self.0.lock().unwrap();
@@ -765,7 +816,13 @@ impl tracing::Subscriber for Counter {
     }
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, _: &tracing::Event<'_>) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().name() == CHECKPOINT_EVENT
+            && let Some(mid_run) = &self.1
+        {
+            mid_run.lock().unwrap().checkpoint();
+        }
+    }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
 }
@@ -781,6 +838,11 @@ struct Session {
     published: BTreeMap<String, Value>,
     /// The server's requests not yet acknowledged.
     owed_acks: Vec<RequestId>,
+    /// The inbox's sending side: a message sent here reaches a request that
+    /// is running, as one the input thread hands over does.
+    input: borzoi::inbox::InboxSender,
+    /// Requests whose runs stopped at a checkpoint.
+    stops: usize,
 }
 
 impl Session {
@@ -808,15 +870,18 @@ impl Session {
         let caps: ClientCapabilities = serde_json::from_value(caps).unwrap();
         state.set_client_capabilities(caps);
         state.set_workspace_roots(vec![root.to_path_buf()]);
-        let dispatcher = Dispatcher::start(&server, state, None);
+        let (input, inbox) = borzoi::inbox::channel(borzoi::server::INPUT_BUFFER);
+        let dispatcher = Dispatcher::start(&server, inbox, state, None);
         Session {
             dispatcher,
+            input,
             server,
             client,
             exited: false,
             next_probe: 0,
             published: BTreeMap::new(),
             owed_acks: Vec::new(),
+            stops: 0,
         }
     }
 
@@ -839,7 +904,7 @@ impl Session {
             for &(size, steps) in chunks {
                 self.dispatcher.admit(rest.by_ref().take(size));
                 for _ in 0..steps {
-                    if self.step() != Progress::Handled {
+                    if !matches!(self.step(), Progress::Handled | Progress::Stopped) {
                         break;
                     }
                 }
@@ -849,7 +914,7 @@ impl Session {
             }
             if !self.exited {
                 self.dispatcher.admit(rest);
-                while self.step() == Progress::Handled {}
+                self.run_out();
             }
             while !self.exited && self.dispatcher.sweep_in_flight() {
                 self.dispatcher.step_sweep(&self.server).unwrap();
@@ -858,10 +923,79 @@ impl Session {
         self.absorb()
     }
 
+    /// Step until nothing read is left to handle, or `exit`.
+    fn run_out(&mut self) {
+        while matches!(self.step(), Progress::Handled | Progress::Stopped) {}
+    }
+
+    /// Hand over the first `prefix` of `messages`, and send the rest through
+    /// the inbox at the `checkpoint`th checkpoint from then on (see
+    /// [`MidRun`]), then run until nothing is left, as [`Self::deliver`]
+    /// does. `seen` counts as [`Counter`] does. Returns the answers, and,
+    /// when the rest arrived mid-request, the requests answered before it.
+    fn deliver_mid_run(
+        &mut self,
+        mut messages: Vec<Message>,
+        (prefix, checkpoint): (usize, usize),
+        seen: Arc<Mutex<Seen>>,
+    ) -> (
+        BTreeMap<RequestId, Vec<Response>>,
+        Option<BTreeSet<RequestId>>,
+    ) {
+        if self.exited {
+            return (self.absorb(), None);
+        }
+        let rest = messages.split_off(prefix.min(messages.len()));
+        let mid_run = Arc::new(Mutex::new(MidRun {
+            countdown: checkpoint,
+            rest: Some(rest),
+            input: self.input.clone(),
+            client: self.client.receiver.clone(),
+            sent_before: None,
+        }));
+        tracing::subscriber::with_default(Counter(seen, Some(Arc::clone(&mid_run))), || {
+            self.dispatcher.admit(messages);
+            self.run_out();
+            // Fewer checkpoints than the countdown: the rest arrives between
+            // steps instead.
+            let late = mid_run.lock().unwrap().rest.take();
+            if let Some(late) = late
+                && !self.exited
+            {
+                self.dispatcher.admit(late);
+                self.run_out();
+            }
+            while !self.exited && self.dispatcher.sweep_in_flight() {
+                self.dispatcher.step_sweep(&self.server).unwrap();
+            }
+        });
+        let sent_before = mid_run.lock().unwrap().sent_before;
+        let mut before = BTreeSet::new();
+        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
+        for (position, message) in self
+            .client
+            .receiver
+            .try_iter()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+        {
+            if let (Message::Response(response), Some(sent_before)) = (&message, sent_before)
+                && position < sent_before
+            {
+                before.insert(response.id.clone());
+            }
+            self.absorb_one(message, &mut answers);
+        }
+        (answers, sent_before.map(|_| before))
+    }
+
     fn step(&mut self) -> Progress {
         let progress = self.dispatcher.step(&self.server).unwrap();
-        if progress == Progress::Exit {
-            self.exited = true;
+        match progress {
+            Progress::Exit => self.exited = true,
+            Progress::Stopped => self.stops += 1,
+            Progress::Handled | Progress::Idle => {}
         }
         progress
     }
@@ -871,24 +1005,28 @@ impl Session {
     fn absorb(&mut self) -> BTreeMap<RequestId, Vec<Response>> {
         let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
         for message in self.client.receiver.try_iter().collect::<Vec<_>>() {
-            match message {
-                Message::Response(response) => {
-                    answers
-                        .entry(response.id.clone())
-                        .or_default()
-                        .push(response);
-                }
-                Message::Request(request) => self.owed_acks.push(request.id),
-                Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
-                    let uri = n.params["uri"].as_str().unwrap().to_string();
-                    let mut view = n.params.clone();
-                    view.as_object_mut().unwrap().remove("version");
-                    self.published.insert(uri, view);
-                }
-                Message::Notification(_) => {}
-            }
+            self.absorb_one(message, &mut answers);
         }
         answers
+    }
+
+    fn absorb_one(&mut self, message: Message, answers: &mut BTreeMap<RequestId, Vec<Response>>) {
+        match message {
+            Message::Response(response) => {
+                answers
+                    .entry(response.id.clone())
+                    .or_default()
+                    .push(response);
+            }
+            Message::Request(request) => self.owed_acks.push(request.id),
+            Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                let uri = n.params["uri"].as_str().unwrap().to_string();
+                let mut view = n.params.clone();
+                view.as_object_mut().unwrap().remove("version");
+                self.published.insert(uri, view);
+            }
+            Message::Notification(_) => {}
+        }
     }
 
     /// Acknowledge every request the server sent, one per batch, until it
@@ -959,6 +1097,14 @@ struct Coverage {
     spared_publishes: usize,
     superseded_sweeps: usize,
     chunked_batches: usize,
+    /// Batches whose rest arrived while a request ran, and of those, the
+    /// ones in which a run stopped.
+    mid_run_batches: usize,
+    mid_run_stops: usize,
+    /// Requests answered after a mid-run arrival and held to the whole
+    /// batch's specification, and those answered with a result.
+    after_arrival: usize,
+    after_arrival_with_a_result: usize,
 }
 
 fn fail(message: String) -> TestCaseError {
@@ -995,16 +1141,32 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
         let messages = |played: &[Played]| -> Vec<Message> {
             played.iter().map(|p| p.message.clone()).collect()
         };
-        let whole = batch.chunks.is_empty();
+        let whole = batch.chunks.is_empty() && batch.mid_run.is_none();
         let expected = fates(&played, shut_down);
 
         let seen = Arc::new(Mutex::new(Seen::default()));
-        let answers = tracing::subscriber::with_default(Counter(Arc::clone(&seen)), || {
-            coalescing.deliver_in(messages(&played), &batch.chunks)
-        });
+        let stops_before = coalescing.stops;
+        let (answers, answered_before_arrival) = match batch.mid_run {
+            Some(mid_run) if batch.chunks.is_empty() => {
+                coalescing.deliver_mid_run(messages(&played), mid_run, Arc::clone(&seen))
+            }
+            _ => {
+                let answers =
+                    tracing::subscriber::with_default(Counter(Arc::clone(&seen), None), || {
+                        coalescing.deliver_in(messages(&played), &batch.chunks)
+                    });
+                (answers, None)
+            }
+        };
+        let stopped = coalescing.stops - stops_before;
+        if whole && stopped > 0 {
+            return Err(fail(format!(
+                "batch {b}: a batch handed over whole stopped {stopped} runs, with nothing arriving"
+            )));
+        }
         let seen_coalescing = std::mem::take(&mut *seen.lock().unwrap());
         let mut sequential_answers = BTreeMap::new();
-        tracing::subscriber::with_default(Counter(Arc::clone(&seen)), || {
+        tracing::subscriber::with_default(Counter(Arc::clone(&seen), None), || {
             for message in messages(&played) {
                 sequential_answers.extend(sequential.deliver(vec![message]));
             }
@@ -1150,6 +1312,62 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
                     coverage.borrow_mut().moved_by_a_later_sync += 1;
                 }
             }
+        } else if let Some(before) = &answered_before_arrival {
+            // The rest arrived while a request ran: every request answered
+            // after it is answered as if the batch had been handed over
+            // whole, and against the newest texts.
+            let mut c = coverage.borrow_mut();
+            c.mid_run_batches += 1;
+            if stopped > 0 {
+                c.mid_run_stops += 1;
+            }
+            drop(c);
+            for played in &played {
+                let (Message::Request(request), Some(Req { id, sweep, .. })) =
+                    (&played.message, &played.request)
+                else {
+                    continue;
+                };
+                // A sweep's answer depends on which sweeps had started when
+                // the rest arrived.
+                if *sweep || before.contains(id) {
+                    continue;
+                }
+                let Some(answer) = answers.get(id).map(|a| &a[0]) else {
+                    continue;
+                };
+                let fate = expected[id];
+                let code = answer.response_result.as_ref().err().map(|e| e.code);
+                let want = match fate {
+                    Fate::Answered | Fate::Shutdown => None,
+                    Fate::Cancelled => Some(lsp_server::ErrorCode::RequestCanceled as i32),
+                    Fate::ContentModified => Some(lsp_server::ErrorCode::ContentModified as i32),
+                    Fate::AfterShutdown => Some(lsp_server::ErrorCode::InvalidRequest as i32),
+                    Fate::Superseded | Fate::Abandoned | Fate::Unread => continue,
+                };
+                if code != want {
+                    return Err(fail(format!(
+                        "batch {b}: {id}, answered after the rest arrived mid-request, should be \
+                         {fate:?}, but was answered {answer:?}"
+                    )));
+                }
+                coverage.borrow_mut().after_arrival += 1;
+                let Ok(result) = &answer.response_result else {
+                    continue;
+                };
+                if fate == Fate::Shutdown {
+                    continue;
+                }
+                let now = sequential.ask(&request.method, request.params.clone());
+                if now != json!({ "Ok": result }) {
+                    return Err(fail(format!(
+                        "batch {b}: {id} ({}), answered after the rest arrived mid-request, was \
+                         answered {result} against superseded text; after the batch it is {now}",
+                        request.method
+                    )));
+                }
+                coverage.borrow_mut().after_arrival_with_a_result += 1;
+            }
         } else {
             coverage.borrow_mut().chunked_batches += 1;
         }
@@ -1261,6 +1479,7 @@ fn pinned_cases() -> Vec<Case> {
                     Op::Exit,
                 ],
                 chunks: vec![(2, 2)],
+                mid_run: None,
             }],
         },
     ]
@@ -1301,7 +1520,9 @@ fn a_coalesced_batch_agrees_with_its_messages_one_at_a_time() {
                 && coverage.after_shutdown > 0
                 && coverage.moved_by_a_later_sync > 0
                 && coverage.spared_publishes > 0
-                && coverage.chunked_batches > 0,
+                && coverage.chunked_batches > 0
+                && coverage.mid_run_stops > 0
+                && coverage.after_arrival_with_a_result > 0,
             "the generated cases left a property unexercised: {coverage:#?}"
         );
     });
@@ -1377,6 +1598,9 @@ fn the_loop_reads_every_waiting_message_before_it_handles_one() {
         let world = World::new();
         let b = world.uri(Doc::Src(Src::B));
         let (server, client) = Connection::memory();
+        // Into the inbox itself, as the input thread hands messages over, so
+        // all of it is waiting when the loop starts.
+        let (input, inbox) = borzoi::inbox::channel(borzoi::server::INPUT_BUFFER);
         for message in [
             did_open(&b, Src::B.text(0)),
             hover_b(&world, "h1"),
@@ -1387,14 +1611,14 @@ fn the_loop_reads_every_waiting_message_before_it_handles_one() {
             request("s", "shutdown", Value::Null),
             notification("exit", Value::Null),
         ] {
-            client.sender.send(message).unwrap();
+            input.send(message).unwrap();
         }
         let mut state = State::new();
         state.workspace = Workspace::with_env(SdkDiscoveryEnv {
             dotnet_root: Some(world.root.join("no-dotnet")),
             ..SdkDiscoveryEnv::default()
         });
-        borzoi::server::run_with_fetcher(server, state, None).expect("the loop ends cleanly");
+        borzoi::server::run_inbox(&server, inbox, state, None).expect("the loop ends cleanly");
         let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
         for message in client.receiver.try_iter() {
             if let Message::Response(response) = message {
@@ -1562,17 +1786,17 @@ fn the_loop_reads_again_before_each_message_it_handles() {
         let world = World::new();
         let b = world.uri(Doc::Src(Src::B));
         let (server, client) = Connection::memory();
-        client.sender.send(did_open(&b, Src::B.text(0))).unwrap();
-        client.sender.send(hover_b(&world, "h1")).unwrap();
+        let (input, inbox) = borzoi::inbox::channel(borzoi::server::INPUT_BUFFER);
+        input.send(did_open(&b, Src::B.text(0))).unwrap();
+        input.send(hover_b(&world, "h1")).unwrap();
         let late = vec![
             did_change(&b, Src::B.text(1)),
             request("s", "shutdown", Value::Null),
             notification("exit", Value::Null),
         ];
-        let sender = client.sender.clone();
         let subscriber = SendAtFirstGeneration(Mutex::new(Some(Box::new(move || {
             for message in late {
-                sender.send(message).unwrap();
+                input.send(message).unwrap();
             }
         }))));
         let mut state = State::new();
@@ -1581,7 +1805,7 @@ fn the_loop_reads_again_before_each_message_it_handles() {
             ..SdkDiscoveryEnv::default()
         });
         tracing::subscriber::with_default(subscriber, || {
-            borzoi::server::run_with_fetcher(server, state, None).expect("the loop ends cleanly")
+            borzoi::server::run_inbox(&server, inbox, state, None).expect("the loop ends cleanly")
         });
         let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
         for message in client.receiver.try_iter() {
@@ -1609,7 +1833,7 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
         let b = world.uri(Doc::Src(Src::B));
         let (upstream, from_client) = crossbeam_channel::bounded::<Message>(0);
         let (to_client, client) = crossbeam_channel::unbounded::<Message>();
-        let buffered = borzoi::server::buffer_input(from_client);
+        let inbox = borzoi::inbox::forward(from_client, borzoi::server::INPUT_BUFFER);
         const PAIRS: usize = 32;
         let mut burst = vec![did_open(&b, Src::B.text(0))];
         for i in 0..PAIRS {
@@ -1642,9 +1866,9 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
         });
         let connection = Connection {
             sender: to_client,
-            receiver: buffered,
+            receiver: crossbeam_channel::never(),
         };
-        borzoi::server::run_with_fetcher(connection, state, None).expect("the loop ends cleanly");
+        borzoi::server::run_inbox(&connection, inbox, state, None).expect("the loop ends cleanly");
         let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
         for message in client.try_iter() {
             if let Message::Response(response) = message {
@@ -1658,5 +1882,312 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
             assert_eq!(error_code(&answers, &format!("h{i}")), CANCELLED, "h{i}");
         }
         assert_eq!(error_code(&answers, "s"), None);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Requests that stop (Stage 9).
+// ---------------------------------------------------------------------------
+
+/// The spans that begin a unit of work whose result is cached, after which a
+/// running request passes a checkpoint (`docs/incremental-lsp-plan.md`,
+/// Stage 9).
+const UNIT_SPANS: [&str; 4] = [
+    "parse_compile_item",
+    "build_env_from_dll_paths",
+    "resolve_project",
+    "infer_project",
+];
+
+/// What [`StopAtUnit`] saw.
+#[derive(Default, Debug)]
+struct UnitTrace {
+    units: Vec<&'static str>,
+    /// The index, among `units`, at which the notification was sent.
+    sent_at: Option<usize>,
+    /// Units begun after the notification and before the run stopped.
+    begun_after: Vec<&'static str>,
+    stopped: usize,
+}
+
+/// A subscriber that sends a notification the server ignores when the
+/// `at`th unit begins, and records which units begin before the running
+/// request stops.
+struct StopAtUnit {
+    at: Option<usize>,
+    input: borzoi::inbox::InboxSender,
+    trace: Arc<Mutex<UnitTrace>>,
+}
+
+impl tracing::Subscriber for StopAtUnit {
+    fn register_callsite(
+        &self,
+        metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        if self.enabled(metadata) {
+            tracing::subscriber::Interest::always()
+        } else {
+            tracing::subscriber::Interest::sometimes()
+        }
+    }
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        (metadata.is_span() && UNIT_SPANS.contains(&metadata.name()))
+            || (metadata.is_event() && metadata.name() == borzoi::inbox::STOPPED_EVENT)
+    }
+    fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        let mut trace = self.trace.lock().unwrap();
+        let name = span.metadata().name();
+        let index = trace.units.len();
+        trace.units.push(name);
+        if trace.sent_at.is_some() && trace.stopped == 0 {
+            trace.begun_after.push(name);
+        }
+        if self.at == Some(index) {
+            trace.sent_at = Some(index);
+            self.input
+                .send(notification("$/borzoi-test/ignored", Value::Null))
+                .unwrap();
+        }
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        self.trace.lock().unwrap().stopped += 1;
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// The requests whose units [`a_request_starts_no_unit_after_a_notification_arrives`]
+/// sweeps: on a cold session, each folds and infers the project, or folds it
+/// whole.
+fn unit_requests(world: &World) -> Vec<Message> {
+    let c = world.uri(Doc::Src(Src::C));
+    vec![
+        request(
+            "hover",
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": c },
+                "position": { "line": 2, "character": 10 },
+            }),
+        ),
+        request(
+            "references",
+            "textDocument/references",
+            json!({
+                "textDocument": { "uri": c },
+                "position": { "line": 2, "character": 4 },
+                "context": { "includeDeclaration": true },
+            }),
+        ),
+        request(
+            "tokens",
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": c } }),
+        ),
+    ]
+}
+
+/// One cold session that opens every source and asks `request`, sending a
+/// notification when unit `at` begins: what the units did, and the answer.
+fn run_unit_case(world: &World, request: &Message, at: Option<usize>) -> (UnitTrace, Response) {
+    let mut session = Session::start(&world.root, false);
+    let opens: Vec<Message> = SOURCES
+        .iter()
+        .map(|&src| did_open(&world.uri(Doc::Src(src)), src.text(0)))
+        .collect();
+    session.deliver(opens);
+    session.settle();
+    let trace = Arc::new(Mutex::new(UnitTrace::default()));
+    let subscriber = StopAtUnit {
+        at,
+        input: session.input.clone(),
+        trace: Arc::clone(&trace),
+    };
+    let mut answers =
+        tracing::subscriber::with_default(subscriber, || session.deliver(vec![request.clone()]));
+    let Message::Request(request) = request else {
+        unreachable!()
+    };
+    let mut answer = answers
+        .remove(&request.id)
+        .expect("the request is answered");
+    assert_eq!(answer.len(), 1, "answered once: {answer:?}");
+    let trace = std::mem::take(&mut *trace.lock().unwrap());
+    (trace, answer.remove(0))
+}
+
+/// The cancellation latency, as units: a notification that arrives while a
+/// request runs stops it before it begins another unit of work. Swept over
+/// every unit a cold request begins, for a request that folds and infers, one
+/// that folds the whole project, and one that classifies tokens. Each stopped
+/// request runs again and answers as the request that was never stopped.
+#[test]
+fn a_request_starts_no_unit_after_a_notification_arrives() {
+    on_server_stack(|| {
+        let world = World::new();
+        for request in unit_requests(&world) {
+            let (unstopped, want) = run_unit_case(&world, &request, None);
+            assert!(
+                unstopped.units.len() >= 4,
+                "a cold request begins its units: {unstopped:?}"
+            );
+            assert_eq!(unstopped.stopped, 0);
+            for at in 0..unstopped.units.len() {
+                let (trace, got) = run_unit_case(&world, &request, Some(at));
+                assert_eq!(
+                    trace.sent_at,
+                    Some(at),
+                    "the notification was sent at unit {at}: {trace:?}"
+                );
+                assert_eq!(
+                    trace.stopped, 1,
+                    "the request stopped once, for the notification at unit {at} ({}): {trace:?}",
+                    trace.units[at]
+                );
+                assert!(
+                    trace.begun_after.is_empty(),
+                    "after the notification at unit {at} ({}), the request began {:?} before it \
+                     stopped",
+                    trace.units[at],
+                    trace.begun_after
+                );
+                assert_eq!(
+                    serde_json::to_value(got.response_result.map_err(|e| e.code)).unwrap(),
+                    serde_json::to_value(want.response_result.clone().map_err(|e| e.code)).unwrap(),
+                    "stopped at unit {at}, the request answers as it does unstopped"
+                );
+            }
+        }
+    });
+}
+
+/// Stage 9's gate, in small: a change and a pull of its document arrive while
+/// a request on another document runs. The request stops, the change is
+/// applied, the pull is answered first, and the request is answered after,
+/// against the new text.
+#[test]
+fn an_edit_that_arrives_mid_request_is_answered_before_it() {
+    on_server_stack(|| {
+        let world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let c = world.uri(Doc::Src(Src::C));
+        // `C` reads `A.x` at line 2, column 16.
+        let hover_c = || {
+            request(
+                "hover",
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 16 },
+                }),
+            )
+        };
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        session.settle();
+        let rest = vec![
+            did_change(&a, Src::A.text(1)),
+            request(
+                "pull",
+                "textDocument/diagnostic",
+                json!({ "textDocument": { "uri": a } }),
+            ),
+        ];
+        // The rest arrives at the hover's first checkpoint.
+        let mid_run = Arc::new(Mutex::new(MidRun {
+            countdown: 0,
+            rest: Some(rest),
+            input: session.input.clone(),
+            client: session.client.receiver.clone(),
+            sent_before: None,
+        }));
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        tracing::subscriber::with_default(Counter(seen, Some(Arc::clone(&mid_run))), || {
+            session.dispatcher.admit([hover_c()]);
+            session.run_out();
+        });
+        assert_eq!(mid_run.lock().unwrap().sent_before, Some(0));
+        assert_eq!(session.stops, 1, "the hover stopped");
+        let answered: Vec<Response> = session
+            .client
+            .receiver
+            .try_iter()
+            .filter_map(|message| match message {
+                Message::Response(response) => Some(response),
+                _ => None,
+            })
+            .collect();
+        let ids: Vec<String> = answered.iter().map(|r| r.id.to_string()).collect();
+        assert_eq!(
+            ids,
+            ["\"pull\"", "\"hover\""],
+            "the pull is answered before the hover it interrupted, each once"
+        );
+        let mut fresh = Session::start(&world.root, false);
+        fresh.deliver(vec![
+            did_open(&a, Src::A.text(1)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        let Message::Request(hover) = hover_c() else {
+            unreachable!()
+        };
+        let want = fresh.ask(&hover.method, hover.params);
+        let got = serde_json::to_value(
+            answered[1]
+                .response_result
+                .clone()
+                .map_err(|e| (e.code, e.message)),
+        )
+        .unwrap();
+        assert_eq!(got, want, "the hover reads the text the change brought");
+    });
+}
+
+/// What the loop holds is bounded: however far ahead the client is, the
+/// epoch takes at most [`borzoi::server::MAX_PENDING`] messages, and the rest
+/// wait in the inbox until it ends.
+#[test]
+fn the_epoch_holds_at_most_its_bound() {
+    on_server_stack(|| {
+        let world = World::new();
+        let (server, _client) = Connection::memory();
+        let (input, inbox) = borzoi::inbox::channel(2 * borzoi::server::MAX_PENDING);
+        let mut state = State::new();
+        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(world.root.join("no-dotnet")),
+            ..SdkDiscoveryEnv::default()
+        });
+        let mut dispatcher = Dispatcher::start(&server, inbox, state, None);
+        let ahead = borzoi::server::MAX_PENDING + 100;
+        for i in 0..ahead {
+            input
+                .send(request(
+                    &format!("r{i}"),
+                    "borzoi-test/unknown",
+                    Value::Null,
+                ))
+                .unwrap();
+        }
+        assert_eq!(dispatcher.step(&server).unwrap(), Progress::Handled);
+        assert_eq!(dispatcher.pending_len(), borzoi::server::MAX_PENDING);
+        let mut handled = 1;
+        let mut epochs_ended = 0;
+        while handled < ahead {
+            match dispatcher.step(&server).unwrap() {
+                Progress::Handled => handled += 1,
+                // The epoch ended; the next step reads the rest.
+                Progress::Idle => epochs_ended += 1,
+                other => panic!("an unknown request answers MethodNotFound: {other:?}"),
+            }
+            assert!(dispatcher.pending_len() <= borzoi::server::MAX_PENDING);
+            assert!(epochs_ended <= 1, "the rest fits in one more epoch");
+        }
+        assert_eq!(epochs_ended, 1, "the epoch ended once at its bound");
     });
 }

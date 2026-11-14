@@ -30,6 +30,7 @@
 //! resolution, no owning project, no resolvable URL — all map to `None`,
 //! never an LSP error envelope.
 
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::observed::Unobserved;
 use crate::uri::UriExt as _;
 use crate::vfs::Vfs;
@@ -100,6 +101,16 @@ enum Located {
 /// Any failure to find a useful location is `Ready(None)` — `Ok(null)` to the
 /// client, never an error envelope.
 pub fn handle(state: &mut State, params: GotoDefinitionParams) -> DefinitionOutcome {
+    never_superseded(handle_watched(state, params, &Watch::unwatched()))
+}
+
+/// [`handle`], stopping at a checkpoint once `watch` sees a notification
+/// ([`crate::inbox`]).
+pub fn handle_watched(
+    state: &mut State,
+    params: GotoDefinitionParams,
+    watch: &Watch,
+) -> Result<DefinitionOutcome, Superseded> {
     let pos = params.text_document_position_params.position;
     let uri = params
         .text_document_position_params
@@ -107,11 +118,11 @@ pub fn handle(state: &mut State, params: GotoDefinitionParams) -> DefinitionOutc
         .uri
         .clone();
     let Some(text) = state.docs.get(&uri).cloned() else {
-        return DefinitionOutcome::Ready(None);
+        return Ok(DefinitionOutcome::Ready(None));
     };
     let byte = position_to_offset(&text, pos);
 
-    match project_definition(state, &uri, byte) {
+    Ok(match project_definition(state, &uri, byte, watch)? {
         Some(Located::Deferred(pending)) => DefinitionOutcome::Deferred(pending),
         Some(Located::Ready(loc)) => {
             DefinitionOutcome::Ready(Some(GotoDefinitionResponse::Scalar(loc)))
@@ -122,7 +133,7 @@ pub fn handle(state: &mut State, params: GotoDefinitionParams) -> DefinitionOutc
         None => DefinitionOutcome::Ready(
             single_file_definition(state, &uri, &text, byte).map(GotoDefinitionResponse::Scalar),
         ),
-    }
+    })
 }
 
 /// Build the go-to-definition response for a fetched source file: the worker
@@ -202,9 +213,19 @@ fn locate_source(source: DefinitionSource) -> Option<Located> {
 /// failed to evaluate, the URI isn't a Compile item, or the cursor has no
 /// resolvable resolution. A referenced-assembly source not yet cached resolves
 /// to [`Located::Deferred`] for the shell to fetch.
-fn project_definition(state: &mut State, uri: &Uri, byte: usize) -> Option<Located> {
-    let path = uri.to_file_path().ok()?;
-    let project = state.workspace.owning_project(&path)?;
+fn project_definition(
+    state: &mut State,
+    uri: &Uri,
+    byte: usize,
+    watch: &Watch,
+) -> Result<Option<Located>, Superseded> {
+    let Ok(path) = uri.to_file_path() else {
+        return Ok(None);
+    };
+    let Some(project) = state.workspace.owning_project(&path) else {
+        return Ok(None);
+    };
+    watch.check()?;
     let State {
         semantic,
         workspace,
@@ -218,11 +239,19 @@ fn project_definition(state: &mut State, uri: &Uri, byte: usize) -> Option<Locat
     // F# is order-sensitive, so the use under the cursor resolves to a def at an
     // index `<= file_idx` (`item_def` cross-file targets an earlier file), never
     // in the suffix.
-    let parses = semantic
-        .parses_for_project(&project, workspace, docs)?
-        .clone();
-    let file_idx = find_file_idx(&parses, &path)?;
-    let resolved = semantic.resolved_prefix_for(&project, file_idx, workspace, docs)?;
+    let Some(parses) = semantic.parses_for_project_watched(&project, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
+    let parses = parses.clone();
+    let Some(file_idx) = find_file_idx(&parses, &path) else {
+        return Ok(None);
+    };
+    let Some((resolved, _env)) =
+        semantic.resolved_prefix_and_env_watched(&project, file_idx, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
     let file = resolved.file(file_idx);
     // The served answer ([`served_resolution_with_range`]): the resolver's first;
     // where it leaves a member-name as `Deferred(QualifiedAccess)` (a `recv.Name`
@@ -240,32 +269,44 @@ fn project_definition(state: &mut State, uri: &Uri, byte: usize) -> Option<Locat
             // Inference folds the prefix in Compile order (a receiver may be
             // an earlier file's value) and is cached per project.
             let inferred = match parses.files[file_idx].file.as_impl() {
-                Some(_) => semantic.inferred_prefix_for(&project, file_idx, workspace, docs),
+                Some(_) => {
+                    semantic.inferred_prefix_watched(&project, file_idx, workspace, docs, watch)?
+                }
                 None => None,
             };
             let inferred_file = inferred
                 .as_ref()
                 .and_then(|(_, _, inferred)| inferred.file(file_idx));
-            // A deferred or absent verdict is D5 silence: `?` / the arms below.
-            served_resolution_with_range(file, inferred_file, byte)?.1
+            // A deferred or absent verdict is D5 silence: here and in the arms
+            // below.
+            let Some((_, res)) = served_resolution_with_range(file, inferred_file, byte) else {
+                return Ok(None);
+            };
+            res
         }
     };
     // A referenced-assembly member or entity resolves to source via its DLL's
     // portable PDB (the `resolved`/`parses` borrows above are an `Arc` + owned
     // clone, so `semantic`/`workspace` are free to borrow again here).
     if let Resolution::Member { parent, idx } = res {
-        return assembly_member_location(semantic, workspace, &project, parent, idx);
+        return Ok(assembly_member_location(
+            semantic, workspace, &project, parent, idx,
+        ));
     }
     if let Resolution::Entity(handle) = res {
-        return assembly_entity_location(semantic, workspace, &project, handle);
+        return Ok(assembly_entity_location(
+            semantic, workspace, &project, handle,
+        ));
     }
     // A union case has no source position of its own in the projection — the
     // pickle's ranges are the union's — so it navigates to its union, the
     // declaration the case is written in.
     if let Resolution::UnionCase { union, .. } = res {
-        return assembly_entity_location(semantic, workspace, &project, union);
+        return Ok(assembly_entity_location(
+            semantic, workspace, &project, union,
+        ));
     }
-    location_for_resolution(&parses, file_idx, &resolved, res, uri, docs).map(Located::Ready)
+    Ok(location_for_resolution(&parses, file_idx, &resolved, res, uri, docs).map(Located::Ready))
 }
 
 /// Locate the source of a referenced-assembly **method**: obtain its owning

@@ -7,6 +7,7 @@ pub mod disk_text;
 pub mod fsproj_diagnostics;
 pub mod goto_source;
 pub mod handlers;
+pub mod inbox;
 pub mod logging;
 pub mod observed;
 pub mod parses;

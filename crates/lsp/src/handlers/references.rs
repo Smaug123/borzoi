@@ -36,6 +36,7 @@ use borzoi_sema::{
 use lsp_types::{Location, ReferenceParams, Uri};
 
 use crate::handlers::{indexed_range_to_lsp, preferred_uri, smallest_resolution_with_range};
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
 use crate::position::position_to_offset;
@@ -47,6 +48,16 @@ use crate::vfs::Vfs;
 /// has a buffer; an empty vec means "no references found", which clears the
 /// client's reference panel rather than leaving it stale.
 pub fn handle(state: &mut State, params: ReferenceParams) -> Option<Vec<Location>> {
+    never_superseded(handle_watched(state, params, &Watch::unwatched()))
+}
+
+/// [`handle`], stopping at a checkpoint once `watch` sees a notification
+/// ([`crate::inbox`]).
+pub fn handle_watched(
+    state: &mut State,
+    params: ReferenceParams,
+    watch: &Watch,
+) -> Result<Option<Vec<Location>>, Superseded> {
     let span = tracing::info_span!(
         "find_references",
         include_declaration = params.context.include_declaration,
@@ -68,11 +79,11 @@ pub fn handle(state: &mut State, params: ReferenceParams) -> Option<Vec<Location
         span.record("files_scanned", 0_i64);
         span.record("resolutions_scanned", 0_i64);
         span.record("result_count", 0_i64);
-        return None;
+        return Ok(None);
     };
     let byte = position_to_offset(&text, pos);
 
-    let answer = match project_references(state, &uri, byte, include_declaration) {
+    let answer = match project_references(state, &uri, byte, include_declaration, watch)? {
         Some(answer) => answer,
         // Fallback: orphan / partial-project buffer — single-file references
         // only. `Local` is the only resolution kind that survives without a
@@ -88,7 +99,7 @@ pub fn handle(state: &mut State, params: ReferenceParams) -> Option<Vec<Location
         answer.scan.resolutions_scanned as i64,
     );
     span.record("result_count", answer.scan.locations.len() as i64);
-    Some(answer.scan.locations)
+    Ok(Some(answer.scan.locations))
 }
 
 struct ReferencesAnswer {
@@ -138,46 +149,64 @@ fn project_references(
     uri: &Uri,
     byte: usize,
     include_declaration: bool,
-) -> Option<ReferencesAnswer> {
-    let path = uri.to_file_path().ok()?;
-    let project = state.workspace.owning_project(&path)?;
+    watch: &Watch,
+) -> Result<Option<ReferencesAnswer>, Superseded> {
+    let Ok(path) = uri.to_file_path() else {
+        return Ok(None);
+    };
+    let Some(project) = state.workspace.owning_project(&path) else {
+        return Ok(None);
+    };
+    watch.check()?;
     let State {
         semantic,
         workspace,
         docs,
         ..
     } = state;
-    let resolved = semantic.resolved_project_for(&project, workspace, docs)?;
-    let parses = semantic
-        .parses_for_project(&project, workspace, docs)?
-        .clone();
-    let target_file_idx = parses
+    let Some((resolved, _env)) =
+        semantic.resolved_prefix_and_env_watched(&project, usize::MAX, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
+    let Some(parses) = semantic.parses_for_project_watched(&project, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
+    let parses = parses.clone();
+    let Some(target_file_idx) = parses
         .paths
         .iter()
-        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
-    let (target_range, target_res) =
-        smallest_resolution_with_range(resolved.file(target_file_idx), byte)?;
+        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))
+    else {
+        return Ok(None);
+    };
+    let Some((target_range, target_res)) =
+        smallest_resolution_with_range(resolved.file(target_file_idx), byte)
+    else {
+        return Ok(None);
+    };
     if matches!(target_res, Resolution::Deferred(_) | Resolution::Unresolved) {
-        return Some(ReferencesAnswer {
+        return Ok(Some(ReferencesAnswer {
             mode: "project",
             target_kind: resolution_kind(target_res),
             project_files: resolved.len(),
             scan: ReferenceScan::empty(),
-        });
+        }));
     }
     if ambiguous_argument_label_ranges(parses.files[target_file_idx].file.syntax())
         .contains(&target_range)
     {
-        return Some(ReferencesAnswer {
+        return Ok(Some(ReferencesAnswer {
             mode: "project",
             target_kind: resolution_kind(target_res),
             project_files: resolved.len(),
             scan: ReferenceScan::empty(),
-        });
+        }));
     }
     let decl_anchor = declaration_anchor(&resolved, target_res, target_file_idx);
     let project_files = resolved.len();
-    Some(ReferencesAnswer {
+    Ok(Some(ReferencesAnswer {
         mode: "project",
         target_kind: resolution_kind(target_res),
         project_files,
@@ -190,7 +219,7 @@ fn project_references(
             include_declaration,
             docs,
         ),
-    })
+    }))
 }
 
 /// The (file_idx, range) of the binder for `target_res`, if any. `Local` is

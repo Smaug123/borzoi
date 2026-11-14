@@ -39,6 +39,7 @@ use borzoi_sema::{
 };
 use lsp_types::{CompletionItem, CompletionParams, CompletionResponse, Position};
 
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
 use crate::server::State;
@@ -49,12 +50,26 @@ use crate::server::State;
 /// over noise). Project-only in v1 — member completion needs the project's
 /// `AssemblyEnv` to enumerate members, which an orphan buffer has no way to build.
 pub fn handle(state: &mut State, params: CompletionParams) -> Option<CompletionResponse> {
+    never_superseded(handle_watched(state, params, &Watch::unwatched()))
+}
+
+/// [`handle`], stopping at a checkpoint once `watch` sees a notification
+/// ([`crate::inbox`]).
+pub fn handle_watched(
+    state: &mut State,
+    params: CompletionParams,
+    watch: &Watch,
+) -> Result<Option<CompletionResponse>, Superseded> {
     let pos = params.text_document_position.position;
     let uri = params.text_document_position.text_document.uri.clone();
-    let text = state.docs.get(&uri).cloned()?;
-    let names = member_candidates(state, &uri, &text, pos)?;
+    let Some(text) = state.docs.get(&uri).cloned() else {
+        return Ok(None);
+    };
+    let Some(names) = member_candidates(state, &uri, &text, pos, watch)? else {
+        return Ok(None);
+    };
     if names.is_empty() {
-        return None;
+        return Ok(None);
     }
     // No `kind` icon is claimed: the candidate set mixes fields, properties, and
     // methods, and we do not carry the per-member kind here (a later enrichment —
@@ -66,7 +81,7 @@ pub fn handle(state: &mut State, params: CompletionParams) -> Option<CompletionR
             ..CompletionItem::default()
         })
         .collect();
-    Some(CompletionResponse::Array(items))
+    Ok(Some(CompletionResponse::Array(items)))
 }
 
 /// The public instance member names offered at `pos`, or `None` when the position
@@ -77,9 +92,15 @@ fn member_candidates(
     uri: &lsp_types::Uri,
     text: &str,
     pos: Position,
-) -> Option<Vec<String>> {
-    let path = uri.to_file_path().ok()?;
-    let project = state.workspace.owning_project(&path)?;
+    watch: &Watch,
+) -> Result<Option<Vec<String>>, Superseded> {
+    let Ok(path) = uri.to_file_path() else {
+        return Ok(None);
+    };
+    let Some(project) = state.workspace.owning_project(&path) else {
+        return Ok(None);
+    };
+    watch.check()?;
     let State {
         semantic,
         workspace,
@@ -90,34 +111,48 @@ fn member_candidates(
     // prefix up to it: F# is order-sensitive, so the receiver's type and every
     // in-scope member candidate are declared at an index `<= file_idx` — the
     // suffix fold can't add a candidate this file can see.
-    let parses = semantic
-        .parses_for_project(&project, workspace, docs)?
-        .clone();
-    let file_idx = parses
+    let Some(parses) = semantic.parses_for_project_watched(&project, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
+    let parses = parses.clone();
+    let Some(file_idx) = parses
         .paths
         .iter()
-        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
+        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))
+    else {
+        return Ok(None);
+    };
     // Completion needs the file's implementation tree; a `.fsi` Compile slot
     // is inert in Stage 1, so decline (no member completion on signatures).
-    let impl_file = parses.files[file_idx].file.as_impl()?;
+    let Some(impl_file) = parses.files[file_idx].file.as_impl() else {
+        return Ok(None);
+    };
 
     let byte = position_to_offset(text, pos);
     // Find the receiver expression whose member is being completed at `byte`.
-    let receiver = receiver_at(impl_file, byte)?;
+    let Some(receiver) = receiver_at(impl_file, byte) else {
+        return Ok(None);
+    };
 
     // Inference gives the receiver's ground type. It folds the prefix in
     // Compile order (a receiver may be an earlier file's value), against the
     // env the fold resolved against.
-    let (resolved, env, inferred_project) =
-        semantic.inferred_prefix_for(&project, file_idx, workspace, docs)?;
+    let Some((resolved, env, inferred_project)) =
+        semantic.inferred_prefix_watched(&project, file_idx, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
     let file = resolved.file(file_idx);
-    let inferred = inferred_project.file(file_idx)?;
+    let Some(inferred) = inferred_project.file(file_idx) else {
+        return Ok(None);
+    };
 
-    let recv_ty = receiver_type(&receiver, file, inferred, &inferred_project)?;
     // A ground `TyKind::Named` receiver resolves to an entity; anything else (open,
     // an array / tuple / function head, a generic named type) offers nothing.
-    let names = members_of(&env, &recv_ty)?;
-    Some(names.into_iter().map(str::to_string).collect())
+    Ok(receiver_type(&receiver, file, inferred, &inferred_project)
+        .and_then(|recv_ty| members_of(&env, &recv_ty))
+        .map(|names| names.into_iter().map(str::to_string).collect()))
 }
 
 /// The receiver expression of a member access at `byte` — the `recv` in

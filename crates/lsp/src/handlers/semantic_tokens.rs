@@ -51,6 +51,7 @@ use lsp_types::{
     SemanticTokensResult, Uri,
 };
 
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::server::{State, path_extension};
 
@@ -418,9 +419,18 @@ fn sema_tokens(
 /// Classify a file resolved as part of its evaluated project — the authoritative
 /// path. `None` when the file isn't locatable in an evaluated project (an orphan
 /// buffer, or a project we couldn't evaluate), so [`handle`] falls back.
-fn project_tokens(state: &mut State, uri: &Uri) -> Option<Vec<SemanticToken>> {
-    let path = uri.to_file_path().ok()?;
-    let project = state.workspace.owning_project(&path)?;
+fn project_tokens(
+    state: &mut State,
+    uri: &Uri,
+    watch: &Watch,
+) -> Result<Option<Vec<SemanticToken>>, Superseded> {
+    let Ok(path) = uri.to_file_path() else {
+        return Ok(None);
+    };
+    let Some(project) = state.workspace.owning_project(&path) else {
+        return Ok(None);
+    };
+    watch.check()?;
     let State {
         semantic,
         workspace,
@@ -431,18 +441,27 @@ fn project_tokens(state: &mut State, uri: &Uri) -> Option<Vec<SemanticToken>> {
     // only the prefix up to it: F# is order-sensitive, so file `idx`'s tokens can
     // never depend on a later Compile-order file. On the large projects profiled
     // this drops the (wasted) suffix fold from every keystroke.
-    let parses = semantic
-        .parses_for_project(&project, workspace, docs)?
-        .clone();
-    let idx = parses
+    let Some(parses) = semantic.parses_for_project_watched(&project, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
+    let parses = parses.clone();
+    let Some(idx) = parses
         .paths
         .iter()
-        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
+        .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))
+    else {
+        return Ok(None);
+    };
     // The env must be the *exact* one the fold resolved against — a re-fetched
     // env can shift the `Entity` / `Member` handles the resolution recorded (see
     // `resolved_prefix_and_env_for`), so take both from one paired call rather
     // than re-fetching the env separately.
-    let (resolved, env) = semantic.resolved_prefix_and_env_for(&project, idx, workspace, docs)?;
+    let Some((resolved, env)) =
+        semantic.resolved_prefix_and_env_watched(&project, idx, workspace, docs, watch)?
+    else {
+        return Ok(None);
+    };
     // Lex the *resolved* text (what the classification ranges index into), not a
     // separately-fetched buffer, so ranges and offsets can't disagree. The
     // project-level classifier resolves cross-file references (a name defined in
@@ -451,7 +470,7 @@ fn project_tokens(state: &mut State, uri: &Uri) -> Option<Vec<SemanticToken>> {
     // up to it), and any cross-file `Item` it references is declared at an earlier
     // index, so `token_classifier`'s `item_def` lookup stays in-bounds.
     let classify = resolved.token_classifier(idx, &env);
-    Some(sema_tokens(&parses.texts[idx], classify))
+    Ok(Some(sema_tokens(&parses.texts[idx], classify)))
 }
 
 /// Single-file fallback for an orphan / unevaluated-project buffer: resolve the
@@ -487,28 +506,41 @@ fn single_file_tokens(state: &mut State, uri: &Uri) -> Option<Vec<SemanticToken>
 /// resolution (`single_file_tokens`); if neither is available the stream is
 /// the lexical layer alone ([`semantic_tokens`]).
 pub fn handle(state: &mut State, params: SemanticTokensParams) -> Option<SemanticTokensResult> {
+    never_superseded(handle_watched(state, params, &Watch::unwatched()))
+}
+
+/// [`handle`], stopping at a checkpoint once `watch` sees a notification
+/// ([`crate::inbox`]).
+pub fn handle_watched(
+    state: &mut State,
+    params: SemanticTokensParams,
+    watch: &Watch,
+) -> Result<Option<SemanticTokensResult>, Superseded> {
     let uri = params.text_document.uri;
     if !matches!(path_extension(&uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
-        return None;
+        return Ok(None);
     }
     // Only *open* buffers are highlighted. Without this guard `project_tokens`
     // would read a Compile item straight from disk (and resolve the whole
     // project) for a file that was never opened, or was closed — regressing the
     // `null` contract, which is keyed on the buffer's presence in `docs`.
     if !state.docs.contains_key(&uri) {
-        return None;
+        return Ok(None);
     }
-    let data = if let Some(data) = project_tokens(state, &uri) {
+    let data = if let Some(data) = project_tokens(state, &uri, watch)? {
         data
     } else if let Some(data) = single_file_tokens(state, &uri) {
         data
     } else {
-        semantic_tokens(state.docs.get(&uri)?)
+        let Some(text) = state.docs.get(&uri) else {
+            return Ok(None);
+        };
+        semantic_tokens(text)
     };
-    Some(SemanticTokensResult::Tokens(SemanticTokens {
+    Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
         result_id: None,
         data,
-    }))
+    })))
 }
 
 #[cfg(test)]

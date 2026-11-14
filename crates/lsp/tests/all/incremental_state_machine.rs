@@ -86,8 +86,9 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
+use borzoi::inbox::{CHECKPOINT_EVENT, InboxSender, STOPPED_EVENT};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
-use borzoi::server::{State, run_with_fetcher};
+use borzoi::server::{State, run_inbox};
 use borzoi::workspace::Workspace;
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
@@ -1116,10 +1117,89 @@ struct Client {
     refreshes_seen: usize,
 }
 
+/// A `tracing` subscriber on the server thread that sends a notification the
+/// server ignores at each of the checkpoints numbered in `at`, counting them
+/// all from the session's start ([`CHECKPOINT_EVENT`]). Sent synchronously,
+/// before the checkpoint reads the count, so the running request stops at
+/// that very checkpoint and runs again ([`borzoi::inbox`]). Counts the runs
+/// that stopped ([`STOPPED_EVENT`]) in `stopped`.
+struct StopAt {
+    at: BTreeSet<u32>,
+    passed: std::sync::atomic::AtomicU32,
+    input: InboxSender,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl tracing::Subscriber for StopAt {
+    fn register_callsite(
+        &self,
+        metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        if self.enabled(metadata) {
+            tracing::subscriber::Interest::always()
+        } else {
+            tracing::subscriber::Interest::sometimes()
+        }
+    }
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.is_event() && matches!(metadata.name(), CHECKPOINT_EVENT | STOPPED_EVENT)
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().name() == STOPPED_EVENT {
+            self.stopped
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return;
+        }
+        let n = self
+            .passed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.at.contains(&n) {
+            self.input
+                .send(Message::Notification(Notification {
+                    method: "$/borzoi-test/ignored".to_string(),
+                    params: Value::Null,
+                }))
+                .expect("the inbox is alive");
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 impl Client {
     fn start(root: &Path, mode: Mode) -> Self {
+        Client::start_stopping(root, mode, BTreeSet::new(), Default::default())
+    }
+
+    /// A session whose requests stop at the checkpoints numbered in `stops`
+    /// ([`StopAt`]), each counted in `stopped`.
+    fn start_stopping(
+        root: &Path,
+        mode: Mode,
+        stops: BTreeSet<u32>,
+        stopped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
         let (server, conn) = Connection::memory();
         let root = root.to_path_buf();
+        // The loop's inbox, fed from the connection as the server's own input
+        // thread feeds it, and also from the server thread at a checkpoint.
+        let (input, inbox) = borzoi::inbox::channel(borzoi::server::INPUT_BUFFER);
+        {
+            let input = input.clone();
+            let transport = server.receiver.clone();
+            thread::spawn(move || {
+                for message in transport {
+                    if input.send(message).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         let thread = thread::spawn(move || {
             let mut state = State::new();
             // Hermetic SDK discovery: the generated projects are SDK-less, and the
@@ -1132,7 +1212,15 @@ impl Client {
             });
             state.set_client_capabilities(mode.caps());
             state.set_workspace_roots(vec![root]);
-            run_with_fetcher(server, state, None).expect("server loop ends cleanly");
+            let subscriber = StopAt {
+                at: stops,
+                passed: Default::default(),
+                input,
+                stopped,
+            };
+            tracing::subscriber::with_default(subscriber, || {
+                run_inbox(&server, inbox, state, None).expect("server loop ends cleanly")
+            });
         });
         Client {
             conn,
@@ -1832,6 +1920,8 @@ struct Coverage {
     completions: usize,
     nonempty_diagnostics: usize,
     references: usize,
+    /// Requests stopped at a checkpoint ([`StopAt`]).
+    stops: usize,
 }
 
 impl Coverage {
@@ -2064,19 +2154,40 @@ fn new_world(disk: &[(FileId, Content)]) -> (tempfile::TempDir, World) {
 }
 
 fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseError> {
+    run_case_stopping(case, &BTreeSet::new(), coverage)
+}
+
+/// [`run_case`], with the long-lived session's requests stopping at the
+/// checkpoints numbered in `stops` ([`StopAt`]). The fresh sessions it is
+/// compared with stop nowhere.
+fn run_case_stopping(
+    case: &Case,
+    stops: &BTreeSet<u32>,
+    coverage: &RefCell<Coverage>,
+) -> Result<(), TestCaseError> {
     let (_tmp, mut world) = new_world(&case.disk);
-    let mut warm = Client::start(&world.root, case.mode);
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut warm = Client::start_stopping(
+        &world.root,
+        case.mode,
+        stops.clone(),
+        std::sync::Arc::clone(&stopped),
+    );
     warm.settle();
-    for cmd in &case.cmds {
-        apply(&mut warm, &mut world, cmd, coverage)?;
-    }
-    // Once with whatever is still pending, if the server should notice it
-    // unaided, and again once it has been told.
-    if !world.pending.is_empty() {
-        apply(&mut warm, &mut world, &Cmd::Check, coverage)?;
-    }
-    apply(&mut warm, &mut world, &Cmd::Flush, coverage)?;
-    apply(&mut warm, &mut world, &Cmd::Check, coverage)
+    let result = (|| {
+        for cmd in &case.cmds {
+            apply(&mut warm, &mut world, cmd, coverage)?;
+        }
+        // Once with whatever is still pending, if the server should notice it
+        // unaided, and again once it has been told.
+        if !world.pending.is_empty() {
+            apply(&mut warm, &mut world, &Cmd::Check, coverage)?;
+        }
+        apply(&mut warm, &mut world, &Cmd::Flush, coverage)?;
+        apply(&mut warm, &mut world, &Cmd::Check, coverage)
+    })();
+    coverage.borrow_mut().stops += stopped.load(std::sync::atomic::Ordering::SeqCst);
+    result
 }
 
 fn apply(
@@ -2299,9 +2410,18 @@ const MAX_MINIMISE_REPLAYS: usize = 400;
 /// script keeps commands that no longer matter and sources full of irrelevant
 /// lines. Greedily take any one-step simplification that still fails, to a
 /// fixpoint (or the replay budget).
-fn minimise(mut case: Case) -> (Case, String) {
+fn minimise(case: Case) -> (Case, String) {
+    minimise_stopping(case, &BTreeSet::new())
+}
+
+/// [`minimise`], for a case run with `stops` ([`run_case_stopping`]).
+fn minimise_stopping(mut case: Case, stops: &BTreeSet<u32>) -> (Case, String) {
     let scratch = RefCell::new(Coverage::default());
-    let failure = |c: &Case| run_case(c, &scratch).err().map(|e| e.to_string());
+    let failure = |c: &Case| {
+        run_case_stopping(c, stops, &scratch)
+            .err()
+            .map(|e| e.to_string())
+    };
     let mut message = failure(&case).expect("the case proptest reported fails when replayed");
     let mut replays = 0;
     'outer: loop {
@@ -2352,6 +2472,66 @@ fn warm_session_agrees_with_a_fresh_one() {
             && coverage.nonempty_diagnostics > 0
             && coverage.references > 0,
         "the generated cases compared no answers of some kind: {coverage:#?}"
+    );
+}
+
+/// The checkpoints at which [`a_session_whose_requests_stop_agrees_with_a_fresh_one`]
+/// stops `case`'s requests: up to sixteen of the first four hundred (a script
+/// passes a few hundred), drawn from a hash of the case.
+fn stops_for(case: &Case) -> BTreeSet<u32> {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{case:?}").hash(&mut hasher);
+    let mut state = hasher.finish();
+    let mut next = || {
+        // splitmix64
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let count = 1 + next() % 16;
+    (0..count).map(|_| (next() % 400) as u32).collect()
+}
+
+/// For all generated workspaces and client scripts, with the long-lived
+/// session's requests stopping at generated checkpoints and running again
+/// (`docs/incremental-lsp-plan.md`, Stage 9), every answer it gives and
+/// everything its client displays equals what fresh sessions give: what a
+/// stopped run cached is as good as what a finished one caches.
+#[test]
+fn a_session_whose_requests_stop_agrees_with_a_fresh_one() {
+    let cases = env_u64("BORZOI_LSP_STATE_MACHINE_CASES").map_or(DEFAULT_CASES, |n| n as u32);
+    let seed = env_u64("BORZOI_LSP_STATE_MACHINE_SEED").unwrap_or(DEFAULT_SEED);
+    let coverage = RefCell::new(Coverage::default());
+    // The stops are a function of the case, so the cases are the ones
+    // `warm_session_agrees_with_a_fresh_one` draws, and shrinking a case
+    // keeps its stops a function of it.
+    let result = runner(cases, seed).run(&case_strategy(), |case| {
+        run_case_stopping(&case, &stops_for(&case), &coverage)
+    });
+    let coverage = coverage.into_inner();
+    eprintln!("seed {seed}: {coverage:#?}");
+    match result {
+        Ok(()) => {}
+        Err(TestError::Fail(_, case)) => {
+            let stops = stops_for(&case);
+            let (case, message) = minimise_stopping(case, &stops);
+            panic!("seed {seed}: {message}\n\nstops: {stops:?}\nminimal script: {case:?}");
+        }
+        Err(err) => panic!("seed {seed}: {err}"),
+    }
+    // Non-vacuity: requests stopped, and every kind of answer was compared.
+    assert!(
+        coverage.stops > 0
+            && coverage.cross_file_definitions > 0
+            && coverage.assembly_member_hovers > 0
+            && coverage.completions > 0
+            && coverage.nonempty_diagnostics > 0
+            && coverage.references > 0,
+        "the generated cases stopped no request or compared no answers of some kind: \
+         {coverage:#?}"
     );
 }
 

@@ -3463,14 +3463,108 @@ the wait. Without it the wait would still be a cold fold, which costs at least
 folds only the items after `E`, over a built env), twelve times the budget. Stage 8
 cannot shorten either, since the edit arrives while the request runs.
 
-If built: a worker runs semantic requests against a cloned `Vfs` and the memo
-tables behind a lock. The dispatch thread applies edits and answers syntactic
-requests. A superseded request is cancelled at its next memo boundary.
+The sketch, written before the measurement: a worker runs semantic requests
+against a cloned `Vfs` and the memo tables behind a lock. The dispatch thread
+applies edits and answers syntactic requests. A superseded request is
+cancelled at its next memo boundary.
 
-**Oracle**: `incremental_state_machine` with the worker enabled, a loom-style
-or exhaustive interleaving test of the memo table's insert-versus-read race,
-the Stage 8 interleaving property, and the `blocked-edit` measurement under
-budget.
+**The design: requests yield to notifications.** The measurement says what
+the edit waits for: not work of its own (`didChange E` + `diagnostic E` cost
+3.7 M), but the rest of a request that began before it. Stopping that request
+at its next memo boundary removes the wait; running it beside the edit is not
+needed for that. So this stage keeps one owner of the server's state and adds
+the stop:
+
+- **One owner.** The dispatch thread stays the only thread that reads or
+  writes `State`: the `Vfs`, the workspace's evaluations and read checks, the
+  parse memo, the envs, the folds. No memo table is shared, so no insert can
+  race a read, and there is no snapshot to bound, clone or retire.
+- **The input thread counts notifications** (`crate::inbox`). The loop reads
+  its messages from a thread of its own, which takes each message from the
+  transport the moment it is decoded into a channel of 1,024
+  (`server::INPUT_BUFFER`, as Stage 8's input buffer did), and for each
+  notification increments a shared counter *after* the message is in the
+  channel. The channel and the counter are the only state two threads share.
+- **A running request watches the counter.** Before each step the loop reads
+  the counter and only then reads the waiting messages, so every
+  notification counted by then is in the epoch the step is planned with. A
+  request runs with a `Watch` holding the value read. At each checkpoint it
+  compares the counter with it, and once it has moved, the request returns
+  `Superseded`, which every handler and every fold entry point propagates
+  (`Result<_, Superseded>`).
+- **Checkpoints follow memo boundaries.** Each one comes after a unit of work
+  whose result is cached: the ownership walk and evaluation the request
+  asked for, each Compile item's parse, the env, the fold, the inference.
+  One more comes after the handler has returned, before its answer is sent.
+  So an abandoned run keeps every unit it completed, and the next run finds
+  them in the caches.
+- **An abandoned request is unanswered.** Its message goes back into the
+  epoch. The loop finishes the step as it finishes any (the response to a
+  moved evaluation, the owed refreshes, the deferral report, the end of the
+  generation), reads what has arrived and plans again. Stage 8's plan then
+  decides the request's fate as before: refused `RequestCancelled` if a later
+  cancellation names it, `ContentModified` if a later text sync changes its
+  document, otherwise run again, after the new notifications.
+- **The one change to Stage 8's plan: a re-run waits its turn.** A request
+  abandoned with `n` messages in the epoch runs after every request among
+  those `n`, not in its arrival position. The requests that arrived while it
+  ran are the client's newer interest (`diagnostic E` after `didChange E`),
+  and they are usually cheaper than the re-run.
+
+**The guarantees**, on top of Stage 8's:
+
+- Every request read before `exit` is answered exactly once. Only the loop
+  sends a request's answer, after a run that was not superseded or as a
+  refusal; an abandoned run sends nothing.
+- A request is answered with a result only if no notification was counted
+  between the moment the loop read the counter for its run and its last
+  checkpoint, which follows the handler. Every notification counted before
+  that read was planned before the run began, and is applied before it. So
+  no answer carries a result computed against a text when the server had
+  already read a newer one before deciding to send it.
+- The notifications are still applied in arrival order, one at a time, so
+  the state an epoch leaves is the state its messages leave handled one at a
+  time (Stage 8).
+- **Bounds.** One `State`, no snapshots. The input channel holds 1,024
+  messages and the epoch 4,096 (Stage 8); a client further ahead waits in
+  the transport. One request runs at a time. Past a notification's arrival,
+  a running request does at most the rest of the unit it is in before it
+  stops: one evaluation, one env build, one Compile item's parse, one fold,
+  one inference, or the handler's own work after its last fold (classifying
+  tokens, rendering a hover). Each is measured in `edit_counts`.
+- **Progress.** A run is abandoned only when a notification arrives while
+  it runs, and it keeps what it completed. A client whose notifications never
+  pause starves its requests, as in Stage 8, now also mid-request.
+
+**Why not the sketch.** A worker against a snapshot needs every memo table it
+reads to be shared or copied. The workspace's read checks, the `Vfs`'s disk
+cache and the env entries record, in `RefCell`s and `Cell`s, the generation
+that last confirmed them, and each generation confirms its reads once. Two
+generations in flight at once (the worker's and the edit's) would need a
+confirmation per snapshot in every table, or a lock held for the whole
+request, which puts the edit back behind it. Each would be a shared-state
+race for every table, not one. What the sketch buys over this design is that
+a request the edit does not supersede keeps running beside it. The cost of
+giving that up is bounded: the abandoned run keeps its completed units, and
+the re-run pays one unit at most again.
+
+**Oracle**:
+- `inbox::tests`: the protocol between the input thread and the loop
+  (the push, the count, the loop's read of the counter, its read of the
+  channel, the checkpoints and the answer), every interleaving of up to three
+  notifications with a request's run, exhaustively: no answer with a result
+  misses a notification counted before its last checkpoint, every request is
+  answered once, every notification is applied once.
+- `incremental_state_machine` with runs abandoned: a harmless notification
+  sent at generated checkpoints makes requests yield and run again, and every
+  answer still equals a fresh session's.
+- The Stage 8 interleaving property, with messages delivered at checkpoints
+  inside running requests, not only between steps.
+- `the_plan_is_its_specification`, with re-runs.
+- A test that each abandoned request stops at the next checkpoint after the
+  notification, and one that the edit's pull is answered before the request
+  it interrupted.
+- `blocked-edit`, measured on both projects.
 
 ## Non-goals
 

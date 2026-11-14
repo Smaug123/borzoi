@@ -11,6 +11,7 @@
 //! confirmed against its inputs when read (`docs/incremental-lsp-plan.md`,
 //! Stage 7), so nothing here is told when an input changes.
 
+use crate::inbox::{Superseded, Watch, never_superseded};
 use crate::observed::Unobserved;
 use crate::parses::{ParseMemo, SourceParse};
 use crate::vfs::Vfs;
@@ -1350,6 +1351,29 @@ impl SemanticState {
         workspace: &mut Workspace,
         docs: &Vfs,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
+        never_superseded(self.resolved_prefix_and_env_watched(
+            project,
+            up_to_index,
+            workspace,
+            docs,
+            &Watch::unwatched(),
+        ))
+    }
+
+    /// [`Self::resolved_prefix_and_env_for`], stopping at a checkpoint once
+    /// `watch` sees a notification ([`crate::inbox`]): after the project's
+    /// evaluation is confirmed, after each Compile item's parse
+    /// ([`Self::parses_for_project_watched`]), after the env, and after the
+    /// fold. Each unit is cached before the checkpoint that follows it, so a
+    /// run that stops keeps what it computed.
+    pub fn resolved_prefix_and_env_watched(
+        &mut self,
+        project: &Path,
+        up_to_index: usize,
+        workspace: &mut Workspace,
+        docs: &Vfs,
+        watch: &Watch,
+    ) -> Result<Option<ResolvedPrefix>, Superseded> {
         let key = ProjectId::new(project);
         let project = key.as_path();
         let lookup_span = tracing::info_span!(
@@ -1388,7 +1412,7 @@ impl SemanticState {
                 let (resolved, env) = (Arc::clone(resolved), Arc::clone(env));
                 if self.env_still_served(&env, workspace) {
                     lookup_span.record("cache_hit", true);
-                    return Some((resolved, env));
+                    return Ok(Some((resolved, env)));
                 }
             }
         }
@@ -1411,11 +1435,16 @@ impl SemanticState {
         // a project parsed under net8.0's defines must never resolve against
         // net10.0's assemblies.
         let target_framework = workspace.served_tfm_for_project(project);
+        watch.check()?;
 
         // Parses — None if the Compile set is untrustworthy or it failed to
         // evaluate. Cloning a `ProjectParses` is cheap (the `ImplFile`s are syntax
         // handles, `texts` is `Arc<str>` per file). The file count clamps the slice.
-        let parses = self.parses_for_project(project, workspace, docs)?.clone();
+        let Some(parses) = self.parses_for_project_watched(project, workspace, docs, watch)? else {
+            return Ok(None);
+        };
+        let parses = parses.clone();
+        watch.check()?;
         // Resolve `0..want_len`; `up_to_index` is a valid Compile index (or
         // `usize::MAX` for "the whole project"), so `+1` (saturating) then clamp.
         let want_len = up_to_index.saturating_add(1).min(parses.files.len());
@@ -1436,6 +1465,7 @@ impl SemanticState {
             workspace,
             restore_env,
         );
+        watch.check()?;
         // The fold horizon: `.file(up_to_index)` and everything it can
         // reference (files `0..up_to_index`), nothing after. The *whole*
         // Compile list is still handed to sema — the sig ↔ impl pairing must
@@ -1574,7 +1604,8 @@ impl SemanticState {
             }
             self.drop_env_past_name_cap(&key, &env);
         }
-        Some((resolved, env))
+        watch.check()?;
+        Ok(Some((resolved, env)))
     }
 
     /// Drop `env`, and every fold of `key`'s against it, once its tables
@@ -1617,8 +1648,31 @@ impl SemanticState {
         workspace: &mut Workspace,
         docs: &Vfs,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>, Arc<InferredProject>)> {
-        let (resolved, env) =
-            self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)?;
+        never_superseded(self.inferred_prefix_watched(
+            project,
+            up_to_index,
+            workspace,
+            docs,
+            &Watch::unwatched(),
+        ))
+    }
+
+    /// [`Self::inferred_prefix_for`], stopping at the checkpoints of
+    /// [`Self::resolved_prefix_and_env_watched`] and at one after the
+    /// inference, which is cached before it.
+    pub fn inferred_prefix_watched(
+        &mut self,
+        project: &Path,
+        up_to_index: usize,
+        workspace: &mut Workspace,
+        docs: &Vfs,
+        watch: &Watch,
+    ) -> Result<Option<InferredPrefix>, Superseded> {
+        let Some((resolved, env)) =
+            self.resolved_prefix_and_env_watched(project, up_to_index, workspace, docs, watch)?
+        else {
+            return Ok(None);
+        };
         let key = ProjectId::new(project);
         let want = up_to_index.saturating_add(1).min(resolved.len());
         let cached = self
@@ -1629,9 +1683,15 @@ impl SemanticState {
         if let Some(cached) = &cached
             && cached.shared_prefix(&resolved) >= want
         {
-            return Some((resolved, env, Arc::clone(cached)));
+            return Ok(Some((resolved, env, Arc::clone(cached))));
         }
-        let files = self.project_parses.get(&key)?.parses.files.clone();
+        let Some(files) = self
+            .project_parses
+            .get(&key)
+            .map(|cached| cached.parses.files.clone())
+        else {
+            return Ok(None);
+        };
         let inferred = {
             let _span = tracing::info_span!("infer_project").entered();
             let (inferred, reused) = match &cached {
@@ -1658,7 +1718,8 @@ impl SemanticState {
         // Inference publishes its types into the env's type table, which the
         // cap bounds with the name table.
         self.drop_env_past_name_cap(&key, &env);
-        Some((resolved, env, inferred))
+        watch.check()?;
+        Ok(Some((resolved, env, inferred)))
     }
 
     /// The [`ResolvedProject`] for `project` — the env-less view of
@@ -1724,19 +1785,46 @@ impl SemanticState {
         workspace: &mut Workspace,
         docs: &Vfs,
     ) -> Option<&'a ProjectParses> {
+        never_superseded(self.parses_for_project_watched(
+            project,
+            workspace,
+            docs,
+            &Watch::unwatched(),
+        ))
+    }
+
+    /// [`Self::parses_for_project`], stopping at a checkpoint after each
+    /// Compile item it parses once `watch` sees a notification
+    /// ([`crate::inbox`]). The items parsed by then stay in the per-file
+    /// caches, so the next call parses only the rest.
+    pub fn parses_for_project_watched<'a>(
+        &'a mut self,
+        project: &Path,
+        workspace: &mut Workspace,
+        docs: &Vfs,
+        watch: &Watch,
+    ) -> Result<Option<&'a ProjectParses>, Superseded> {
         let key = ProjectId::new(project);
         self.validate_cached_fold(&key, workspace, docs);
         if !self.project_parses.contains_key(&key) {
             let stale = self.superseded.remove(&key);
-            let parses = match self.fold(project, workspace, docs) {
-                Ok(parses) => parses,
-                Err(_) => {
+            let parses = match self.fold(project, workspace, docs, watch) {
+                Ok(Ok(parses)) => parses,
+                Err(Superseded) => {
+                    // The stale parses decide the refresh the rebuild owes;
+                    // the run that finishes the rebuild needs them.
+                    if let Some(stale) = stale {
+                        self.superseded.insert(key, stale);
+                    }
+                    return Err(Superseded);
+                }
+                Ok(Err(_)) => {
                     // A fold that dropped a stale one and is now refused
                     // changes what every open buffer shows.
                     if stale.is_some() {
                         self.wants_refresh = true;
                     }
-                    return None;
+                    return Ok(None);
                 }
             };
             if let Some(stale) = &stale {
@@ -1753,7 +1841,7 @@ impl SemanticState {
                 },
             );
         }
-        self.project_parses.get(&key).map(|cached| &cached.parses)
+        Ok(self.project_parses.get(&key).map(|cached| &cached.parses))
     }
 
     /// Drop every env with an unrecorded reader
@@ -1881,12 +1969,16 @@ impl SemanticState {
     /// source deleted on disk — would be reached only from a handler, which has
     /// no connection to the client, and the project would go quiet with no
     /// message. A success clears any prior observation.
+    ///
+    /// A fold stopped at a checkpoint ([`Superseded`]) has no outcome: it
+    /// neither refused nor succeeded, and what was observed before stands.
     fn fold(
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
         docs: &Vfs,
-    ) -> Result<ProjectParses, FoldRefusal> {
+        watch: &Watch,
+    ) -> Result<Result<ProjectParses, FoldRefusal>, Superseded> {
         let key = ProjectId::new(project);
         let outcome = build_parses(
             key.as_path(),
@@ -1894,7 +1986,8 @@ impl SemanticState {
             docs,
             &mut self.parses,
             &mut self.file_parses,
-        );
+            watch,
+        )?;
         match &outcome {
             Ok(_) => {
                 // A refusal recovering changes every open buffer's tokens
@@ -1911,7 +2004,7 @@ impl SemanticState {
                     .insert(key, (refusal.clone(), evaluation));
             }
         }
-        outcome
+        Ok(outcome)
     }
 
     /// What the most recent fold of `project` did, when it ran under
@@ -1954,13 +2047,18 @@ impl SemanticState {
 
 /// Build the compile-ordered parses for a fresh cache miss. Pure (modulo
 /// disk reads for files not in `docs` and the workspace's own caching).
+///
+/// Stops at a checkpoint before each Compile item after the first once
+/// `watch` sees a notification: every item parsed by then is in
+/// `file_parses`, so the next build finds it there.
 fn build_parses(
     project: &Path,
     workspace: &mut Workspace,
     docs: &Vfs,
     parses: &mut ParseMemo,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
-) -> Result<ProjectParses, FoldRefusal> {
+    watch: &Watch,
+) -> Result<Result<ProjectParses, FoldRefusal>, Superseded> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
     let symbols = workspace.symbols_for_project(project);
     let lang = workspace.lang_version_for_project(project);
@@ -1971,7 +2069,7 @@ fn build_parses(
     if crate::project_deferral::evaluation_declines_project_fold(
         workspace.project_evaluation(project),
     ) {
-        return Err(FoldRefusal::ProjectEvaluation);
+        return Ok(Err(FoldRefusal::ProjectEvaluation));
     }
     let parsed = workspace
         .project(project)
@@ -2043,7 +2141,11 @@ fn build_parses(
 
     let _parse_all_span =
         tracing::info_span!("parse_compile_items", count = includes.len()).entered();
-    for include in includes {
+    for (position, include) in includes.into_iter().enumerate() {
+        // A checkpoint after each item: the one before is cached.
+        if position > 0 {
+            watch.check()?;
+        }
         let _file_span =
             tracing::info_span!("parse_compile_item", file = %include.display()).entered();
         // **Hard fail on any hole.** Sema's fold is order-sensitive: a later
@@ -2058,7 +2160,7 @@ fn build_parses(
                 file = %include.display(),
                 "Compile item unreadable from buffer and disk; refusing to resolve project"
             );
-            return Err(FoldRefusal::UnreadableCompileItem { file: include });
+            return Ok(Err(FoldRefusal::UnreadableCompileItem { file: include }));
         };
         // A `.fsi` Compile item parses under the signature grammar
         // (`docs/fsi-signature-restriction-plan.md` Stage 1); everything else
@@ -2114,7 +2216,7 @@ fn build_parses(
                 file = %include.display(),
                 "Compile item triggered parser panic; refusing to resolve project"
             );
-            return Err(FoldRefusal::ParserPanic { file: include });
+            return Ok(Err(FoldRefusal::ParserPanic { file: include }));
         };
         // The intersection gate promised above: this file MAY parse to a
         // differently shaped tree at another language version (a decision the
@@ -2150,7 +2252,7 @@ fn build_parses(
                         file = %include.display(),
                         "Compile item triggered parser panic; refusing to resolve project"
                     );
-                    return Err(FoldRefusal::ParserPanic { file: include });
+                    return Ok(Err(FoldRefusal::ParserPanic { file: include }));
                 };
                 // `structurally_eq` compares shape, kinds and token text, an
                 // allocation-free tree comparison; both directions are pinned by the mid-edit
@@ -2163,10 +2265,10 @@ fn build_parses(
                         "refusing project parses: LangVersion provenance is untrusted and \
                          this file parses to a different tree at another language version"
                     );
-                    return Err(FoldRefusal::LanguageVersionShape {
+                    return Ok(Err(FoldRefusal::LanguageVersionShape {
                         file: include,
                         cause: untrust.clone(),
-                    });
+                    }));
                 }
             }
         }
@@ -2190,7 +2292,7 @@ fn build_parses(
                         file = %include.display(),
                         "Compile item parsed to a non-SIG_FILE root; refusing to resolve project"
                     );
-                    return Err(FoldRefusal::UnexpectedParseRoot { file: include });
+                    return Ok(Err(FoldRefusal::UnexpectedParseRoot { file: include }));
                 }
             }
         } else {
@@ -2201,7 +2303,7 @@ fn build_parses(
                         file = %include.display(),
                         "Compile item parsed to a non-IMPL_FILE root; refusing to resolve project"
                     );
-                    return Err(FoldRefusal::UnexpectedParseRoot { file: include });
+                    return Ok(Err(FoldRefusal::UnexpectedParseRoot { file: include }));
                 }
             }
         };
@@ -2246,12 +2348,20 @@ fn build_parses(
         .map(|((file, qnof), recovery)| ProjectFile::new(file, qnof, recovery))
         .collect();
 
-    Ok(ProjectParses {
+    Ok(Ok(ProjectParses {
         files,
         paths,
         texts,
-    })
+    }))
 }
+
+/// A Compile prefix resolved, with the env it was resolved against
+/// ([`SemanticState::resolved_prefix_and_env_watched`]).
+pub type ResolvedPrefix = (Arc<ResolvedProject>, Arc<AssemblyEnv>);
+
+/// A Compile prefix resolved and inferred, with the env both ran against
+/// ([`SemanticState::inferred_prefix_watched`]).
+pub type InferredPrefix = (Arc<ResolvedProject>, Arc<AssemblyEnv>, Arc<InferredProject>);
 
 /// An [`AssemblyEnv`] and the reference-DLL list it was built from: one
 /// resolution's two outputs, cached as one value so nothing can pair a
