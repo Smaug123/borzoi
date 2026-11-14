@@ -3609,12 +3609,14 @@ the re-run pays one unit at most again.
   three-project scenario). The next step reads what arrived and
   only then records the request as a `batch::Restart` with the size of the
   epoch, so the requests that arrived with the notification run before it.
-  A stopped fold records no outcome. When it stops a request, the loop
-  decides for every fold found stale and not yet rebuilt the refresh the
-  rebuild would have decided (`SemanticState::settle_stale_folds`: each
-  stale item against the text the rebuild would read), wherever the stop
-  came, since a request stopped by its own cancellation is refused and no
-  rebuild may finish. The step that
+  A stopped fold records no outcome. When it stops a request, the loop owes
+  a semantic-token refresh for every fold found stale and not yet rebuilt
+  (`SemanticState::settle_stale_folds`), wherever the stop came, since a
+  request stopped by its own cancellation is refused and no rebuild may
+  finish. It owes it without deciding, as the rebuild would, whether a
+  buffer announced the change: that would read every remaining item before
+  the notification is handled. So a stop can owe one refresh more than the
+  finished request would, never one fewer. The step that
   applies a cancellation responds to moved evaluations, as every other step
   that applies a notification does.
 - **The plan** takes the restarts (`batch::plan`'s `restarts`): a restarted
@@ -3710,6 +3712,7 @@ and the state machine's warm and stopping properties):
 | the stale parses lost on a stop (the rebuild's refresh decision) | `a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change` (added for it: it passed everything else) |
 | the stale parses kept for a rebuild that a cancellation refuses (Codex, rounds 4 and 6: during the rebuild, then before it) | the same test, once it cancelled the request it stopped, and once it swept the stop over every span of semantic tokens and references |
 | no settling of stale folds at a stop | the same sweep |
+| settling by reading every remaining item at the stop (Codex, round 7: the notification waits for the project's reads) | the reads were deleted; the refresh is owed without them |
 | the cancellation's step not responding to a moved evaluation a stopped request left (Codex) | `a_request_cancelled_mid_evaluation_still_reports_the_moved_evaluation` (added for it) |
 | no checkpoint between the candidates an ownership walk weighs (Codex) | the latency sweep, once it covered a directory of three projects that all evaluate again |
 | an unbounded inbox | `a_full_inbox_holds_the_sender_back` |
@@ -3855,6 +3858,9 @@ stale).
 - A notification that cannot change what a request read (a cancellation of
   another request, `didSave`) stops it all the same.
 - A `workspace/diagnostic` sweep in flight is not stopped (as in Stage 8).
+- A stop that finds a fold stale owes a semantic-token refresh even when an
+  open buffer's sync already announced the change: one refresh more than
+  the finished request would owe.
 
 ## Non-goals
 

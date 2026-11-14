@@ -1962,39 +1962,19 @@ impl SemanticState {
         }
     }
 
-    /// Decide, for every fold found stale whose rebuild has not finished, the
-    /// refresh that rebuild would owe ([`Self::owe_refresh_for_unannounced_now`]),
-    /// and forget them. The loop calls this whenever it stops a request: the
-    /// rebuild may never finish (a request stopped by its own cancellation is
-    /// refused, not run again), wherever the stop came, before the rebuild or
-    /// during it.
-    pub fn settle_stale_folds(&mut self, docs: &Vfs) {
-        let stale: Vec<CachedParses> = self.superseded.drain().map(|(_, stale)| stale).collect();
-        for stale in &stale {
-            self.owe_refresh_for_unannounced_now(stale, docs);
-        }
-    }
-
-    /// [`Self::owe_refresh_for_unannounced`] for a rebuild that stopped
-    /// before it read every item: each of `stale`'s items against the text
-    /// the rebuild would read for it now (the evaluation is the one `stale`
-    /// was folded under, so the Compile list is too). An item that can no
-    /// longer be read has moved, to nothing a buffer announced.
-    fn owe_refresh_for_unannounced_now(&mut self, stale: &CachedParses, docs: &Vfs) {
-        let unannounced =
-            stale
-                .parses
-                .paths
-                .iter()
-                .zip(&stale.parses.texts)
-                .any(|(path, before)| match docs.text_of(path) {
-                    Some(now) => {
-                        !(Arc::ptr_eq(before, &now) || **before == *now)
-                            && !synced_from_a_buffer(docs, path, &now)
-                    }
-                    None => true,
-                });
-        if unannounced {
+    /// Owe a semantic-token refresh for every fold found stale whose rebuild
+    /// has not finished, and forget them. The loop calls this whenever it
+    /// stops a request: the rebuild may never finish (a request stopped by its
+    /// own cancellation is refused, not run again), wherever the stop came,
+    /// before the rebuild or during it. Deciding as the rebuild would
+    /// (comparing each item's text with the one the stale fold read) would
+    /// read every remaining item before the notification is handled, so the
+    /// refresh is owed
+    /// whether or not a buffer announced the change: at most one more than a
+    /// finished rebuild would owe, never one fewer.
+    pub fn settle_stale_folds(&mut self) {
+        if !self.superseded.is_empty() {
+            self.superseded.clear();
             self.wants_refresh = true;
         }
     }
