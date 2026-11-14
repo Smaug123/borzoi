@@ -76,6 +76,8 @@ fn fixture() -> Fixture {
     let tmp = TempDir::new().unwrap();
     // Canonical, so the reads' spellings are the ones the events name.
     let root = host_fs::canonicalize(tmp.path()).unwrap();
+    // NuGet reads its user settings from a home that exists.
+    std::fs::create_dir_all(root.join("home")).unwrap();
     let runtime = crate::common::ensure_system_runtime_dll();
     let console = host_fs::read(runtime.with_file_name("System.Console.dll")).unwrap();
     write(
@@ -344,16 +346,23 @@ fn an_env_trusts_a_package_only_once_it_was_committed() {
 
 /// An env's checks are confirmed only through the workspace that made
 /// them: the witnesses name that checker's directories. A state whose
-/// workspace is replaced builds its envs again.
+/// workspace is replaced builds its envs again in its next generation.
 #[test]
 fn an_env_made_under_another_workspace_is_built_again() {
     let fixture = fixture();
     let mut state = state(&fixture);
-    let other = env_of(&mut state, &fixture.other);
-    assert!(Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
+    outwait_racy_stamps();
+    let generation = |state: &mut State| {
+        state.begin_generation();
+        let env = env_of(state, &fixture.other);
+        state.end_generation();
+        env
+    };
+    let other = generation(&mut state);
+    assert!(Arc::ptr_eq(&other, &generation(&mut state)));
     state.workspace = Workspace::with_env(SdkDiscoveryEnv {
         dotnet_root: Some(fixture.root.join("dotnet")),
         ..SdkDiscoveryEnv::default()
     });
-    assert!(!Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
+    assert!(!Arc::ptr_eq(&other, &generation(&mut state)));
 }

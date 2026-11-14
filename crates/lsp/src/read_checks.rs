@@ -215,7 +215,7 @@ impl<D: Probe> ReadChecks<D> {
         let (_, files) = self.files.end_generation();
         let counts = self.counts.get();
         ReadCounts {
-            opens: files.opens,
+            opens: files.opens + counts.opens,
             stats: files.stats + counts.stats,
             ..counts
         }
@@ -238,7 +238,7 @@ impl<D: Probe> ReadChecks<D> {
         let files = self.files.generation_counts();
         let counts = self.counts.get();
         ReadCounts {
-            opens: files.opens,
+            opens: files.opens + counts.opens,
             stats: files.stats + counts.stats,
             ..counts
         }

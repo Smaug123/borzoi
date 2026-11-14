@@ -913,13 +913,14 @@ impl Workspace {
     /// of the open generation: confirmed through the checker the
     /// evaluations' reads are, so what both read is asked once. Outside a
     /// generation nothing is confirmed, and an env is served as it is, as a
-    /// cached evaluation is. Checks this workspace did not make never hold.
+    /// cached evaluation is. Inside one, checks this workspace did not make
+    /// never hold.
     pub fn confirm_env(&self, checks: &EnvChecks) -> bool {
-        if checks.checker != self.checker.id() {
-            return false;
-        }
         if self.checker.generation().is_none() {
             return true;
+        }
+        if checks.checker != self.checker.id() {
+            return false;
         }
         let before = self.checker.counts_so_far();
         let holds = checks.checks.iter().all(|check| self.checker.holds(check));

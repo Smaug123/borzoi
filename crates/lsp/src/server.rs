@@ -2903,30 +2903,29 @@ mod tests {
         );
     }
 
-    /// The headline for the referenced-assembly class: a watched `.dll` change
-    /// (a sibling project rebuilt, a package cache updated) drops the cached
-    /// assembly env, so the next lookup re-resolves against the new binaries.
-    /// Cache identity is observed by `Arc::ptr_eq` — the un-resolvable project
-    /// here caches a (stable, empty) env, which is exactly enough to see the
-    /// hit/miss behaviour without real DLL fixtures.
+    /// The referenced-assembly class, targeted (`docs/incremental-lsp-plan.md`,
+    /// Stage 6b): a watched `.dll` change no env read (a sibling project's
+    /// output this one does not reference) leaves the cached env standing, and
+    /// a watched change to a path the env's resolution read (here the entry
+    /// project file, which it found absent) drops it, so the next lookup
+    /// re-resolves. Cache identity is observed by `Arc::ptr_eq` — the
+    /// un-resolvable project here caches a (stable, empty) env, which is
+    /// exactly enough to see the hit/miss behaviour without real DLL fixtures.
     #[test]
-    fn watched_dll_change_drops_the_assembly_env_cache() {
+    fn a_watched_change_drops_only_an_env_that_read_its_path() {
         let mut state = State::default();
         let proj = PathBuf::from("/p/App.fsproj");
-        let first = state.semantic.assembly_env_for_project(
-            &proj,
-            None,
-            &crate::workspace::ServedTfm::NoneDeclared,
-            &state.workspace,
-        );
-        let hit = state.semantic.assembly_env_for_project(
-            &proj,
-            None,
-            &crate::workspace::ServedTfm::NoneDeclared,
-            &state.workspace,
-        );
+        let env = |state: &mut State| {
+            state.semantic.assembly_env_for_project(
+                &proj,
+                None,
+                &crate::workspace::ServedTfm::NoneDeclared,
+                &state.workspace,
+            )
+        };
+        let first = env(&mut state);
         assert!(
-            Arc::ptr_eq(&first, &hit),
+            Arc::ptr_eq(&first, &env(&mut state)),
             "second lookup must be a cache hit"
         );
 
@@ -2938,16 +2937,15 @@ mod tests {
             "a referenced-assembly change cannot alter an open buffer's \
              lexer/parser diagnostics; nothing republishes"
         );
-
-        let rebuilt = state.semantic.assembly_env_for_project(
-            &proj,
-            None,
-            &crate::workspace::ServedTfm::NoneDeclared,
-            &state.workspace,
-        );
         assert!(
-            !Arc::ptr_eq(&first, &rebuilt),
-            "the assembly env must be re-resolved after a watched DLL change"
+            Arc::ptr_eq(&first, &env(&mut state)),
+            "a DLL the env never read dropped it"
+        );
+
+        state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        assert!(
+            !Arc::ptr_eq(&first, &env(&mut state)),
+            "the env must be re-resolved after a watched change to a path it read"
         );
     }
 

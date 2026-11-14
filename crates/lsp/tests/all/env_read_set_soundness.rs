@@ -384,6 +384,8 @@ fn check_confirmed(world: &World, confirmed: &mut Confirmed) {
     let tmp = TempDir::new().unwrap();
     let root = host_fs::canonicalize(tmp.path()).unwrap();
     let entry = lay_down(&root, world);
+    // NuGet reads its user settings from a home that exists.
+    std::fs::create_dir_all(root.join("home")).unwrap();
     let nuget = root.join("nuget");
     for (i, folder) in world.packages.iter().enumerate() {
         if *folder == Folder::Primary {
@@ -401,7 +403,9 @@ fn check_confirmed(world: &World, confirmed: &mut Confirmed) {
         ws.begin_generation(Nanos(i128::MAX / 2));
         let tfm = ws.served_tfm_for_project(&entry);
         let mut semantic = SemanticState::new();
-        let (dlls, _) = semantic.env_reference_dlls_for_project(&entry, Some(&dotnet), &tfm, &ws);
+        // The DLLs the resolution names, whether or not they project: the
+        // fixture's DLLs are not assemblies, so the env keeps none.
+        let (dlls, _) = semantic.reference_resolution_for_project(&entry, Some(&dotnet), &tfm, &ws);
         let (reads, _) = semantic.env_reads_for_project(&entry, Some(&dotnet), &tfm, &ws);
         // An env a transient failure left incomplete is not cached, and
         // confirms nothing: what it read is what it depends on.
