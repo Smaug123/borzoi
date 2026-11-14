@@ -190,6 +190,27 @@ fn top_level_decls(src: &str) -> Vec<String> {
         .collect()
 }
 
+/// A `#nowarn` after other tokens on its line still takes the rest of the
+/// line (FS3874), its bracket's `)` included, so the bracket stays open over
+/// the next line, as in FCS.
+#[test]
+fn recover_mid_line_warn_directive_leaves_its_bracket_open() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "let x = 0\nmember foo (#nowarn \"40\") 1\nlet after = x\n",
+        1,
+    );
+    assert_eq!(
+        top_level_decls("let x = 0\nmember foo (#nowarn \"40\") 1\nlet after = x\n"),
+        ["let x = 0"]
+    );
+    // A `#` right after an identifier is that identifier token's
+    // (`ident '#'`), so it starts no directive and the bracket closes.
+    crate::common::recovery::assert_recovered_trees_agree(
+        "let x = (y#nowarn \"40\")\nlet after = 1\n",
+        1,
+    );
+}
+
 /// Inside a bracket a stray token's debris leaves open, nothing becomes a
 /// declaration of the enclosing module, keyword-led or not: that would put
 /// the abandoned construct's bindings in module scope, and resolve a later
@@ -229,6 +250,13 @@ fn recover_nothing_inside_a_debris_bracket_is_a_declaration() {
                 ),
             ),
         ] {
+            // A `#nowarn` takes the rest of its line wherever it starts, so on
+            // the same line it takes the bracket's `)` too, and the bracket
+            // then holds the next line (`recover_mid_line_warn_directive_
+            // leaves_its_bracket_open`).
+            if shape == "same line" && inner.starts_with("#nowarn") {
+                continue;
+            }
             let decls = top_level_decls(&src);
             if decls != ["let x = 0", "let after = x"] {
                 failures.push(format!("{shape} {inner:?}: {decls:?}"));
