@@ -1976,10 +1976,19 @@ the two differ where it matters:
   padding kept, and a value that XML normalisation or entity decoding
   touched declines, as does inner XML.
 
+A target's `Returns` shapes only what it hands a caller, and no caller is
+modelled. But MSBuild expands it once the target has run, against the
+properties the target left, and an expression there can fail the build: a
+property function that throws, a transform, an item list run together with
+text (`prefix@(I)`, `@(I)@(I)`). So it is checked once the target has run.
+Each `;`-separated piece must be a lone plain `@(Type)`, or text with plain
+`$(Name)` references and no `@`, and no value it reads may hold `@`, `%`, `$`
+or `;`. `KeepDuplicateOutputs`, a condition evaluated then too, declines.
+
 It declines everything else: another task, a built-in task a `UsingTask`
 may rebind, an empty request (the default targets), `InitialTargets` (not
 run yet),
-`Inputs`/`Outputs`/`Returns`, a backslash in an item identity or metadatum
+`Inputs`/`Outputs`, a backslash in an item identity or metadatum
 (MSBuild's Unix path fixup may respell it),
 `%(…)` and `@(…)` (including one properties assemble, which MSBuild then
 expands as such), a property function, `MSBuildThisFile*` (which name the
@@ -1997,12 +2006,35 @@ every committed run to it. The scheduling rules above came out of its
 failures. Its soak fails when any of the three push rules is changed.
 
 The census runs `GenerateRestoreGraphFile` on every cone and pins where the
-executor stops. Today every single-target cone stops at one hook,
-`Microsoft.Common.CurrentVersion.targets`'s
-`BeforeTargets="$(BuildDependsOn);Build;$(RebuildDependsOn);…"`.
-`RebuildDependsOn` rests on the reserved `MSBuildProjectDefaultTargets`,
-which the walk does not seed. The two multi-targeting outer builds stop at
-opacity.
+executor stops. Every single-target cone stops at a condition that reads an
+item list, `@(RestoreGraphProjectInputItems) == ''`. The two
+multi-targeting outer builds stop at opacity.
+
+**`MSBuildProjectDefaultTargets`.** The hook
+`BeforeTargets="$(BuildDependsOn);Build;$(RebuildDependsOn);…"` in
+`Microsoft.Common.CurrentVersion.targets` reads `RebuildDependsOn`, which
+rests on the reserved `MSBuildProjectDefaultTargets`. The walk sets it as
+MSBuild's `Evaluator.UpdateDefaultTargets` does. The first project or
+import root, in depth-first import order and before its own implicit
+imports, whose `DefaultTargets` expands (properties only) to anything sets
+it, unescaped and untrimmed. MSBuild stores that unescaped text as the
+escaped value, so `%2541` reads back as `A`. The first that lists a target
+settles it. Blanks or separators alone leave it open to a later root. On SDK
+projects it is `Build`, from `Microsoft.Common.targets`. It is left unset
+and inexact, settling the offer, by a root whose expansion the walk cannot
+vouch for, by a root in a `Directory.Build.*` file the walk spliced in
+itself, by any root outside an SDK's files once such a splice has run
+(whatever it wrote may not exist in MSBuild's build, #676), or by opacity
+while the offer is open. Beyond that it is exactly as faithful as the walk's
+import graph, like every other property: an SDK that never imports
+`Directory.Build.props` while the walk splices it in can feed it a value
+MSBuild never holds, as it can feed any property (#677).
+`fsproj_default_targets_generative_diff` holds it to MSBuild over entry and
+imported roots, literal, padded, escaped, list, empty and property-expanded
+values, blanks and separators, a `Directory.Build.props` beside an SDK-less
+project, and an import the walk cannot decide. Each of these fails its soak:
+trimming, the last root winning, settling on blanks, latching in a splice,
+ignoring opacity, or re-escaping.
 
 #### A₁.4: the task leaves
 

@@ -59,7 +59,7 @@ fn label(rng: &mut SplitMix64) -> &'static str {
 fn condition(rng: &mut SplitMix64) -> String {
     if rng.below(3) == 0 {
         // `Exists` (which the executor declines) only now and then.
-        let pick = if rng.below(10) == 0 {
+        let pick = if rng.below(20) == 0 {
             CONDITIONS.len() - 1
         } else {
             rng.below(CONDITIONS.len() - 1)
@@ -74,7 +74,7 @@ fn condition(rng: &mut SplitMix64) -> String {
 /// most graphs are acyclic (a target depends on later ones, and hooks onto
 /// earlier ones), and now and then any.
 fn others(rng: &mut SplitMix64, of: usize, later: bool) -> Vec<&'static str> {
-    let any = rng.below(6) == 0;
+    let any = rng.below(10) == 0;
     TARGETS
         .iter()
         .enumerate()
@@ -85,17 +85,21 @@ fn others(rng: &mut SplitMix64, of: usize, later: bool) -> Vec<&'static str> {
 
 fn project(rng: &mut SplitMix64) -> String {
     // `InitialTargets` run before any target the build asks for.
-    let initial = if rng.below(12) == 0 {
+    let initial = if rng.below(25) == 0 {
         " InitialTargets=\"T3\""
     } else {
         ""
     };
     let mut out = format!("<Project{initial}>\n  <PropertyGroup>\n");
     // `A=@` and `B=(I)` assemble an item reference as `$(A)$(B)`.
-    out.push_str(&format!("    <A>{}</A>\n", rng.pick(&["x", "y", "@"])));
-    match rng.below(4) {
-        0 | 1 => out.push_str("    <B>b</B>\n"),
-        2 => out.push_str("    <B>(I)</B>\n"),
+    out.push_str(&format!(
+        "    <A>{}</A>\n",
+        rng.pick(&["x", "y", "x", "y", "@"])
+    ));
+    match rng.below(8) {
+        0..=3 => out.push_str("    <B>b</B>\n"),
+        4 => out.push_str("    <B>(I)</B>\n"),
+        5 => out.push_str("    <B>(I->DoesNotExist())</B>\n"),
         _ => {}
     }
     if rng.below(3) == 0 {
@@ -147,7 +151,8 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
         }
         for hook in ["BeforeTargets", "AfterTargets"] {
             if rng.below(4) == 0 {
-                let named = if rng.below(8) == 0 {
+                // `$(Hook)` names T1, an earlier target only for T2 and T3.
+                let named = if index > 1 && rng.below(8) == 0 {
                     vec!["$(Hook)"]
                 } else {
                     others(rng, index, false)
@@ -159,6 +164,29 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
         }
         if rng.below(40) == 0 {
             attributes.push_str(" Inputs=\"a\" Outputs=\"b\"");
+        }
+        // What a target returns: plain references, which the executor accepts,
+        // and a transform or a property function that throws (failing the
+        // build once the target has run), which it declines.
+        // A condition MSBuild evaluates once the target has run.
+        if rng.below(80) == 0 {
+            attributes.push_str(" KeepDuplicateOutputs=\"bogus\"");
+        }
+        if rng.below(20) == 0 {
+            attributes.push_str(&format!(
+                " Returns=\"{}\"",
+                rng.pick(&[
+                    "@(I)",
+                    "$(A);@(I)",
+                    "@(I->'%(M)')",
+                    "$([System.IO.File]::ReadAllText('nowhere'))",
+                    // An item list run together with text fails the build.
+                    "prefix@(I)",
+                    "@(I)@(I)",
+                    // With `A=@` and `B=(I->DoesNotExist())`, a transform that fails.
+                    "$(A)$(B)",
+                ])
+            ));
         }
         out.push_str(&format!("  <Target Name=\"{name}\"{attributes}>\n"));
         for _ in 0..rng.below(3) {
@@ -426,4 +454,33 @@ fn an_empty_request_declines() {
     )
     .unwrap();
     assert!(matches!(reads.execution, Some(ExecutionRead::Declined(_))));
+}
+
+/// The `Returns` shapes on which MSBuild fails the build once the target has
+/// run, each needing more than one rare draw of the generator: a bogus
+/// `KeepDuplicateOutputs` beside `Returns`, a transform properties assemble
+/// (including from what the target itself writes), and item lists run
+/// together with text. Each run must be declined or be MSBuild's.
+#[test]
+fn returns_that_fail_the_build_decline() {
+    const CASES: [&str; 5] = [
+        r#"<Project><Target Name="T0" Returns="x" KeepDuplicateOutputs="bogus" /></Project>"#,
+        r#"<Project><PropertyGroup><A>@</A><B>(I->DoesNotExist())</B></PropertyGroup>
+           <ItemGroup><I Include="e" /></ItemGroup>
+           <Target Name="T0" Returns="$(A)$(B)" /></Project>"#,
+        r#"<Project><ItemGroup><I Include="e" /></ItemGroup>
+           <Target Name="T0" Returns="$(A)$(B)">
+             <PropertyGroup><A>@</A><B>(I->DoesNotExist())</B></PropertyGroup>
+           </Target></Project>"#,
+        r#"<Project><ItemGroup><I Include="e" /></ItemGroup>
+           <Target Name="T0" Returns="prefix@(I)" /></Project>"#,
+        r#"<Project><ItemGroup><I Include="e" /></ItemGroup>
+           <Target Name="T0" Returns="@(I)@(I)" /></Project>"#,
+    ];
+    let mut oracle = Oracle::spawn();
+    let mut tally = Tally::default();
+    for xml in CASES {
+        check(&mut oracle, xml, &mut tally);
+    }
+    assert_eq!(tally.failed, CASES.len(), "every case fails in MSBuild");
 }
