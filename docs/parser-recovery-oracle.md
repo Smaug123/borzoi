@@ -112,6 +112,37 @@ unaffected.
 dangled loose in the enclosing node. An identifier-path receiver keeps its old
 shape, because that shape is what the member-completion handler anchors on.
 
+## What recovery must match
+
+FCS's recovery is a yardstick, not a specification. It falls out of FsYacc's
+error states (default reductions, three-shift error suppression, flat
+panic-mode discard), and it often puts a declaration somewhere its
+indentation says it does not belong. What an agent needs from a broken buffer
+is that the declarations the damage did not touch survive, so names around
+the edit still resolve. Two grades of fidelity follow, and they are gated
+differently:
+
+- **Clean input is exact.** Where FCS accepts a file, any disagreement (a
+  verdict, a tree, a stream) is a hard gate, and regenerating a manifest
+  cannot bless it. A recovery heuristic that reaches valid input fails there,
+  whatever the recovery manifests say.
+- **On broken input, losing a declaration FCS keeps is a regression.** A
+  change may not lose a declaration, or keep it as another kind, where `main`
+  keeps it. The FCS-graded recovery grids hold this through their base files
+  (`corpus_manifest::check_no_worse_than_base`), and a review finding of that
+  shape blocks a merge.
+- **On broken input, placement is pinned, not gated.** A declaration both
+  parsers keep, but in different modules (FCS's error state closes a nested
+  module body early, or doesn't), is a line in the grid's manifest and nothing
+  more. A change that moves one shows up in the manifest diff, and the pull
+  request says why. A review finding of that shape is answered by putting the
+  case in a grid, not by blocking.
+
+Every divergence stays pinned, accepted ones included, so a later change
+still moves a line. The risk that an accepted divergence hides a new one grows
+with how coarse a pinned item is: a grid pins one line per declaration, a
+corpus manifest one line per file.
+
 ## The gates
 
 - **`parser_corpus_diff`** (`crates/cst/tests/manifests/parser_corpus_diff.txt`)

@@ -179,24 +179,40 @@ let private ResultItem = "_ConditionResult"
 [<Literal>]
 let private ResultProperty = "_ExpandResult"
 
+/// `s` escaped as element text. The XML reader folds a carriage return (and a
+/// CRLF) to a line feed, where MSBuild reading a project file keeps it
+/// (probed: a CRLF in a property body counts two characters), so each is
+/// written as a character reference, which survives.
+let private escapeText (s: string) : string =
+    (SecurityElement.Escape s).Replace("\r", "&#13;")
+
+/// `s` escaped as an attribute value: as [`escapeText`], and a tab or line
+/// feed, which the reader normalises to a space where MSBuild keeps it, as a
+/// character reference too.
+let private escapeAttribute (s: string) : string =
+    (escapeText s).Replace("\t", "&#9;").Replace("\n", "&#10;")
+
 /// Build the stub project XML: the supplied properties in a `<PropertyGroup>`,
 /// then a single `<_ConditionResult>` item guarded by `condition` — present iff
 /// MSBuild considers the condition true. Everything is XML-escaped; property
 /// *values* and the condition are attacker-controlled fuzz, so they go through
 /// `SecurityElement.Escape`. Property *names* are trusted to be valid
 /// identifiers (see the module docs) and are emitted verbatim.
+///
+/// What the caller sent is what MSBuild evaluates: see [`escapeText`] and
+/// [`escapeAttribute`].
 let private stubXml (condition: string) (properties: (string * string) seq) : string =
     let sb = StringBuilder()
     sb.Append "<Project><PropertyGroup>" |> ignore
 
     for (name, value) in properties do
         sb.Append('<').Append(name).Append('>') |> ignore
-        sb.Append(SecurityElement.Escape value) |> ignore
+        sb.Append(escapeText value) |> ignore
         sb.Append("</").Append(name).Append('>') |> ignore
 
     sb.Append "</PropertyGroup><ItemGroup><" |> ignore
     sb.Append(ResultItem).Append(" Include=\"x\" Condition=\"") |> ignore
-    sb.Append(SecurityElement.Escape condition) |> ignore
+    sb.Append(escapeAttribute condition) |> ignore
     sb.Append "\" /></ItemGroup></Project>" |> ignore
     sb.ToString()
 
@@ -250,11 +266,11 @@ let private expandStubXml (value: string) (properties: (string * string) seq) : 
 
     for (name, propValue) in properties do
         sb.Append('<').Append(name).Append('>') |> ignore
-        sb.Append(SecurityElement.Escape propValue) |> ignore
+        sb.Append(escapeText propValue) |> ignore
         sb.Append("</").Append(name).Append('>') |> ignore
 
     sb.Append('<').Append(ResultProperty).Append('>') |> ignore
-    sb.Append(SecurityElement.Escape value) |> ignore
+    sb.Append(escapeText value) |> ignore
     sb.Append("</").Append(ResultProperty).Append('>') |> ignore
     sb.Append "</PropertyGroup></Project>" |> ignore
     sb.ToString()

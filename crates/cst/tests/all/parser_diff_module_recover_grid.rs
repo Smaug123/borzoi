@@ -10,7 +10,9 @@
 //! next decide whether the body closes there, closes at the next block end,
 //! or swallows the declarations after it. The dimensions are those inputs:
 //! - the list's state before the junk: at the body's start, after a
-//!   definition, after an expression, or after a `;;`;
+//!   definition, after an expression, after a `;;`, inside a bracket a
+//!   definition's right-hand side left open (closed by a bracket of another
+//!   kind or not), or after an error inside a `match` clause in one;
 //! - the junk: each definition starter, and tokens that start nothing;
 //! - whether the junk shares the prefix's line;
 //! - an earlier error (`)`) some tokens before the junk, or none;
@@ -19,9 +21,12 @@
 //!   a `begin … end` body.
 //!
 //! Each divergent cell and name is pinned in
-//! `tests/manifests/module_recover_grid.txt`, and the grid may diverge only
-//! where `main`'s parser does (`module_recover_grid.base.txt`,
-//! `tools/cst-grid-base.sh`).
+//! `tests/manifests/module_recover_grid.txt`. A declaration FCS keeps that we
+//! lose, or keep as another kind, may be lost only where `main`'s parser loses
+//! it too (`module_recover_grid.base.txt`, `tools/cst-grid-base.sh`); one we
+//! keep in another module is pinned but not held to `main`, unless FCS
+//! accepts the cell: clean input is held exactly
+//! (`docs/parser-recovery-oracle.md`, "What recovery must match").
 
 use crate::common::recovery::{Unit, fcs_units, our_units};
 
@@ -31,6 +36,9 @@ const PREFIXES: &[(&str, &str)] = &[
     ("after-def", "let a = 0"),
     ("after-expr", "a"),
     ("after-sep", "let a = 0;;"),
+    ("in-open-paren", "let a = (0"),
+    ("in-mismatched-paren", "let a = (0 ]"),
+    ("in-match-clause", "let a = match 0 with | _ -> else 1"),
 ];
 
 /// What follows the prefix: definition starters, then tokens that start no
@@ -196,18 +204,21 @@ fn cell(
 fn every_declaration_lands_where_fcs_puts_it() {
     use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
     let mut divergences = Vec::new();
-    // Each divergence keyed without our side's module, which differs between
-    // parsers that diverge alike.
+    // Each lost declaration, and each divergence in a cell FCS accepts, keyed
+    // without our side's placement.
     let mut keys = Vec::new();
     let all = cells();
     assert!(all.len() > 1000, "the grid shrank to {} cells", all.len());
     for cell in &all {
         let src = &cell.source;
-        let fcs = {
+        let (fcs, fcs_clean) = {
             let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
             std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
             let json = crate::common::fcs_ast_batch(tmp.path());
-            fcs_units(&json, src)
+            (
+                fcs_units(&json, src),
+                !crate::common::fcs_parse_had_errors(&json),
+            )
         };
         let ours = our_units(&borzoi_cst::parser::parse(src));
         for &name in NAMES {
@@ -229,7 +240,9 @@ fn every_declaration_lands_where_fcs_puts_it() {
             let (want, got) = (place_of(&fcs), place_of(&ours));
             if want != "nowhere" && got != want {
                 let key = format!("{} | `{name}`: FCS in {want}", cell.key);
-                keys.push(key.clone());
+                if fcs_clean || got.split(' ').next() != want.split(' ').next() {
+                    keys.push(key.clone());
+                }
                 divergences.push(format!("{key}, ours in {got}"));
             }
         }

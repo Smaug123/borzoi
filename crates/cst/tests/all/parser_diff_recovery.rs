@@ -1026,15 +1026,18 @@ fn scope_grid() -> Vec<ScopeCase> {
 /// is decided by FCS's error recovery, so each declaration after it that FCS
 /// keeps must sit in the same module in our tree. The cells where it does not
 /// are pinned, one line each, in `tests/manifests/nested_module_scope.txt`, so
-/// a fix or a regression moves a line either way, and each must be one where
-/// `main`'s parser diverges too (`nested_module_scope.base.txt`).
+/// a fix or a regression moves a line either way. A declaration we lose must
+/// be one `main`'s parser loses too (`nested_module_scope.base.txt`); one we
+/// keep in another module is pinned but not held to `main`, unless FCS
+/// accepts the cell (`docs/parser-recovery-oracle.md`, "What recovery must
+/// match").
 #[test]
 fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
     use crate::common::recovery::{Unit, fcs_units, our_units};
     use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
     let mut divergences = Vec::new();
-    // Each divergence, keyed without our side's module, which differs between
-    // parsers that diverge alike.
+    // Each lost declaration, and each divergence in a cell FCS accepts, keyed
+    // without our side's placement.
     let mut keys = Vec::new();
     let mut line_endings = Vec::new();
     for case in scope_grid() {
@@ -1042,11 +1045,14 @@ fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
         if let Some(d) = crate::common::recovery::crlf_units_differ(src) {
             line_endings.push(format!("{src:?}:\n{d}"));
         }
-        let fcs = {
+        let (fcs, fcs_clean) = {
             let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
             std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
             let json = crate::common::fcs_ast_batch(tmp.path());
-            fcs_units(&json, src)
+            (
+                fcs_units(&json, src),
+                !crate::common::fcs_parse_had_errors(&json),
+            )
         };
         let ours = our_units(&borzoi_cst::parser::parse(src));
         // Each module, by how many modules enclose its declarations.
@@ -1076,7 +1082,9 @@ fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
                     if case.double { "double" } else { "single" },
                     case.layout,
                 );
-                keys.push(key.clone());
+                if fcs_clean || got == "nowhere" {
+                    keys.push(key.clone());
+                }
                 divergences.push(format!("{key}, ours in {got}"));
             }
         }
@@ -1163,4 +1171,224 @@ fn recover_rhs_leftovers_own_no_block_end() {
         "module M\nmodule A =\n    let w = 1\n        2; let after = 2\nlet last = 3\n",
         1,
     );
+}
+
+/// Leftovers that run into a `module`/`type` keyword are not a binding
+/// terminator's panic mode: FCS's lex filter turns the keyword into its
+/// `*_COMING_SOON` tokens and the parser recovers there, keeping `B` and its
+/// bindings.
+#[test]
+fn recover_rhs_leftovers_reaching_a_module_keep_it() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    let a = (fun x -> else 1\n    module B =\n        let x = 1\n        let y = 2\n",
+        0,
+    );
+}
+
+/// As above, with a deeper line before the keyword, so the RHS drain stops
+/// at an inner `OBLOCKEND` first: a bracket the RHS left open still ends at
+/// FCS's `*_COMING_SOON` tokens, not by the terminator's panic mode.
+#[test]
+fn recover_rhs_leftovers_in_an_open_bracket_keep_a_later_module() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    let a = (fun x -> else 1\n        0\n    module B =\n        let x = 1\n        let y = 2\n",
+        0,
+    );
+}
+
+/// A closer of another kind does not close the RHS's open bracket: the `(`
+/// stays open past the `]`, and `B` and its bindings are kept as above.
+#[test]
+fn recover_rhs_leftovers_past_a_mismatched_closer_keep_a_later_module() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    let a = (fun x -> else 1 ]\n        0\n    module B =\n        let x = 1\n        let y = 2\n",
+        0,
+    );
+}
+
+/// Every opener FCS's lex filter balances (`parenTokensBalance`,
+/// `LexFilter.fs:408-426`), left open in a block `let`'s right-hand side
+/// after an error, then a closer of each kind or none, then a later module or
+/// binding. FCS ends an open bracket at the lex filter's `*_COMING_SOON`
+/// tokens, not by the binding terminator's panic mode, so recovery that
+/// discards an RHS's leftovers must tell every opener and every mismatched
+/// closer apart. Each declaration FCS keeps that we lose is pinned in
+/// `tests/manifests/bracket_leftovers_grid.txt` and must be one `main`'s
+/// parser loses too (`bracket_leftovers_grid.base.txt`).
+#[test]
+fn recover_bracket_leftovers_grid_loses_no_declaration() {
+    use crate::common::recovery::{fcs_units, our_units};
+    use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
+    const OPENERS: &[&str] = &[
+        "(",
+        "[",
+        "[|",
+        "{",
+        "{|",
+        "<@",
+        "<@@",
+        "begin",
+        "sig",
+        "class",
+        "struct",
+        "interface",
+    ];
+    const CLOSERS: &[&str] = &["", ")", "]", "|]", "}", "|}", "@>", "@@>", "end"];
+    const FOLLOWERS: &[(&str, &str)] = &[
+        (
+            "module",
+            "\n    module B =\n        let x = 1\n        let y = 2\n",
+        ),
+        (
+            "deeper-module",
+            "\n        0\n    module B =\n        let x = 1\n",
+        ),
+        ("binding", "\n    let x = 1\n    type T = int\n"),
+    ];
+    let mut lost = Vec::new();
+    for opener in OPENERS {
+        for closer in CLOSERS {
+            for (label, follower) in FOLLOWERS {
+                let src = format!(
+                    "module M\nmodule A =\n    let a = {opener} 0 else 1 {closer}{follower}let z = 3\n"
+                );
+                let json = {
+                    let mut tmp =
+                        tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
+                    std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
+                    crate::common::fcs_ast_batch(tmp.path())
+                };
+                let ours = our_units(&borzoi_cst::parser::parse(&src));
+                for unit in fcs_units(&json, &src) {
+                    let kept = ours
+                        .iter()
+                        .any(|o| o.key.start == unit.key.start && o.key.kind == unit.key.kind);
+                    if !kept {
+                        let name = src[unit.key.start..].lines().next().unwrap_or("");
+                        lost.push(format!("{opener} … {closer} | {label} | loses `{name}`"));
+                    }
+                }
+            }
+        }
+    }
+    let keys = lost.clone();
+    let actual = Manifest::from_entries(lost).expect("one line per cell and declaration");
+    crate::common::corpus_manifest::check_manifest(
+        "bracket_leftovers_grid",
+        &actual,
+        &format!(
+            "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_recovery::recover_bracket_leftovers_grid"
+        ),
+    );
+    crate::common::corpus_manifest::check_no_worse_than_base("bracket_leftovers_grid", &keys, &[]);
+}
+
+/// A block `let`'s right-hand side broken in each way that leaves its block
+/// with leftovers (an error at its own level, or inside a `match` clause, a
+/// lambda, an `if`, a `try` or a bracket), then a declaration or expression
+/// (after a separator, a comment or attributes, or nothing) on the same line,
+/// or on a line deeper than the body, on its column, or dedented past it, at
+/// the top level and in a nested module. Whether FCS discards what follows
+/// such an error (panic mode at the binding's terminator) or keeps it (an
+/// error it recovered from inside the nested construct) is decided by its
+/// error states, and recovery that discards must not lose what FCS keeps.
+/// Each lost declaration is pinned in `tests/manifests/rhs_error_grid.txt`
+/// and must be one `main`'s parser loses too (`rhs_error_grid.base.txt`).
+#[test]
+fn recover_rhs_error_grid_loses_no_declaration() {
+    use crate::common::recovery::{fcs_units, our_units};
+    use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV};
+    const HEADS: &[&str] = &[
+        "0",
+        "match 0 with | _ ->",
+        "fun x ->",
+        "if 0 then",
+        "try 0 with | _ ->",
+        "(0",
+        "<@ 0",
+        "begin 0",
+    ];
+    const JUNK: &[&str] = &["else 1", ")", "}", "]", "end", "with", "->", "in", "type"];
+    // What may come before a declaration on its line. `⏎` continues on a new
+    // line at the follower's indent.
+    const PREFIXES: &[&str] = &["", "; ", "(*c*) ", "[<A>] ", "[<A>]⏎"];
+    const DECLS: &[&str] = &[
+        "let w = 1",
+        "open System",
+        "type T = int",
+        "module B = List",
+        "module B =⏎    let w = 1",
+        "exception E",
+        "w",
+    ];
+    let mut lost = Vec::new();
+    for nested in [false, true] {
+        let (head, body) = if nested {
+            ("module M\nmodule A =\n", "    ")
+        } else {
+            ("module M\n", "")
+        };
+        // Where the follower goes: on the `let`'s line, or on a line of its
+        // own deeper than the body, on its column, or (nested) between it and
+        // the outer module's column, or on that.
+        let mut places: Vec<(&str, Option<String>)> = vec![
+            ("same-line", None),
+            ("deeper", Some(format!("{body}    "))),
+            ("body", Some(body.to_string())),
+        ];
+        if nested {
+            places.push(("between", Some("  ".to_string())));
+            places.push(("outer", Some(String::new())));
+        }
+        for rhs in HEADS {
+            for junk in JUNK {
+                for (prefix, decl) in PREFIXES
+                    .iter()
+                    .flat_map(|p| DECLS.iter().map(move |d| (p, d)))
+                {
+                    let follower = format!("{prefix}{decl}");
+                    for (place, indent) in &places {
+                        let (sep, indent) = match indent {
+                            None => (" ".to_string(), format!("{body}    ")),
+                            Some(indent) => (format!("\n{indent}"), indent.clone()),
+                        };
+                        let src = format!(
+                            "{head}{body}let a = {rhs} {junk}{sep}{follower}\n{body}let x = 1\nlet z = 3\n"
+                        )
+                        .replace('⏎', &format!("\n{indent}"));
+                        let json = {
+                            let mut tmp = tempfile::NamedTempFile::with_suffix(".fs")
+                                .expect("create tempfile");
+                            std::io::Write::write_all(&mut tmp, src.as_bytes())
+                                .expect("write source");
+                            crate::common::fcs_ast_batch(tmp.path())
+                        };
+                        let ours = our_units(&borzoi_cst::parser::parse(&src));
+                        for unit in fcs_units(&json, &src) {
+                            let kept = ours.iter().any(|o| {
+                                o.key.start == unit.key.start && o.key.kind == unit.key.kind
+                            });
+                            if !kept {
+                                let name = src[unit.key.start..].lines().next().unwrap_or("");
+                                lost.push(format!(
+                                    "{} | {rhs} {junk} | {place} {follower} | loses `{name}`",
+                                    if nested { "nested" } else { "top" },
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let keys = lost.clone();
+    let actual = Manifest::from_entries(lost).expect("one line per cell and declaration");
+    crate::common::corpus_manifest::check_manifest(
+        "rhs_error_grid",
+        &actual,
+        &format!(
+            "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_recovery::recover_rhs_error_grid"
+        ),
+    );
+    crate::common::corpus_manifest::check_no_worse_than_base("rhs_error_grid", &keys, &[]);
 }

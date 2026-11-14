@@ -77,8 +77,12 @@ This is a Cargo workspace with nine members:
   `test-support`-feature `test_support` module. It has four ops, and the
   distinction matters: `eval` (a `Condition` string) and `expand` (a property
   *body*) both take their input *after* MSBuild's XML layer has run, so they
-  are structurally blind to it; `project` hands MSBuild a whole document
-  verbatim and reads back the evaluated property table, which is the only way
+  are structurally blind to it. Their stubs write a tab, line feed or
+  carriage return as a character reference, so MSBuild reads each as itself,
+  as it does in a project file (it normalises neither attribute values nor
+  line ends); `condition_diff` and `property_expr_diff` each grade their
+  evaluator on such text with a whitespace axis. `project` hands MSBuild a
+  whole document verbatim and reads back the evaluated property table, which is the only way
   to diff the XML layer itself (insignificant whitespace, entity decoding,
   CDATA, comment-split text); `items` is `project`'s item-side twin, reading
   back an item type's evaluated `FullPath`s (what `-getItem:` reports, but
@@ -464,6 +468,10 @@ real F# Compiler Service by *differential* tests living in `crates/cst/tests/all
   `foo.` shape completion runs on) from clean corpus files. Write a recovery
   case as `common::recovery::assert_recovered_trees_agree(src, n)`. See
   `docs/parser-recovery-oracle.md`, which also lists what remains divergent.
+  Recovery is graded more weakly than clean input: losing a declaration FCS
+  keeps, where `main` keeps it, blocks; keeping it in a different module than
+  FCS does is pinned in a grid manifest and allowed, so answer such a review
+  finding with a grid case (that doc's "What recovery must match").
 
 Common commands:
 
