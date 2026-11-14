@@ -32,19 +32,21 @@
 //! census, type-budget verdict and deepest expression walk, each type through
 //! [`spelled_debug`] and each table sorted by range. [`InferredFile::type_walks`]
 //! is left out: how large a type walk was is a measurement of how inference
-//! computed, which a refactor may legitimately change.
+//! computed, which a refactor may legitimately change. A file's dump in its
+//! directory adds what the fold published for each value it exports
+//! ([`dump_exports`]), the type a later file's use instantiates or why there
+//! is none, which a later file's dump shows only where it uses the value.
 //!
 //! # The manifest
 //!
-//! The full dump is far too large to check in (hundreds of megabytes), so the
+//! The full dump is about 12 MB, too large to review as a manifest, so the
 //! manifest pins its digest per file: one keyed line per corpus file,
 //! `<path>\talone <sha1-prefix>/<n> dir <sha1-prefix>/<n>`, where `n` counts
 //! the file's commits (types, binder types, member resolutions and receiver
-//! types) so a moved line says which way it moved, and `dir same` stands for a
-//! directory fold that dumped the file exactly as it dumped alone (or a
-//! state: `unreadable`, `none` for a slot the fold left uninferred). Any byte of a file's dump
-//! that changes moves its line; the line names the file, and the dump itself
-//! says what moved:
+//! types) so a moved line says which way it moved; a state stands in for a
+//! digest where there is no dump (`unreadable`, or `none` for a slot the fold
+//! left uninferred). Any byte of a file's dump that changes moves its line;
+//! the line names the file, and the dump itself says what moved:
 //!
 //! ```text
 //! BORZOI_INFER_DUMP_OUT=/tmp/base.txt nix develop -c cargo test -p borzoi-sema --test all infer_corpus_dump:: -- --ignored
@@ -75,9 +77,9 @@ use borzoi_oracle_harness::par_map::par_map;
 use borzoi_oracle_harness::stack_probe::on_stack;
 use borzoi_sema::test_support::spelled_debug;
 use borzoi_sema::{
-    AssemblyEnv, InferredFile, PrecedingTypes, ProjectFile, ProjectItems, Resolution, ResolvedFile,
-    SourceFile, SyntaxRecovery, WALK_STACK_BYTES, infer_named_file, infer_project, qualified_names,
-    resolve_file, resolve_project_files,
+    AssemblyEnv, InferredFile, InferredProject, PrecedingTypes, ProjectFile, ProjectItems,
+    Resolution, ResolvedFile, SourceFile, SyntaxRecovery, WALK_STACK_BYTES, infer_named_file,
+    infer_project, qualified_names, resolve_file, resolve_project_files,
 };
 use sha1::{Digest, Sha1};
 
@@ -182,6 +184,32 @@ pub fn dump_file(
     }
     commits += types.len() + defs.len() + members.len() + receivers.len();
     (out, commits)
+}
+
+/// What the fold published for each value `resolved` exports, in source order:
+/// the type a later file's use instantiates, or why there is none. Hover and
+/// completion read it across files, and a change to it shows in a later
+/// file's dump only where some later file happens to use the value.
+fn dump_exports(env: &AssemblyEnv, resolved: &ResolvedFile, inferred: &InferredProject) -> String {
+    use std::fmt::Write;
+    let mut out = "exports\n".to_string();
+    // Named by path, not by binder: a screened implementation's export may
+    // name its signature's binder, in another file's arena.
+    for item in resolved.exports().iter() {
+        let published = match inferred.item_type(item.id()) {
+            Ok(ty) => spell(env, *ty),
+            Err(gap) => format!("declined {gap:?}"),
+        };
+        writeln!(
+            out,
+            "  {:?} {}",
+            item.qualified_path(env)
+                .unwrap_or_else(|| vec![item.name(env).to_string()]),
+            published
+        )
+        .unwrap();
+    }
+    out
 }
 
 /// A file's dump in one of its two inferences, or why it has none.
@@ -319,8 +347,9 @@ fn dump_directory(env: &'static AssemblyEnv, paths: Vec<PathBuf>) -> Vec<(PathBu
                 .map(|(i, p)| {
                     let dumped = match (&trees[i], inferred.file(i)) {
                         (SourceFile::Impl(file), Some(inf)) => {
-                            let (text, commits) =
+                            let (mut text, commits) =
                                 dump_file(env, file.syntax(), resolved.file(i), inf);
+                            text.push_str(&dump_exports(env, resolved.file(i), &inferred));
                             Dumped::Text { text, commits }
                         }
                         _ => Dumped::NoInference,
@@ -471,13 +500,10 @@ fn inference_over_the_corpus_is_pinned() {
         panicked.join("\n")
     );
     let manifest = Manifest::from_keyed(by_key.iter().map(|(key, (alone, dir))| {
-        let (alone, dir) = (alone.line(), dir.line());
-        let dir = if dir == alone {
-            "same".to_string()
-        } else {
-            dir
-        };
-        (key.clone(), format!("alone {alone} dir {dir}"))
+        (
+            key.clone(),
+            format!("alone {} dir {}", alone.line(), dir.line()),
+        )
     }))
     .unwrap_or_else(|e| panic!("manifest entry: {e}"));
     check_manifest(
@@ -524,4 +550,36 @@ fn every_section_of_the_dump_is_live() {
             .any(|l| l.contains("\"System\", \"String\"")),
         "the receiver of `(s).Length` is a string:\n{text}"
     );
+}
+
+/// What a fold publishes for a file's exports is in its dump, a decline with
+/// its reason: making `f` not `inline` changes nothing else the file dumps.
+#[test]
+fn exports_are_dumped_with_their_declines() {
+    let dump = |src: &str| {
+        let env = crate::common::full_bcl_env();
+        let path = PathBuf::from("/p/M.fs");
+        let (file, recovery) = parse_source(&path, src);
+        let files = vec![ProjectFile::new(
+            file.clone(),
+            qualified_names(std::slice::from_ref(&file), std::slice::from_ref(&path))
+                .pop()
+                .expect("one name"),
+            recovery,
+        )];
+        let resolved = resolve_project_files(&files, env);
+        let inferred = infer_project(&files, &resolved, env);
+        dump_exports(env, resolved.file(0), &inferred)
+    };
+    let inline = dump("module M\nlet a = 1\nlet inline f x = x\n");
+    let plain = dump("module M\nlet a = 1\nlet        f x = x\n");
+    assert!(
+        inline.contains("[\"M\", \"a\"] Named { path: [\"System\", \"Int32\"]"),
+        "{inline}"
+    );
+    assert!(
+        inline.contains("[\"M\", \"f\"] declined Inline"),
+        "{inline}"
+    );
+    assert!(plain.contains("[\"M\", \"f\"] Fun"), "{plain}");
 }

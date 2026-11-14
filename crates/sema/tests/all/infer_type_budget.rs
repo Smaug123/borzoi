@@ -280,8 +280,9 @@ fn infer_facts(src: &str, env: &AssemblyEnv) -> Facts {
     }
 }
 
-/// A case spelled for the child: `<family> <lines>`, or `deep <additions>`
-/// for [`deep_case`], then a tab and [`references`].
+/// A case spelled for the child: `<family> <lines>`, or
+/// `deep:<nest>:<inner> <levels>` for [`deep_case`], then a tab and
+/// [`references`].
 fn spell(kind: &str, n: usize) -> String {
     format!("{kind} {n}\t{}", references())
 }
