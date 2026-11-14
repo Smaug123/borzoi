@@ -488,7 +488,7 @@ use crate::overload::arity_window;
 use crate::qnof::QualifiedNameOfFile;
 use crate::resolve::{CaseKind, ItemId, Resolution, ResolvedFile};
 use crate::ty::{MAX_TYPE_DEPTH, Ty, TyKind, TyPath, TyTable, TyVid, TypeBudgetExceeded};
-use crate::unify::{InferTable, TypeWalks};
+use crate::unify::{Head, InferTable, TypeWalks};
 
 mod annotations;
 mod application;

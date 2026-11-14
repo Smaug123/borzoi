@@ -581,7 +581,13 @@ pub struct Verdict {
     pub beyond_fcs: usize,
     /// The first offending key and why, for a [`Relation::Divergent`] verdict.
     pub first_divergence: Option<String>,
+    /// Every offending unit's key, so that a second divergence in a file that
+    /// already diverges still moves its line.
+    pub offenders: std::collections::BTreeSet<UnitKey>,
 }
+
+/// How many offending units [`Verdict::token_with_offenders`] lists by key.
+const SHOWN_OFFENDERS: usize = 8;
 
 impl Verdict {
     /// The manifest token: `<relation> <compared>/<undamaged>/<total>`, then
@@ -596,6 +602,37 @@ impl Verdict {
         );
         if self.beyond_fcs > 0 {
             token.push_str(&format!(" beyond-fcs:{}", self.beyond_fcs));
+        }
+        token
+    }
+
+    /// [`Self::token`], then, for a divergent verdict, ` at:<keys>`: each
+    /// offending unit's key (its scope, kind and start, so a top-level header,
+    /// whose start is a module ordinal, never reads as a declaration at that
+    /// byte). A corpus manifest pins a whole file on one line, so without them
+    /// a second divergence in a file that already diverges moves nothing
+    /// unless it moves a count. Grids whose cells vary only in layout compare
+    /// [`Self::token`], which offsets would split.
+    ///
+    /// Past the first [`SHOWN_OFFENDERS`], the rest are summarised as
+    /// `+<count>#<hash>` (FNV-1a over their keys), so a cascade through a
+    /// long file stays one readable line and any movement in it still shows.
+    pub fn token_with_offenders(&self) -> String {
+        let mut token = self.token();
+        if self.offenders.is_empty() {
+            return token;
+        }
+        let keys: Vec<String> = self.offenders.iter().map(UnitKey::to_string).collect();
+        let (shown, rest) = keys.split_at(keys.len().min(SHOWN_OFFENDERS));
+        token.push_str(&format!(" at:{}", shown.join(",")));
+        if !rest.is_empty() {
+            let mut hash: u32 = 0x811c_9dc5;
+            for key in rest {
+                for byte in key.bytes().chain(*b",") {
+                    hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+                }
+            }
+            token.push_str(&format!(",+{}#{hash:08x}", rest.len()));
         }
         token
     }
@@ -653,16 +690,19 @@ pub fn compare_units(fcs: &[Unit], ours: &[Unit], damage: &Damage, layout: &Layo
     let mut compared = 0;
     let mut beyond_fcs = 0;
     let mut first_divergence = None;
+    let mut offenders = std::collections::BTreeSet::new();
+    let mut offend = |key: &UnitKey, why: &dyn Fn() -> String| {
+        offenders.insert(key.clone());
+        first_divergence.get_or_insert_with(why);
+    };
     for (key, fs) in &f {
         match o.get(key) {
-            None => {
-                first_divergence.get_or_insert_with(|| format!("{key}: only FCS has it clean"));
-            }
+            None => offend(key, &|| format!("{key}: only FCS has it clean")),
             Some(os) => {
                 if let (Some(fs), Some(os)) = (fs, os) {
                     compared += 1;
                     if fs != os {
-                        first_divergence.get_or_insert_with(|| {
+                        offend(key, &|| {
                             format!("{key}: shapes differ\n  ours: {os:?}\n  fcs:  {fs:?}")
                         });
                     }
@@ -677,7 +717,7 @@ pub fn compare_units(fcs: &[Unit], ours: &[Unit], damage: &Damage, layout: &Layo
         if is_beyond(key, &reach) && layout.is_aligned(key) {
             beyond_fcs += 1;
         } else {
-            first_divergence.get_or_insert_with(|| format!("{key}: only ours has it clean"));
+            offend(key, &|| format!("{key}: only ours has it clean"));
         }
     }
     // Boundaries: a unit whose *start* is undamaged must start on both sides,
@@ -698,12 +738,12 @@ pub fn compare_units(fcs: &[Unit], ours: &[Unit], damage: &Damage, layout: &Layo
     let all_fcs: std::collections::BTreeSet<&UnitKey> = fcs.iter().map(|u| &u.key).collect();
     for key in &fs {
         if !all_ours.contains(key) {
-            first_divergence.get_or_insert_with(|| format!("{key}: only FCS starts a unit here"));
+            offend(key, &|| format!("{key}: only FCS starts a unit here"));
         }
     }
     for key in &os {
         if !all_fcs.contains(key) && !(is_beyond(key, &reach) && layout.is_aligned(key)) {
-            first_divergence.get_or_insert_with(|| format!("{key}: only ours starts a unit here"));
+            offend(key, &|| format!("{key}: only ours starts a unit here"));
         }
     }
     Verdict {
@@ -717,6 +757,7 @@ pub fn compare_units(fcs: &[Unit], ours: &[Unit], damage: &Damage, layout: &Layo
         total: fcs.len(),
         beyond_fcs,
         first_divergence,
+        offenders,
     }
 }
 

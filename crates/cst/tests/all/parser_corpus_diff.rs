@@ -230,7 +230,7 @@ impl Outcome {
                     reads = graded_reads;
                 }
                 Recovery {
-                    token: v.token(),
+                    token: v.token_with_offenders(),
                     divergence: v.first_divergence,
                 }
             }
