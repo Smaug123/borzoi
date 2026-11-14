@@ -151,6 +151,7 @@ dependencies = [
  "borzoi-sema",
  "borzoi-spawn",
  "borzoi-stats",
+ "crossbeam-channel",
  "lsp-server",
  "lsp-types",
  "minreq",

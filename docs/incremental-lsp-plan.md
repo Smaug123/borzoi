@@ -6,8 +6,9 @@
 > its read set), Stage 3b (evaluations are validated, not trusted),
 > Stage 4a (ownership listings are observed and counted), Stage 4b
 > (ownership is memoised), Stage 5 (one parse per text), Stages 6a and 6b
-> (env read sets, targeted assembly invalidation) and Stage 7 (the
-> hand-wired invalidation deleted) implemented. Tracks
+> (env read sets, targeted assembly invalidation), Stage 7 (the
+> hand-wired invalidation deleted) and Stage 8 (coalescing in the dispatch
+> loop) implemented; Stage 9's gate measured, and failed. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -3154,6 +3155,252 @@ one the issue's snapshot proposal addresses, and Stage 9's gate measures it.
 requests instead of `n`. `edit_counts` grows a burst mode, which sends `n`
 changes before draining, to measure it.
 
+**Implemented** (`crates/lsp/src/batch.rs`, `crates/lsp/src/server.rs`,
+`crates/lsp/src/vfs.rs`):
+
+- **The loop reads before it handles, and again before each step.** The
+  messages it has read and not finished with are one **epoch**: it starts
+  with the first message read while nothing was pending, and ends when every
+  message read since has been handled. Before each step the loop reads
+  whatever else is waiting into the epoch (`Dispatcher::admit`), so a
+  message that arrives while the loop works on an earlier one still decides
+  the fate of every request not yet run.
+- **The decision is a pure function.** `batch::plan` maps the epoch's
+  messages, as `Shape`s (kind, URI, document, request id), to the steps to
+  execute, and the `Dispatcher` executes the first step whose message it has
+  not handled yet, then reads, plans again and repeats. Every message is
+  parsed once, into an `Incoming` whose text sync carries its parsed
+  parameters, so the plan and the handler cannot disagree about whether, or
+  to which document, a sync applies. A handled message keeps its shape in
+  the epoch: a text sync already applied still refuses an earlier request it
+  superseded when the plan is made again.
+- **The plan.** For the messages before the epoch's first `shutdown` or
+  `exit`: every notification and every reply to a server request in arrival
+  order, a text sync that a later one of the same URI supersedes applied
+  without its push diagnostics; then every request in arrival order, one a
+  later `$/cancelRequest` names answered `RequestCancelled`, otherwise one
+  whose document a later text sync changes answered `ContentModified`,
+  neither run; every other request runs. From the barrier on the lifecycle
+  rules apply as they did one message at a time: `shutdown` acknowledged,
+  other requests refused `InvalidRequest`, notifications dropped, replies
+  handled, `exit` ends the session and nothing after it is read.
+- **A request's document** is `params.textDocument.uri`, read whatever the
+  method (`batch::named_document`), so a request the server does not know
+  yet, or one with malformed other parameters, is refused all the same.
+  Documents are compared as the `Vfs` reads them (`vfs::DocumentKey`): two
+  `file:` URIs path-equal under the platform's case rule are one document.
+  Supersession of a sync's diagnostics compares exact URIs, since a push
+  client keys what it shows by URI.
+- **Each executed step is a generation of its own**, as each message was. A
+  refusal reads nothing and opens none.
+- **The epoch is bounded** at 4,096 messages (`MAX_PENDING`); beyond it the
+  loop reads nothing more until the epoch ends.
+- **The server's input is buffered** (`server::buffer_input`, applied in
+  `main`). `lsp-server`'s stdio transport hands each message over a
+  rendezvous channel and decodes the next only once the last is taken, so
+  read directly a burst would sit in stdin while the loop handled its first
+  message, and nothing would be waiting to plan with it (found by Codex: 49
+  of 50 cancelled requests still ran). A thread takes each message the
+  moment it is decoded into a buffer of 1,024, which the loop reads; a full
+  buffer holds the reader back.
+
+**Decision 1: a request runs after every notification the loop has read,
+not in arrival order.** The plan names three rules; they refuse a request
+only when its own document changed. A request on `L` sent before a change to
+`E` that its answer reads (a hover on `L` of a binding `E` defines) would
+still be computed against `E`'s superseded text if the loop ran it in
+arrival order. So the plan applies every notification read first: every
+text a running request reads is the newest the client has sent, and its own
+document's text is the one its positions count, because a later change to
+it would have refused it. The order of answers changes, which the protocol
+allows (responses are matched by id).
+
+**Decision 2: `ContentModified`, against the specification's advice.** LSP
+3.17 says a server should not send `ContentModified` for a change it detects
+among its unprocessed messages, since a result computed on the older state
+may still be useful. The requirement here is that no answer is computed
+against a superseded text, so the request is refused; `ContentModified` is
+the code that says why. VS Code's client turns it into a cancellation for
+semantic tokens and a default (empty) answer for the rest, and re-asks after
+its own change.
+
+**The guarantees**, for the messages of one epoch:
+
+- every request read before `exit` is answered exactly once: by running it,
+  or by one refusal (a `workspace/diagnostic` sweep that runs is answered
+  when it completes, superseded or cancelled, as before; one in flight at
+  `exit` is abandoned, as before);
+- every request answered with a result was run after every notification the
+  loop had read when it began, and after no later change to its own
+  document that the loop had read;
+- the notifications are applied in arrival order, so the state the epoch
+  leaves is the state the same messages leave handled one at a time.
+
+Outside them: a message that arrives while a request runs (the request is
+not interrupted; Stage 9's subject), a `workspace/diagnostic` sweep in
+flight across epochs (its interleaving is as before), and an epoch at its
+bound.
+
+The oracle:
+
+- `batch::tests::the_plan_is_its_specification`: generated epochs of opens,
+  changes and closes over four documents (two of them one file under two
+  URIs, one not a `file:` URI), watched-file events, ignored syncs,
+  cancellations, requests, `shutdown`, replies and `exit`, with and without
+  `shutdown` acknowledged before; the plan equals the specification stated
+  message by message by scanning the rest of the epoch.
+- `dispatch_coalescing::a_coalesced_batch_agrees_with_its_messages_one_at_a_time`
+  (the plan's loop-level property): generated interleavings over a
+  three-source project whose sources read each other, delivered as one batch
+  to a coalescing `Dispatcher` and one message per batch to a sequential
+  one, with disk writes between batches and push or pull clients. Every
+  request is answered exactly once, with the fate the specification states;
+  the coalescing session runs exactly the requests it answers by running;
+  it computes push diagnostics exactly as often as the sequential session,
+  less once per superseded open or change; every answer with a result
+  equals the sequential session's answer to the same request after the whole
+  batch; and after every batch the published diagnostics and every
+  handler's answer at every identifier agree. A quarter of the batches arrive
+  in chunks with steps between them (exactly once, and the final state). Its
+  non-vacuity check asks for every fate, an answer that a later change to
+  another document moved, a spared publish and a chunked batch.
+- `a_burst_behind_a_rendezvous_transport_is_planned_together`: behind a
+  rendezvous channel, as `lsp-server`'s stdio transport delivers, a client's
+  whole burst is taken by the input buffer before the loop starts, and every
+  request a later cancellation names is refused.
+- Pinned: the real loop reads every queued message before handling one
+  (`the_loop_reads_every_waiting_message_before_it_handles_one`) and reads
+  again before each (`the_loop_reads_again_before_each_message_it_handles`,
+  a message sent at the end of the first generation); a handled change still
+  refuses the request it superseded; a change read mid-epoch refuses a
+  pending request; a hover reads the newest text of the document it depends
+  on; a superseded change publishes nothing.
+- `incremental_state_machine` is unchanged, and passes.
+- Two `workspace_diagnostic_sweep` tests whose subject is a change landing
+  mid-sweep (`a_refresh_owed_mid_sweep_follows_the_reply`,
+  `a_refresh_held_for_a_cancelled_sweep_is_released`) queued the change with
+  the sweep request before the loop started; the loop now plans them
+  together and applies the change before the sweep starts, so the refresh it
+  owes is no longer held. They drive a `Dispatcher` by hand instead, handing
+  the change over after the sweep's first step (`mid_sweep`).
+
+Planted, each caught, then removed (each run against `cargo test -p borzoi
+--lib --test all`):
+
+| plant | caught by |
+|---|---|
+| requests in arrival order among the notifications (the three rules alone) | `the_plan_is_its_specification`, the generated property (an answer differs from the one after the batch), `a_request_reads_the_newest_text_of_every_other_document` |
+| no `ContentModified` | the specification and generated properties, both loop tests, both mid-epoch tests |
+| no `RequestCancelled` | the specification and generated properties, `the_loop_reads_every_waiting_message_before_it_handles_one`, `cancel_request_ends_the_sweep` |
+| every sync diagnosed | the specification and generated properties (the publish count), `a_superseded_change_publishes_nothing` |
+| a sync's diagnostics superseded by a path-equal URI, not the same URI | the specification and generated properties |
+| documents compared by URI, not path-equal | the generated property (the second URI of `A`) |
+| a handled message's shape forgotten when the plan is made again | `a_handled_change_still_refuses_the_request_it_superseded` |
+| a refusal that runs the request anyway | the generated property's count of requests run, once `lsp.request` was opened inside `handle_request` (added for it) |
+| the loop reading only when the epoch begins | `the_loop_reads_again_before_each_message_it_handles` (added for it) |
+| an epoch of one message (no coalescing) | both loop tests |
+| text syncs after `shutdown` applied | `the_plan_is_its_specification` |
+| a cancellation not reaching the sweep in flight | `a_refresh_held_for_a_cancelled_sweep_is_released` |
+| the two refusal codes swapped | the generated property, `the_loop_reads_every_waiting_message_before_it_handles_one`, `cancel_request_ends_the_sweep` |
+| an acknowledged `shutdown` forgotten by the next epoch | the generated property (the sequential session's later epochs) |
+| the input read straight from the transport's rendezvous channel (Codex) | `a_burst_behind_a_rendezvous_transport_is_planned_together` (added for it) |
+
+Two plants first passed every test. A refusal that ran the request anyway
+called `handle_request` outside the `lsp.request` span the property counted,
+which the dispatcher opened around its own call; the span moved into
+`handle_request`, so any path that runs a request opens it. The loop reading
+only when the epoch began passed because every loop test queued its whole
+script before the loop started; `the_loop_reads_again_before_each_message_it_handles`
+sends its change from a `tracing` subscriber at the end of the first
+generation. Plants of the planner's lifecycle rules (syncs applied after
+`shutdown`) are caught by the specification property alone: the generated
+property's sequential session runs the same planner one message at a time,
+so the two agree on any rule both apply.
+
+**Departures.**
+
+- **Requests run after every notification read**, not in arrival order
+  (decision 1). The plan's three rules leave a request on one document
+  computed against another's superseded text.
+- **The loop reads again before each step**, not once per batch, and plans
+  the whole epoch again, handled messages included, whenever a message
+  joins it. So a change that arrives while the loop works on an earlier
+  message refuses every request not yet run that it supersedes.
+- **A superseded `didOpen` is not diagnosed either**, as a superseded
+  `didChange` is not; a `didClose` always clears what its document
+  published, since that computes nothing.
+- **A notification after `shutdown`** is dropped without a generation; it
+  had one, in which it did nothing.
+- **`ContentModified` despite LSP 3.17's advice** (decision 2).
+- **The input is buffered.** The plan assumed the channel the loop drains
+  holds what the client has sent; `lsp-server`'s stdio transport holds one
+  message at a time, so the server buffers its input itself.
+- **Two sweep tests drive a `Dispatcher`** rather than a pre-queued script
+  (above), and `Dispatcher` is public so that tests can hand it batches of
+  their choosing.
+
+**Measured** on WoofWare.Incremental, each row the minimum over three runs of
+each binary: Stage 7 (81e3227c, the head that squash-merged as 38f7f1f8,
+with this stage's `edit_counts`) and this stage. The keystroke script ran 20
+keystrokes per run; the burst mode (`EDIT_COUNTS_BURST=n`: `n` keystrokes,
+each with the requests a pull client sends after it, all queued while the
+server is held between two messages) ran 5 bursts of 4 and 3 bursts of 16
+per run. The on-disk assembly cache is off. `edit_counts` runs the loop over
+an in-memory connection, so every message the client has sent is waiting;
+behind stdio the input buffer makes that so up to the time to decode each
+message.
+
+| message, per keystroke | instructions 7 | 8 | allocs 7 | 8 |
+|---|---:|---:|---:|---:|
+| `didChange E` | 0.02 M | 0.01 M | 30 | 52 |
+| `diagnostic E` | 3.47 M | 3.54 M | 248 | 265 |
+| `diagnostic L` (`unchanged`) | 2.73 M | 2.73 M | 84 | 102 |
+| `semanticTokens E` | 9.85 M | 9.77 M | 5,010 | 5,027 |
+| `semanticTokens L` | 13.85 M | 13.63 M | 11,450 | 11,468 |
+| `hover L` | 8.96 M | 8.90 M | 3,886 | 3,912 |
+| **keystroke total** | **39.11 M** | **38.72 M** | 20,708 | 20,826 |
+
+A keystroke arrives alone, so nothing coalesces: its cost moves by 1%, about
+what runs of one binary differ by, and each message allocates 17 to 22 more
+times (its parsed form, its shape, the plan).
+
+| burst, whole | instructions 7 | 8 | allocs 7 | 8 | folds 7 | 8 | parses 7 | 8 | answered with a result 7 | 8 | `ContentModified` 8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 keystrokes | 153.1 M | **88.8 M** | 82,592 | 29,737 | 8 | **1** | 4 | **1** | 20 | 14 | 6 |
+| 16 keystrokes | 609.5 M | **298.1 M** | 330,300 | 76,408 | 32 | **1** | 16 | **1** | 80 | 50 | 30 |
+
+A burst folds and parses once, and every request on `E` but the last
+keystroke's is answered `ContentModified`. The plan's expected gain (a burst
+costs one keystroke's requests) is not reached: the requests on `L`, whose
+text never changes, are not superseded by anything, so each keystroke's
+`diagnostic L`, `semanticTokens L` and `hover L` still run, against the one
+fold, about 17 M per keystroke after the first ((298.1 − 38.7) / 15). A
+client that cancels a request it repeats has those answered
+`RequestCancelled`; a server that answered identical requests once per
+epoch would not need it (see the open gaps).
+
+**Open gaps.**
+
+- Identical requests on an unchanged document within one epoch each run
+  (the burst's requests on `L`); answering them once per epoch, against one
+  state, would make a burst cost one keystroke's requests.
+- A request does not run while notifications keep arriving: a client that
+  never pauses its notifications starves its requests. Each notification is
+  cheap (a pull client's `didChange` is about 0.01 M), so this needs a client
+  sending faster than that.
+- At the epoch's bound (4,096 messages) a request can run while a newer
+  change to its document waits unread.
+- A text change landing while a `workspace/diagnostic` sweep is in flight
+  does not restart it; the report converges through the refresh the change
+  owes, as before.
+- A refused request that would have found a fold refusal does not report it;
+  the next request that folds the project does.
+- Behind stdio, what the loop finds waiting is what the input thread has
+  decoded when it looks: a message still being decoded misses the plan. No
+  test drives the real binary over stdio with a burst, since the outcome
+  depends on that timing; the rendezvous test holds the buffer to taking a
+  whole burst eagerly.
+
 ### Stage 9 (gated): requests on a snapshot
 
 **Dependencies**: Stage 8 and its measurement. **Implements**: D6's second
@@ -3187,6 +3434,34 @@ stage is built. Otherwise it is not, and the measurement is recorded here.
 On today's numbers the wait is a whole re-fold, so the gate fails unless
 Stages 3b–7 make the post-save fold far cheaper than a cold one. Writing it
 down now means measurement decides, not preference.
+
+**Measured after Stage 8: the gate fails, so this stage is built.**
+`EDIT_COUNTS_SCRIPT=blocked-edit` (`crates/lsp/examples/edit_counts.rs`)
+does steps 1–4 as fixed above. It holds the server at the MSBuild evaluation
+`semanticTokens L` makes, queues `didChange E` and `diagnostic E` then, so
+the edit arrives while the request runs, and measures from before
+`semanticTokens L` is sent to the settle after `diagnostic E`'s answer. Each
+round adds the symbol to the `.fsproj` or takes it away again, so every
+round re-evaluates; "alone" is the same edit and pull on their own, measured
+after the round once the rewritten file is past the racy window. The
+`.fsproj` is a private copy of each corpus project (the script writes it).
+Five runs of five rounds each, under `nix develop` on macOS, the minimum of
+each row:
+
+| project | `semanticTokens L` .. `diagnostic E` | `didChange E` + `diagnostic E` alone | **the edit waited** | budget |
+|---|---:|---:|---:|---:|
+| WoofWare.Incremental (82 items) | 3,446.1 M | 3.7 M | **3,437.2 M** | 50 M |
+| WoofWare.PawPrint.Domain (34 items) | 3,910.7 M | 8.6 M | **3,901.9 M** | 50 M |
+
+Both exceed the budget by about 70 times. In every round the request
+re-evaluates the project (115 files opened), builds an env (`a.built` 1)
+and folds once from cold (`f.new` 1). The env is rebuilt because its read
+set holds the entry project's `.fsproj` text (Stage 7's open gap: an
+evaluation re-run to new defines rebuilds the env too), and that is most of
+the wait. Without it the wait would still be a cold fold, which costs at least
+0.62 G on WoofWare.Incremental (the cold pass's `semanticTokens L`, which
+folds only the items after `E`, over a built env), twelve times the budget. Stage 8
+cannot shorten either, since the edit arrives while the request runs.
 
 If built: a worker runs semantic requests against a cloned `Vfs` and the memo
 tables behind a lock. The dispatch thread applies edits and answers syntactic

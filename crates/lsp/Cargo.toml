@@ -14,6 +14,9 @@ borzoi-nuget.workspace = true
 borzoi-sema.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
+# `server::buffer_input`'s bounded channel, the type `lsp-server`'s
+# `Connection` carries.
+crossbeam-channel.workspace = true
 # lsp-types' `Uri` has no file-path conversion; `uri` delegates it (and URI
 # parsing) to `url`, so path <-> URI behaviour is the WHATWG one.
 url.workspace = true

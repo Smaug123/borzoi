@@ -401,6 +401,36 @@ impl<D: Disk> DiskCache<D> {
     }
 }
 
+/// The [`Vfs::buffer_paths`] key of a `file:` URI: its lexically normalised
+/// path under the platform's case rule ([`path_dedup_key`]).
+fn file_key(uri: &Uri) -> Option<String> {
+    let path = uri.to_file_path().ok()?;
+    Some(path_dedup_key(&lexically_normalize(&path)))
+}
+
+/// Which document a URI names, as far as its text goes: two `file:` URIs
+/// share a key exactly when their paths are path-equal, which is when
+/// [`Vfs::text_of`] reads one buffer for both, and any other URI is a key of
+/// its own. A text sync of one URI can change the text a request on another
+/// reads only if the two share a key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DocumentKey {
+    /// A `file:` URI, by its lexically normalised path under the platform's
+    /// case rule.
+    Path(String),
+    /// Any other URI, by its spelling.
+    Uri(String),
+}
+
+impl DocumentKey {
+    pub fn of(uri: &Uri) -> DocumentKey {
+        match file_key(uri) {
+            Some(key) => DocumentKey::Path(key),
+            None => DocumentKey::Uri(uri.as_str().to_owned()),
+        }
+    }
+}
+
 /// The client's open buffers, and what every other source held on disk.
 #[derive(Debug, Default)]
 pub struct Vfs<D: Disk = HostDisk> {
@@ -447,16 +477,10 @@ impl<D: Disk> Vfs<D> {
         }
     }
 
-    /// The [`Self::buffer_paths`] key of a `file:` URI.
-    fn buffer_key(uri: &Uri) -> Option<String> {
-        let path = uri.to_file_path().ok()?;
-        Some(path_dedup_key(&lexically_normalize(&path)))
-    }
-
     /// Record the client's text for `uri`.
     pub fn insert(&mut self, uri: Uri, text: String) {
         if !self.buffers.contains_key(&uri)
-            && let Some(key) = Self::buffer_key(&uri)
+            && let Some(key) = file_key(&uri)
         {
             self.buffer_paths.entry(key).or_default().push(uri.clone());
         }
@@ -466,7 +490,7 @@ impl<D: Disk> Vfs<D> {
     /// Forget the client's text for `uri`, returning it.
     pub fn remove(&mut self, uri: &Uri) -> Option<Arc<str>> {
         let text = self.buffers.remove(uri)?;
-        if let Some(key) = Self::buffer_key(uri)
+        if let Some(key) = file_key(uri)
             && let hash_map::Entry::Occupied(mut uris) = self.buffer_paths.entry(key)
         {
             uris.get_mut().retain(|open| open != uri);

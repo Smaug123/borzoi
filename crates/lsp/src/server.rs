@@ -17,13 +17,13 @@ use std::thread::JoinHandle;
 use borzoi_cst::language_version::LanguageVersion;
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
-    Cancel, DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument,
-    DidOpenTextDocument, Exit, Notification as NotificationTrait, PublishDiagnostics, ShowMessage,
+    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
+    Notification as NotificationTrait, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
     Completion, DocumentDiagnosticRequest, DocumentSymbolRequest, GotoDefinition, HoverRequest,
     References, RegisterCapability, Request as RequestTrait, SemanticTokensFullRequest,
-    SemanticTokensRefresh, Shutdown, WorkspaceDiagnosticRefresh, WorkspaceDiagnosticRequest,
+    SemanticTokensRefresh, WorkspaceDiagnosticRefresh, WorkspaceDiagnosticRequest,
     WorkspaceSymbolRequest,
 };
 use lsp_types::{
@@ -40,6 +40,7 @@ use lsp_types::{
     TextDocumentSyncKind,
 };
 
+use crate::batch::{Incoming, Refusal, Shape, Step as BatchStep, TextSync};
 use crate::diagnostics::FileDiagnostics;
 use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
@@ -683,12 +684,20 @@ pub fn run(connection: Connection, state: State) -> Result<(), Box<dyn Error + S
 
 /// The dispatch loop: pull messages off the connection and route them to the
 /// request / notification handlers. Returns cleanly when the peer sends
-/// `shutdown` then `exit`, or hangs up.
+/// `exit`, or hangs up.
+///
+/// Before it handles a message, the loop reads every message waiting on the
+/// connection, and it decides what to do with what it holds by
+/// [`crate::batch::plan`]: notifications first, a superseded text sync applied
+/// without its diagnostics, a cancelled request answered `RequestCancelled`
+/// and a request whose document has a newer change answered
+/// `ContentModified`, neither of them run. The [`Dispatcher`] executes the
+/// plan one step at a time, reading the connection again before each.
 ///
 /// `state` is owned for the lifetime of the loop. `main.rs` constructs it
 /// (and stamps it with the client's capabilities) before calling in; tests
-/// drive their own state directly through the handlers rather than this
-/// loop.
+/// drive their own state directly through the handlers, or a [`Dispatcher`]
+/// through batches of their choosing, rather than this loop.
 ///
 /// Shutdown is handled inline (rather than via `Connection::handle_shutdown`)
 /// because we send an outstanding `client/registerCapability` request: a late
@@ -702,173 +711,391 @@ pub fn run(connection: Connection, state: State) -> Result<(), Box<dyn Error + S
 /// pool, and go-to-definition never defers, so behaviour is identical to before.
 pub fn run_with_fetcher(
     connection: Connection,
-    mut state: State,
+    state: State,
     fetcher: Option<Arc<dyn SourceFetcher>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    // Ask the client to watch the project-structure / source files we react to
-    // (only when it supports dynamic registration). Fire-and-forget: the
-    // client's response to this request is ignored below.
-    if let Some(params) = state.watched_files_registration() {
-        send_request::<RegisterCapability>(
-            &connection,
-            RequestId::from("borzoi/register-watched-files".to_string()),
-            params,
-        );
-    }
-    // The deferred-SourceLink-fetch worker pool, built only when a fetcher is
-    // configured — so a `--no-default-features` (no-`sourcelink-fetch`) build
-    // (and every fetch-free test) spawns zero threads. Dropped on every return
-    // path below, which closes the queue and joins the workers (see
-    // `FetchPool::drop`).
-    let pool = fetcher
-        .map(|fetcher| FetchPool::new(&connection, fetcher, FETCH_WORKERS, FETCH_QUEUE_DEPTH));
-    // Once the client has sent `shutdown`, the LSP lifecycle forbids servicing
-    // further requests/notifications (only `exit` is honoured), so we stop
-    // dispatching and don't mutate caches or publish. We track this ourselves
-    // rather than using `Connection::handle_shutdown` because the latter rejects
-    // the (possibly late) `client/registerCapability` response that arrives in
-    // the shutdown→exit window.
-    let mut shutting_down = false;
-    // The `workspace/diagnostic` sweep in flight, if any. At most one: a newer
-    // request supersedes it. While it is set the loop never blocks on the
-    // connection — it polls, and steps the sweep whenever nothing is waiting —
-    // so any message waits behind at most one sweep step.
-    let mut sweep: Option<InFlightSweep> = None;
+    let mut dispatcher = Dispatcher::start(&connection, state, fetcher);
     loop {
-        let msg = match sweep.take() {
-            None => match connection.receiver.recv() {
-                Ok(msg) => msg,
-                // The peer hung up.
-                Err(_) => break,
-            },
-            Some(in_flight) => match connection.receiver.try_recv() {
-                Ok(msg) => {
-                    sweep = Some(in_flight);
-                    msg
-                }
-                // The peer hung up: nobody is left to read the report.
-                Err(err) if err.is_disconnected() => break,
-                Err(_) => {
-                    // A sweep step is a unit of work of its own, so it is a
-                    // generation of its own.
-                    state.begin_generation();
-                    let stepped = advance_sweep(&mut state, &connection, in_flight);
-                    respond_to_moved_evaluations(&mut state, &connection);
-                    state.end_generation();
-                    sweep = stepped?;
-                    continue;
-                }
-            },
-        };
-        // Each message is handled in a generation of its own: what its
-        // handling reads from disk is counted against it
-        // ([`crate::observed`]).
-        state.begin_generation();
-        match msg {
-            Message::Request(req) => {
-                if req.method == Shutdown::METHOD {
-                    shutting_down = true;
-                    // Answer the sweep before acknowledging: no request may be
-                    // left unanswered once the lifecycle forbids servicing it.
-                    if let Some(old) = sweep.take() {
-                        server_cancel(&connection, old)?;
+        if !dispatcher.has_pending() {
+            // Nothing read is left to handle: wait for a message, or, while a
+            // `workspace/diagnostic` sweep is in flight, poll for one and step
+            // the sweep whenever nothing is waiting, so any message waits
+            // behind at most one sweep step.
+            let first = if dispatcher.sweep_in_flight() {
+                match connection.receiver.try_recv() {
+                    Ok(msg) => msg,
+                    // The peer hung up: nobody is left to read the report.
+                    Err(err) if err.is_disconnected() => break,
+                    Err(_) => {
+                        dispatcher.step_sweep(&connection)?;
+                        continue;
                     }
-                    // Acknowledge with a `null` result; the spec then expects an
-                    // `exit` notification, which ends the loop below.
-                    connection
-                        .sender
-                        .send(Message::Response(ok_response(req.id, &())))?;
-                } else if shutting_down {
-                    // Requests after `shutdown` are invalid per the lifecycle.
-                    connection.sender.send(Message::Response(err_response(
-                        req.id,
-                        lsp_server::ErrorCode::InvalidRequest,
-                        "received a request after shutdown".to_string(),
-                    )))?;
-                } else {
-                    let method = req.method.clone();
-                    let dispatch = {
-                        let _request_span =
-                            tracing::info_span!("lsp.request", method = %method).entered();
-                        handle_request(&mut state, req)
-                    };
-                    respond_to_moved_evaluations(&mut state, &connection);
-                    // Before the reply, not after: a fold refusal is *why* this
-                    // reply is degraded, and an explanation that arrives after
-                    // the disappointing answer reads as unrelated. The fold
-                    // itself has no way to reach the client, so the shell
-                    // reports what it observed.
-                    refresh_project_deferrals(&mut state, &connection);
-                    match dispatch {
-                        // Synchronous request: reply immediately, as before.
-                        Dispatch::Reply(response) => {
-                            enqueue_response(&connection, &method, response)?;
-                        }
-                        // Cold SourceLink fetch: hand to the pool, which replies
-                        // out-of-band when it completes. The loop never blocks on
-                        // the network.
-                        Dispatch::Defer { id, pending } => {
-                            dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
-                        }
-                        // A sweep: the loop steps it while idle and replies when
-                        // it completes. A client that asks again has given up on
-                        // the older one.
-                        Dispatch::Sweep { id, sweep: started } => {
-                            if let Some(old) = sweep.replace(InFlightSweep::new(id, started)) {
-                                server_cancel(&connection, old)?;
-                            }
-                        }
-                    }
-                    maybe_send_refresh(&mut state, &connection, SweepStatus::of(&sweep));
                 }
-            }
-            Message::Notification(not) => {
-                if not.method == Exit::METHOD {
-                    // Any sweep in flight is abandoned unanswered: `exit` ends
-                    // the session.
-                    return Ok(());
+            } else {
+                match connection.receiver.recv() {
+                    Ok(msg) => msg,
+                    // The peer hung up.
+                    Err(_) => break,
                 }
-                // Drop every other notification once shutting down — no cache
-                // mutation or diagnostic publishing after `shutdown`.
-                if !shutting_down {
-                    if not.method == Cancel::METHOD {
-                        // Every other request is answered before the next
-                        // message is read, so the sweep is all there is to
-                        // cancel.
-                        if let Some(in_flight) = sweep.take() {
-                            sweep = cancel_sweep_if_named(&connection, in_flight, &not)?;
-                        }
-                    } else {
-                        handle_notification(&mut state, &connection, not);
-                        respond_to_moved_evaluations(&mut state, &connection);
-                    }
-                    // A notification can invalidate pull diagnostics or stale
-                    // an open buffer's semantic tokens without any fold, so
-                    // drain refresh work here too, not only after requests —
-                    // including a diagnostic refresh a just-cancelled sweep
-                    // was holding.
-                    maybe_send_refresh(&mut state, &connection, SweepStatus::of(&sweep));
-                    refresh_project_deferrals(&mut state, &connection);
-                }
-            }
-            Message::Response(resp) => {
-                // A refresh reply clears the in-flight slot and lets the next owed
-                // refresh (if any) go out. Any other response (the one-shot
-                // `registerCapability`, or a late/stray one) carries nothing we act
-                // on, and must not abort a shutdown.
-                handle_refresh_reply(
-                    &mut state,
-                    &connection,
-                    &resp.id,
-                    shutting_down,
-                    SweepStatus::of(&sweep),
-                );
-            }
+            };
+            dispatcher.admit([first]);
         }
-        state.end_generation();
+        // Everything else already waiting joins the plan before the next
+        // step runs.
+        let room = MAX_PENDING.saturating_sub(dispatcher.pending_len());
+        dispatcher.admit(connection.receiver.try_iter().take(room));
+        if dispatcher.step(&connection)? == Progress::Exit {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// How many decoded messages [`buffer_input`] holds ahead of the loop.
+pub const INPUT_BUFFER: usize = 1024;
+
+/// `receiver`'s messages, taken as soon as they arrive by a thread of their
+/// own and held in a buffer of [`INPUT_BUFFER`] for the loop to read.
+///
+/// `lsp-server`'s stdio transport hands each message over a rendezvous
+/// channel and reads the next from stdin only once the last was taken. Read
+/// directly, a burst the client has sent would sit in stdin while the loop
+/// handles its first message, and the loop would find nothing waiting to plan
+/// with it ([`crate::batch`]). The buffer decodes eagerly, so what the loop
+/// finds waiting is what the client has sent, up to the bound. A full buffer
+/// holds the reader back, so a client further ahead waits in stdin. The
+/// thread ends when the input ends or the loop drops the buffer.
+pub fn buffer_input(
+    receiver: crossbeam_channel::Receiver<Message>,
+) -> crossbeam_channel::Receiver<Message> {
+    let (sender, buffered) = crossbeam_channel::bounded(INPUT_BUFFER);
+    std::thread::Builder::new()
+        .name("borzoi-input".to_string())
+        .spawn(move || {
+            for message in receiver {
+                if sender.send(message).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn the input thread");
+    buffered
+}
+
+/// The most messages one epoch holds, handled or not ([`crate::batch`]).
+/// Once it holds this many the loop reads no more until it has handled them
+/// all and the epoch ends, which bounds the plan's size and its cost (linear
+/// in the messages held, paid again each time more arrive). A client this far
+/// ahead is pathological; what the bound gives up is coalescing across the
+/// boundary, and a request may then run while a newer change waits unread.
+const MAX_PENDING: usize = 4096;
+
+/// What [`Dispatcher::step`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Progress {
+    /// It handled one message.
+    Handled,
+    /// It had nothing left to handle.
+    Idle,
+    /// It handled `exit`: the session is over.
+    Exit,
+}
+
+/// The dispatch loop's state between messages: the server [`State`], where
+/// the lifecycle stands, the `workspace/diagnostic` sweep in flight, the
+/// deferred-fetch pool, and the messages read and not yet handled (the epoch,
+/// [`crate::batch`]) with the plan for them.
+///
+/// [`run_with_fetcher`] reads the connection and calls [`Self::admit`],
+/// [`Self::step`] and [`Self::step_sweep`]; a test can call them with batches
+/// of its own choosing.
+pub struct Dispatcher {
+    state: State,
+    /// Dropped with the dispatcher, which closes its queue and joins its
+    /// workers (see `FetchPool::drop`).
+    pool: Option<FetchPool>,
+    /// Once the client has sent `shutdown`, the LSP lifecycle forbids
+    /// servicing further requests/notifications (only `exit` is honoured), so
+    /// nothing mutates caches or publishes. Tracked here rather than through
+    /// `Connection::handle_shutdown`, which rejects the (possibly late)
+    /// `client/registerCapability` response that arrives in the
+    /// shutdown→exit window.
+    shutting_down: bool,
+    /// The `workspace/diagnostic` sweep in flight, if any. At most one: a newer
+    /// request supersedes it.
+    sweep: Option<InFlightSweep>,
+    /// The messages of the current epoch in arrival order, each taken when it
+    /// is handled.
+    epoch: Vec<Option<Incoming>>,
+    /// What the plan reads of each of them, kept after it is handled: a
+    /// handled text sync still refuses an earlier request it superseded.
+    shapes: Vec<Shape>,
+    /// Whether `shutdown` was acknowledged before the epoch began.
+    epoch_shutting_down: bool,
+    /// [`crate::batch::plan`] of [`Self::epoch`], made again whenever a
+    /// message joins it.
+    plan: Vec<BatchStep>,
+}
+
+impl Dispatcher {
+    /// A dispatcher over `state`, having asked the client to watch the
+    /// project-structure and source files the server reacts to (only when
+    /// it supports dynamic registration; fire-and-forget: the client's
+    /// response is ignored). The deferred-SourceLink-fetch worker pool is
+    /// built only when a fetcher is configured, so a
+    /// `--no-default-features` build (and every fetch-free test) spawns zero
+    /// threads.
+    pub fn start(
+        connection: &Connection,
+        state: State,
+        fetcher: Option<Arc<dyn SourceFetcher>>,
+    ) -> Self {
+        if let Some(params) = state.watched_files_registration() {
+            send_request::<RegisterCapability>(
+                connection,
+                RequestId::from("borzoi/register-watched-files".to_string()),
+                params,
+            );
+        }
+        let pool = fetcher
+            .map(|fetcher| FetchPool::new(connection, fetcher, FETCH_WORKERS, FETCH_QUEUE_DEPTH));
+        Dispatcher {
+            state,
+            pool,
+            shutting_down: false,
+            sweep: None,
+            epoch: Vec::new(),
+            shapes: Vec::new(),
+            epoch_shutting_down: false,
+            plan: Vec::new(),
+        }
     }
 
-    Ok(())
+    /// Read `messages` into the epoch, after what it holds, and plan it
+    /// again.
+    pub fn admit(&mut self, messages: impl IntoIterator<Item = Message>) {
+        if !self.has_pending() {
+            self.end_epoch();
+        }
+        let before = self.epoch.len();
+        for message in messages {
+            let message = Incoming::read(message);
+            self.shapes.push(message.shape());
+            self.epoch.push(Some(message));
+        }
+        if self.epoch.len() > before {
+            self.plan = crate::batch::plan(&self.shapes, self.epoch_shutting_down);
+        }
+    }
+
+    /// Forget the epoch, every message of which is handled, and begin the
+    /// next.
+    fn end_epoch(&mut self) {
+        self.epoch.clear();
+        self.shapes.clear();
+        self.plan.clear();
+        self.epoch_shutting_down = self.shutting_down;
+    }
+
+    /// How many messages the epoch holds, handled or not.
+    pub fn pending_len(&self) -> usize {
+        self.epoch.len()
+    }
+
+    /// Whether some message read is not yet handled.
+    pub fn has_pending(&self) -> bool {
+        self.next_step().is_some()
+    }
+
+    /// The first step of the plan whose message is not yet handled.
+    fn next_step(&self) -> Option<BatchStep> {
+        self.plan
+            .iter()
+            .copied()
+            .find(|step| self.epoch[step.index()].is_some())
+    }
+
+    /// Whether a `workspace/diagnostic` sweep is in flight.
+    pub fn sweep_in_flight(&self) -> bool {
+        self.sweep.is_some()
+    }
+
+    /// Handle the next message of the plan, or end the epoch when every
+    /// message of it is handled.
+    pub fn step(
+        &mut self,
+        connection: &Connection,
+    ) -> Result<Progress, Box<dyn Error + Send + Sync>> {
+        let Some(step) = self.next_step() else {
+            self.end_epoch();
+            return Ok(Progress::Idle);
+        };
+        let message = self.epoch[step.index()]
+            .take()
+            .expect("the next step's message is not yet handled");
+        self.execute(connection, step, message)
+    }
+
+    /// Do one step of the sweep in flight: a unit of work of its own, so a
+    /// generation of its own.
+    pub fn step_sweep(
+        &mut self,
+        connection: &Connection,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let Some(in_flight) = self.sweep.take() else {
+            return Ok(());
+        };
+        self.state.begin_generation();
+        let stepped = advance_sweep(&mut self.state, connection, in_flight);
+        respond_to_moved_evaluations(&mut self.state, connection);
+        self.state.end_generation();
+        self.sweep = stepped?;
+        Ok(())
+    }
+
+    /// Do `step` to `message`, the epoch message it names. Each step that
+    /// reads or changes the state does so in a generation of its own: what
+    /// its handling reads from disk is counted against it
+    /// ([`crate::observed`]). A refusal reads nothing.
+    fn execute(
+        &mut self,
+        connection: &Connection,
+        step: BatchStep,
+        message: Incoming,
+    ) -> Result<Progress, Box<dyn Error + Send + Sync>> {
+        let state = &mut self.state;
+        match (step, message) {
+            (BatchStep::Exit { .. }, Incoming::Exit) => {
+                // Any sweep in flight is abandoned unanswered: `exit` ends the
+                // session.
+                return Ok(Progress::Exit);
+            }
+            (BatchStep::Refuse { refusal, .. }, Incoming::Request { request, .. }) => {
+                let (code, message) = match refusal {
+                    Refusal::Cancelled => (
+                        lsp_server::ErrorCode::RequestCanceled,
+                        "cancelled by the client before it ran",
+                    ),
+                    Refusal::ContentModified => (
+                        lsp_server::ErrorCode::ContentModified,
+                        "the document changed before the request ran",
+                    ),
+                    Refusal::AfterShutdown => (
+                        lsp_server::ErrorCode::InvalidRequest,
+                        "received a request after shutdown",
+                    ),
+                };
+                connection.sender.send(Message::Response(err_response(
+                    request.id,
+                    code,
+                    message.to_string(),
+                )))?;
+                return Ok(Progress::Handled);
+            }
+            (step, message) => {
+                state.begin_generation();
+                match (step, message) {
+                    (BatchStep::Sync { diagnose, .. }, Incoming::Sync(sync)) => {
+                        apply_text_sync(state, connection, sync, diagnose);
+                        respond_to_moved_evaluations(state, connection);
+                        // A text sync can invalidate pull diagnostics or stale
+                        // an open buffer's semantic tokens without any fold,
+                        // so refresh work is drained here too, not only after
+                        // requests.
+                        maybe_send_refresh(state, connection, SweepStatus::of(&self.sweep));
+                        refresh_project_deferrals(state, connection);
+                    }
+                    (BatchStep::Notify { .. }, Incoming::Cancel(id)) => {
+                        // A request read in this epoch is refused by the plan;
+                        // any other request but the sweep has been answered
+                        // already, so the sweep is all there is to cancel.
+                        if let Some(in_flight) = self.sweep.take() {
+                            self.sweep = cancel_sweep_if_named(connection, in_flight, id.as_ref())?;
+                        }
+                        // Including a diagnostic refresh a just-cancelled
+                        // sweep was holding.
+                        maybe_send_refresh(state, connection, SweepStatus::of(&self.sweep));
+                        refresh_project_deferrals(state, connection);
+                    }
+                    (BatchStep::Notify { .. }, Incoming::Notification(notification)) => {
+                        handle_other_notification(state, connection, notification);
+                        respond_to_moved_evaluations(state, connection);
+                        maybe_send_refresh(state, connection, SweepStatus::of(&self.sweep));
+                        refresh_project_deferrals(state, connection);
+                    }
+                    (BatchStep::Reply { .. }, Incoming::Response(response)) => {
+                        // A refresh reply clears the in-flight slot and lets
+                        // the next owed refresh (if any) go out. Any other
+                        // response (the one-shot `registerCapability`, or a
+                        // late/stray one) carries nothing we act on, and must
+                        // not abort a shutdown.
+                        handle_refresh_reply(
+                            state,
+                            connection,
+                            &response.id,
+                            self.shutting_down,
+                            SweepStatus::of(&self.sweep),
+                        );
+                    }
+                    (BatchStep::Shutdown { .. }, Incoming::Shutdown(id)) => {
+                        self.shutting_down = true;
+                        // Answer the sweep before acknowledging: no request may
+                        // be left unanswered once the lifecycle forbids
+                        // servicing it.
+                        if let Some(old) = self.sweep.take() {
+                            server_cancel(connection, old)?;
+                        }
+                        // Acknowledge with a `null` result; the spec then
+                        // expects an `exit` notification.
+                        connection
+                            .sender
+                            .send(Message::Response(ok_response(id, &())))?;
+                    }
+                    (BatchStep::Run { .. }, Incoming::Request { request, .. }) => {
+                        let method = request.method.clone();
+                        let dispatch = handle_request(state, request);
+                        respond_to_moved_evaluations(state, connection);
+                        // Before the reply, not after: a fold refusal is *why*
+                        // this reply is degraded, and an explanation that
+                        // arrives after the disappointing answer reads as
+                        // unrelated. The fold itself has no way to reach the
+                        // client, so the shell reports what it observed.
+                        refresh_project_deferrals(state, connection);
+                        match dispatch {
+                            // Synchronous request: reply immediately.
+                            Dispatch::Reply(response) => {
+                                enqueue_response(connection, &method, response)?;
+                            }
+                            // Cold SourceLink fetch: hand to the pool, which
+                            // replies out-of-band when it completes. The loop
+                            // never blocks on the network.
+                            Dispatch::Defer { id, pending } => {
+                                dispatch_fetch(connection, self.pool.as_ref(), id, pending)?;
+                            }
+                            // A sweep: the loop steps it while idle and replies
+                            // when it completes. A client that asks again has
+                            // given up on the older one.
+                            Dispatch::Sweep { id, sweep: started } => {
+                                if let Some(old) =
+                                    self.sweep.replace(InFlightSweep::new(id, started))
+                                {
+                                    server_cancel(connection, old)?;
+                                }
+                            }
+                        }
+                        maybe_send_refresh(state, connection, SweepStatus::of(&self.sweep));
+                    }
+                    (step, message) => {
+                        unreachable!(
+                            "the plan's {step:?} names a message of another kind: {message:?}"
+                        )
+                    }
+                }
+                state.end_generation();
+            }
+        }
+        Ok(Progress::Handled)
+    }
 }
 
 /// Tell the client what a dropped project evaluation may have staled, as a
@@ -958,21 +1185,15 @@ fn advance_sweep(
     }
 }
 
-/// Answer `in_flight` with a `$/cancelRequest`'s `RequestCancelled` if `cancel`
-/// names it, returning `None`; otherwise hand it back untouched. A malformed
-/// cancellation names nothing.
+/// Answer `in_flight` with a `$/cancelRequest`'s `RequestCancelled` if the
+/// cancellation names it (`named`), returning `None`; otherwise hand it back
+/// untouched. A malformed cancellation names nothing.
 fn cancel_sweep_if_named(
     connection: &Connection,
     in_flight: InFlightSweep,
-    cancel: &Notification,
+    named: Option<&RequestId>,
 ) -> Result<Option<InFlightSweep>, Box<dyn Error + Send + Sync>> {
-    let named = serde_json::from_value::<lsp_types::CancelParams>(cancel.params.clone())
-        .ok()
-        .map(|params| match params.id {
-            lsp_types::NumberOrString::Number(n) => RequestId::from(n),
-            lsp_types::NumberOrString::String(s) => RequestId::from(s),
-        });
-    if named.as_ref() != Some(&in_flight.id) {
+    if named != Some(&in_flight.id) {
         return Ok(Some(in_flight));
     }
     connection.sender.send(Message::Response(err_response(
@@ -1199,7 +1420,11 @@ pub enum Dispatch {
 /// network the dispatch loop must not block on), `workspace/diagnostic` starts a
 /// sweep (unbounded work the loop must not block on); every other request
 /// replies synchronously.
+///
+/// Every run opens the `lsp.request` span, whoever calls it: a request
+/// answered without running opens none.
 pub fn handle_request(state: &mut State, req: Request) -> Dispatch {
+    let _request_span = tracing::info_span!("lsp.request", method = %req.method).entered();
     if req.method == WorkspaceDiagnosticRequest::METHOD {
         let id = req.id.clone();
         return match extract::<WorkspaceDiagnosticRequest>(req) {
@@ -1336,69 +1561,88 @@ pub struct WatchedChangeEffect {
     pub republish: Vec<Uri>,
 }
 
+/// Handle one notification as the loop does when nothing supersedes it: a
+/// text sync applied with its diagnostics, anything else by
+/// `handle_other_notification`. A cancellation or `exit` does nothing here:
+/// the loop handles those itself.
 pub fn handle_notification(state: &mut State, conn: &Connection, not: Notification) {
-    let _span = tracing::info_span!("lsp.notification", method = %not.method).entered();
-    match not.method.as_str() {
-        DidOpenTextDocument::METHOD => {
-            if let Ok(params) = extract_notification::<DidOpenTextDocument>(not) {
-                let uri = params.text_document.uri;
-                state.docs.insert(uri.clone(), params.text_document.text);
-                state.note_source_sync(&uri);
-                publish_diagnostics(conn, state, &uri);
-                extend_deferral_scope(state, &uri);
-            }
-        }
-        DidChangeTextDocument::METHOD => {
-            if let Ok(params) = extract_notification::<DidChangeTextDocument>(not) {
-                // FULL sync: exactly one change holding the full document text.
-                if let Some(change) = params.content_changes.into_iter().next_back() {
-                    let uri = params.text_document.uri;
-                    state.docs.insert(uri.clone(), change.text);
-                    state.note_source_sync(&uri);
-                    publish_diagnostics(conn, state, &uri);
-                }
-            }
-        }
-        DidCloseTextDocument::METHOD => {
-            if let Ok(params) = extract_notification::<DidCloseTextDocument>(not) {
-                let uri = params.text_document.uri;
-                state.docs.remove(&uri);
-                state.note_source_sync(&uri);
-                shrink_deferral_scope(state, &uri);
-                if !state.supports_pull_diagnostics() {
-                    // Clear this document's own diagnostics and any it had
-                    // relocated onto other files via `#line` directives.
-                    for params in state.publish.plan_close(&uri) {
-                        send_notification::<PublishDiagnostics>(conn, params);
-                    }
-                }
-            }
-        }
-        DidChangeWatchedFiles::METHOD => {
-            if let Ok(params) = extract_notification::<DidChangeWatchedFiles>(not) {
-                // Hint the caches, then refresh every open buffer through the
-                // negotiated delivery path. Push clients receive new
-                // notifications; pull clients read the fresh project context
-                // on their next request.
-                let effect = state.apply_watched_changes(&params.changes);
-                for uri in &effect.republish {
-                    publish_diagnostics(conn, state, uri);
-                }
-                // Only a *structural* change can move which project compiles a
-                // file (a new `<Compile>` entry, a deleted `.fsproj`). The batch
-                // also carries ordinary `.fs`/`.dll`/`.csproj` events — every
-                // save, every build — and recomputing on those would walk every
-                // open buffer's ancestors for nothing.
-                //
-                // After `apply_watched_changes`, which is what hints the
-                // workspace: recomputing first would trust the pre-change
-                // listings and Compile lists and record the old owner.
-                if effect.structural {
-                    recompute_deferral_scope(state);
-                }
-            }
-        }
+    match Incoming::read(Message::Notification(not)) {
+        Incoming::Sync(sync) => apply_text_sync(state, conn, sync, true),
+        Incoming::Notification(not) => handle_other_notification(state, conn, not),
         _ => {}
+    }
+}
+
+/// Apply a text sync to the buffers and record what it owes the client.
+/// `diagnose` is whether a push client is sent the document's diagnostics now:
+/// not when a later text sync of the same URI, already read, supersedes this
+/// one ([`crate::batch`]), since that one publishes for the text that stands.
+/// A close clears what the document published whatever `diagnose` says: that
+/// computes nothing.
+fn apply_text_sync(state: &mut State, conn: &Connection, sync: TextSync, diagnose: bool) {
+    let method = match &sync {
+        TextSync::Open { .. } => DidOpenTextDocument::METHOD,
+        TextSync::Change { .. } => DidChangeTextDocument::METHOD,
+        TextSync::Close { .. } => DidCloseTextDocument::METHOD,
+    };
+    let _span = tracing::info_span!("lsp.notification", method).entered();
+    match sync {
+        TextSync::Open { uri, text } => {
+            state.docs.insert(uri.clone(), text);
+            state.note_source_sync(&uri);
+            if diagnose {
+                publish_diagnostics(conn, state, &uri);
+            }
+            extend_deferral_scope(state, &uri);
+        }
+        TextSync::Change { uri, text } => {
+            state.docs.insert(uri.clone(), text);
+            state.note_source_sync(&uri);
+            if diagnose {
+                publish_diagnostics(conn, state, &uri);
+            }
+        }
+        TextSync::Close { uri } => {
+            state.docs.remove(&uri);
+            state.note_source_sync(&uri);
+            shrink_deferral_scope(state, &uri);
+            if !state.supports_pull_diagnostics() {
+                // Clear this document's own diagnostics and any it had
+                // relocated onto other files via `#line` directives.
+                for params in state.publish.plan_close(&uri) {
+                    send_notification::<PublishDiagnostics>(conn, params);
+                }
+            }
+        }
+    }
+}
+
+/// Handle a notification that is neither a text sync, a cancellation nor
+/// `exit`.
+fn handle_other_notification(state: &mut State, conn: &Connection, not: Notification) {
+    let _span = tracing::info_span!("lsp.notification", method = %not.method).entered();
+    if not.method == DidChangeWatchedFiles::METHOD
+        && let Ok(params) = extract_notification::<DidChangeWatchedFiles>(not)
+    {
+        // Hint the caches, then refresh every open buffer through the
+        // negotiated delivery path. Push clients receive new notifications;
+        // pull clients read the fresh project context on their next request.
+        let effect = state.apply_watched_changes(&params.changes);
+        for uri in &effect.republish {
+            publish_diagnostics(conn, state, uri);
+        }
+        // Only a *structural* change can move which project compiles a file
+        // (a new `<Compile>` entry, a deleted `.fsproj`). The batch also
+        // carries ordinary `.fs`/`.dll`/`.csproj` events — every save, every
+        // build — and recomputing on those would walk every open buffer's
+        // ancestors for nothing.
+        //
+        // After `apply_watched_changes`, which is what hints the workspace:
+        // recomputing first would trust the pre-change listings and Compile
+        // lists and record the old owner.
+        if effect.structural {
+            recompute_deferral_scope(state);
+        }
     }
 }
 

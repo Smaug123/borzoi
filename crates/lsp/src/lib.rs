@@ -1,4 +1,5 @@
 pub mod assembly_cache;
+pub mod batch;
 pub mod csharp_sidecar;
 pub mod cst_panic_safe;
 pub mod diagnostics;

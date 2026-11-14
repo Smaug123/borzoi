@@ -33,6 +33,10 @@ borzoi-sema = { path = "crates/sema" }
 borzoi-spawn = { path = "crates/spawn" }
 borzoi-stats = { path = "tools/stats" }
 
+# A bounded channel for the LSP's input buffer (`borzoi::server::buffer_input`);
+# already in the tree through `lsp-server`, whose `Connection` carries its
+# channels.
+crossbeam-channel = "0.5"
 ena = "0.14"
 # Pure-Rust deflate via miniz_oxide. `default-features = false` plus the
 # `rust_backend` feature avoids dragging in `libz-sys` / native zlib.
