@@ -2622,6 +2622,15 @@ The oracle:
   `a_racy_stamp_holds_while_its_bytes_do_on_the_host` (`read_checks`) hold
   `Read::still_holds` and `ReadChecks::holds` to it, including the settled
   stamp that later confirms by a `stat`.
+- `env_validation` also holds an in-place change to an import inside an
+  installed SDK version, with its event, to reaching the env through the
+  entry's evaluation (`a_watched_change_to_an_installed_import_reaches_the_env`),
+  and a package version deleted whole, without one, to being seen
+  (`a_removed_package_version_is_seen_without_an_event`).
+- `a_failed_whole_file_read_holds_while_it_keeps_failing_on_the_host`
+  (`read_checks`): an unreadable DLL's stamp holds while the read keeps
+  failing, and fails once it succeeds; a `stat` that failed and then
+  succeeds, the file still unreadable, fails.
 - Unit tests whose subject the stage changed were rewritten to the new rule,
   not loosened: `a_dropped_env_forces_a_cold_refold` (was
   `assembly_state_invalidation_forces_cold_refold`),
@@ -2632,7 +2641,51 @@ The oracle:
   `pdb_image_cache_computes_once_per_stamp_and_caches_the_negative`. New:
   `a_trust_opt_in_change_drops_every_env`.
 
-<<PLANTS>>
+Planted, each caught, then removed:
+
+| plant | caught by |
+|---|---|
+| no confirmation (a cached env served as it is, as on 6a) | the generated assembly test, the pinned scripts, four `env_validation` tests |
+| the fold's fast path not confirming its env | the generated assembly test, the pinned scripts |
+| a dropped env owing no refresh | the pinned scripts (what a client displays) |
+| watch events not reaching `hint_assembly_paths` | `a_watched_change_drops_only_an_env_that_read_its_path`, `a_watched_rebuild_rebuilds_only_the_env_that_reads_it`, `watched_assembly_refresh_e2e` |
+| `named_by` blind to the paths an env read | the same three, `a_dropped_env_forces_a_cold_refold` |
+| no event mark (an event not widening the next confirmation) | `an_event_widens_the_next_confirmation_to_installed_contents` |
+| the widened confirmation skipping the installed contents | `an_event_widens_the_next_confirmation_to_installed_contents` |
+| the graph walk absorbing the entry's checks, not its whole read set | `a_watched_change_to_an_installed_import_reaches_the_env` (added for it) |
+| `invalidate_assembly_state` dropping nothing | `the_broad_invalidations_drop_only_an_env_with_an_unrecorded_reader`, the C# e2e |
+| `invalidate_all` keeping an env with an unrecorded reader | `the_broad_invalidations_drop_only_an_env_with_an_unrecorded_reader` |
+| a NuGet settings event keeping every env (Codex) | `a_watched_change_drops_only_an_env_that_read_its_path` |
+| the env ignoring the entry evaluation's roots | three `env_validation`/`env_read_set_soundness` tests |
+| the env ignoring the assets file's package folders | `an_env_trusts_a_package_only_once_it_was_committed`, `an_event_widens_the_next_confirmation_to_installed_contents` |
+| a package trusted before its commit marker | `an_env_trusts_a_package_only_once_it_was_committed` |
+| everything under a dotnet root trusted, not only version contents | both new `env_read_set_soundness` tests |
+| a trusted version's existence not confirmed | `a_removed_package_version_is_seen_without_an_event` (added for it) |
+| a racy stamp holding on a digest mismatch | `a_racy_stamp_holds_while_its_bytes_do_on_the_host`, the pinned scripts |
+| `Read::still_holds` ignoring the digest | `a_racy_whole_file_read_holds_while_its_bytes_do`, the stamp test |
+| no digest recorded | both racy-content tests, the stamp test, every generated state-machine test (the refresh loop) |
+| a settled stamp trusted without comparing | `a_racy_stamp_holds_while_its_bytes_do_on_the_host` |
+| the pre-cache stamp recorded on a miss | the stamp test, every generated state-machine test (the refresh loop) |
+| the assembly cache asked under a racy stamp (Codex) | the stamp test (once it rewrote a DLL with its mtime put back) |
+| an unreadable read asked as a `stat` (Codex), in either crate | `a_failed_whole_file_read_holds_while_it_keeps_failing_on_the_host` |
+| a generation number trusted under another workspace (Codex) | `an_env_made_under_another_workspace_is_built_again` (once its build and the replacement's first generation shared a number) |
+| checks confirmed through another workspace's checker | `an_env_made_under_another_workspace_is_built_again` |
+| `pdb_images` keyed by path alone | `pdb_image_cache_computes_once_per_stamp_and_caches_the_negative` |
+| `pdb_images` kept on an assembly event (Codex) | the same |
+| the restore opt-in keeping every env | `a_trust_opt_in_change_drops_every_env` |
+
+Four plants first passed every test, and the tests named against them were
+added or extended until each failed: the entry's checks absorbed rather
+than its reads, a version's existence not confirmed, the cache asked under a
+racy stamp, and a generation number trusted under another workspace. The
+last one also found a defect: a confirmation outside a generation recorded
+`None` as the generation that confirmed the env, which made the test pass by
+accident; it now leaves the last generation's record standing. One plant is
+not a defect: `drop_env` not dropping the folds against an env. The fold's
+fast path finds no entry for that env, drops the env again and folds anew,
+and the inferred and incremental-base folds are reused only against the same
+env by identity; `drop_env` clears them to bound memory.
+
 
 **Measured** on WoofWare.Incremental, each row the minimum over three runs
 of each binary: Stage 6a (a055f302, with this stage's `edit_counts` scripts)

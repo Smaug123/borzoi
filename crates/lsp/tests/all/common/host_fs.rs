@@ -30,6 +30,15 @@ pub fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     std::fs::canonicalize(path)
 }
 
+/// Set the file's modification time, as an extraction that keeps an
+/// archive's times does.
+pub fn set_modified(path: impl AsRef<Path>, time: std::time::SystemTime) -> std::io::Result<()> {
+    std::fs::File::options()
+        .write(true)
+        .open(path)?
+        .set_modified(time)
+}
+
 /// The `Path` probes, under names that do not collide with the inherent
 /// methods (which would win method resolution).
 pub trait HostPath {

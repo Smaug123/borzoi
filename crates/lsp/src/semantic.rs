@@ -1288,8 +1288,10 @@ impl SemanticState {
                 self.drop_env(&env);
                 return None;
             }
-            entry.confirmed_in = generation;
+            // Outside a generation nothing was confirmed: the record of the
+            // last generation that did stands.
             if generation.is_some() {
+                entry.confirmed_in = generation;
                 entry.event_since = false;
             }
         }

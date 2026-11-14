@@ -70,6 +70,9 @@ struct Fixture {
     /// A file inside the `Foo` package version `App` reads from, which `App`
     /// itself never reads.
     foo_doc: PathBuf,
+    /// The import inside an installed SDK version that gives `App` its
+    /// reference to `Lib`.
+    refs: PathBuf,
 }
 
 fn fixture() -> Fixture {
@@ -104,11 +107,23 @@ fn fixture() -> Fixture {
     );
     let lib_dll = root.join(format!("Lib/bin/Debug/{TFM}/Lib.dll"));
     write(&lib_dll, &console);
+    // App's reference to Lib comes through an import inside an installed SDK
+    // version, whose contents an evaluation trusts rather than confirms.
+    let refs = root.join("dotnet/sdk/10.0.100/Sdks/Stub/refs.props");
+    write(
+        &refs,
+        format!(
+            "<Project><ItemGroup><ProjectReference Include=\"{}\" /></ItemGroup></Project>\n",
+            lib.display()
+        )
+        .as_bytes(),
+    );
     let app = root.join("App/App.fsproj");
     write(
         &app,
         format!(
-            "<Project><PropertyGroup><TargetFramework>{TFM}</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include=\"../Lib/Lib.fsproj\" /></ItemGroup></Project>\n"
+            "<Project><PropertyGroup><TargetFramework>{TFM}</TargetFramework></PropertyGroup><Import Project=\"{}\" /></Project>\n",
+            refs.display()
         )
         .as_bytes(),
     );
@@ -135,6 +150,7 @@ fn fixture() -> Fixture {
         other,
         lib_dll,
         foo_doc,
+        refs,
     }
 }
 
@@ -396,8 +412,10 @@ fn an_env_made_under_another_workspace_is_built_again() {
         state.end_generation();
         env
     };
+    // Built in the first generation, numbered as the replacement's first
+    // will be.
     let other = generation(&mut state);
-    assert!(Arc::ptr_eq(&other, &generation(&mut state)));
+    assert!(Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
     state.workspace = Workspace::with_env(SdkDiscoveryEnv {
         dotnet_root: Some(fixture.root.join("dotnet")),
         ..SdkDiscoveryEnv::default()
@@ -425,5 +443,40 @@ fn a_removed_package_version_is_seen_without_an_event() {
     assert!(
         !Arc::ptr_eq(&app, &generation(&mut state)),
         "a package version deleted whole left the env standing"
+    );
+}
+
+/// An env depends on what the evaluations its graph walk consulted read,
+/// the installed contents they trust included: an in-place change to the
+/// import inside an installed SDK version that gave `App` its reference to
+/// `Lib`, with its watch event, reaches `App`'s env, which no longer folds
+/// `Lib`'s output.
+#[test]
+fn a_watched_change_to_an_installed_import_reaches_the_env() {
+    let fixture = fixture();
+    let mut state = state(&fixture);
+    outwait_racy_stamps();
+    let dlls = |state: &mut State| {
+        state.begin_generation();
+        let root = state.workspace.dotnet_root_for_project(&fixture.app);
+        let tfm = state.workspace.served_tfm_for_project(&fixture.app);
+        let (dlls, _) = state.semantic.env_reference_dlls_for_project(
+            &fixture.app,
+            root.as_deref(),
+            &tfm,
+            &state.workspace,
+        );
+        state.end_generation();
+        dlls
+    };
+    assert!(
+        dlls(&mut state).contains(&fixture.lib_dll),
+        "precondition: App folds Lib through the installed import"
+    );
+    write(&fixture.refs, b"<Project />\n");
+    state.apply_watched_changes(&[changed(&fixture.refs)]);
+    assert!(
+        !dlls(&mut state).contains(&fixture.lib_dll),
+        "App's env kept a reference its installed import no longer makes"
     );
 }

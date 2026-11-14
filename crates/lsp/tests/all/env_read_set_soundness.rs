@@ -642,6 +642,36 @@ fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
             );
         }
         assert_eq!(reads.reads.first_stale(), None);
+        if cached {
+            // The same bytes written again with their modification time put
+            // back (as an extraction that keeps an archive's times does):
+            // the cache keys on size and modification time, so it holds a
+            // projection for them, but the change time is new and the stamp
+            // racy. A projection served under a racy stamp could never be
+            // confirmed again, so the DLL is read, and its stamp carries a
+            // digest.
+            let mtime = host_fs::metadata(&pack_dll).unwrap().modified().unwrap();
+            std::fs::write(&pack_dll, &system_runtime).unwrap();
+            host_fs::set_modified(&pack_dll, mtime).unwrap();
+            let (_, again) = run();
+            let pack_stamp = again
+                .reads
+                .reads()
+                .iter()
+                .find_map(|read| match &read.observation {
+                    Observation::Stamp(Ok(stamp)) if read.path == pack_dll => Some(*stamp),
+                    _ => None,
+                })
+                .expect("the env stamps the pack's DLL");
+            assert!(
+                pack_stamp.racy,
+                "precondition: the rewrite left a racy stamp"
+            );
+            assert!(
+                pack_stamp.digest.is_some(),
+                "a racy DLL stamp a cache hit rests on carries no digest"
+            );
+        }
         std::fs::write(&pack_dll, b"a rewritten dll").unwrap();
         assert!(
             reads.reads.first_stale().is_some(),
