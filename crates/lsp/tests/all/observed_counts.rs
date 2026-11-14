@@ -16,6 +16,10 @@
 //! of those directories: a pull of a file `d` directories below its project
 //! pins that.
 //!
+//! A source is parsed once per text (Stage 5): a keystroke's diagnostics
+//! parse the edited buffer through the parse memo, and the fold the next
+//! request builds reads that parse rather than parsing again.
+//!
 //! The project is written just before the server starts, so every stamp would
 //! be racy ([`borzoi::vfs::RACY_WINDOW`]) and re-read in every generation; the
 //! server's clock is set ahead ([`Clock::HostAhead`]) so the files read as
@@ -28,6 +32,7 @@ use std::thread;
 use std::time::Duration;
 
 use borzoi::observed::Generation;
+use borzoi::parses::ParseCounts;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
 use borzoi::uri::UriExt as _;
@@ -481,6 +486,179 @@ proptest! {
         prop_assert_eq!(
             second_pull_ownership(depth, keystroke, racy()),
             (directories, directories)
+        );
+    }
+}
+
+/// What the parse memo did for each stretch of messages after a comment
+/// keystroke in `edited`, in a project of `n` items with `other` open too:
+/// the keystroke, then (a pull client) the edited document's diagnostics,
+/// then the edited document's semantic tokens, then the other's.
+fn keystroke_parses(n: usize, edited: usize, other: usize, pull: bool) -> Vec<ParseCounts> {
+    let tmp = TempDir::new().unwrap();
+    let (items, mut texts) = project(tmp.path(), n);
+    let mut client = Client::start(tmp.path(), pull, settled());
+    let uri = |i: usize| Uri::from_file_path(&items[i]).unwrap();
+    for i in [edited, other] {
+        client.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": uri(i).as_str(), "languageId": "fsharp", "version": 0, "text": texts[i],
+            }}),
+        );
+    }
+    client.settle();
+    let request = |client: &mut Client, method: &str, i: usize| {
+        client.request(
+            method,
+            json!({ "textDocument": { "uri": uri(i).as_str() } }),
+        );
+        client.settle();
+    };
+    // Warm everything: the fold, and both documents' diagnostics.
+    request(&mut client, "textDocument/semanticTokens/full", edited);
+    if pull {
+        request(&mut client, "textDocument/diagnostic", edited);
+        request(&mut client, "textDocument/diagnostic", other);
+    }
+    let parses_since = |client: &mut Client, from: usize| {
+        let generations = client.generations();
+        let counts = generations[from..]
+            .iter()
+            .fold(ParseCounts::default(), |sum, g| ParseCounts {
+                parsed: sum.parsed + g.parses.parsed,
+                reused: sum.reused + g.parses.reused,
+            });
+        (counts, generations.len())
+    };
+    let mut stretches = Vec::new();
+    let mark = client.generations().len();
+    texts[edited].push_str("// typed");
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": uri(edited).as_str(), "version": 1 },
+            "contentChanges": [{ "text": texts[edited] }],
+        }),
+    );
+    client.settle();
+    let (counts, mut mark) = parses_since(&mut client, mark);
+    stretches.push(counts);
+    if pull {
+        request(&mut client, "textDocument/diagnostic", edited);
+        let (counts, next) = parses_since(&mut client, mark);
+        stretches.push(counts);
+        mark = next;
+    }
+    for i in [edited, other] {
+        request(&mut client, "textDocument/semanticTokens/full", i);
+        let (counts, next) = parses_since(&mut client, mark);
+        stretches.push(counts);
+        mark = next;
+    }
+    client.shut_down();
+    stretches
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+
+    /// A keystroke parses the edited text once. Its diagnostics parse it,
+    /// from `didChange` for a push client and from the diagnostic request
+    /// for a pull client, and the fold the edited document's semantic tokens
+    /// build reuses that parse; the other document's request reads the fold
+    /// built for the first and parses nothing.
+    #[test]
+    fn a_keystroke_parses_the_edited_text_once((n, edited, other, pull) in cases()) {
+        let parsed_once = ParseCounts { parsed: 1, reused: 0 };
+        let reused_once = ParseCounts { parsed: 0, reused: 1 };
+        let nothing = ParseCounts::default();
+        let want = if pull {
+            vec![nothing, parsed_once, reused_once, nothing]
+        } else {
+            vec![parsed_once, reused_once, nothing]
+        };
+        prop_assert_eq!(keystroke_parses(n, edited, other, pull), want);
+    }
+}
+
+/// What the parse memo did for each request on a buffer no project owns,
+/// after a pull of its diagnostics parsed it: hover, definition, references,
+/// document symbols, semantic tokens and workspace symbols, each answered by
+/// single-file analysis.
+fn orphan_request_parses() -> Vec<(&'static str, ParseCounts)> {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("A.fs");
+    let text = "module A\n\nlet a = 1\nlet b = a + 1\n";
+    std::fs::write(&file, text).unwrap();
+    let mut client = Client::start(tmp.path(), true, settled());
+    let uri = Uri::from_file_path(&file).unwrap();
+    client.notify(
+        "textDocument/didOpen",
+        json!({ "textDocument": {
+            "uri": uri.as_str(), "languageId": "fsharp", "version": 0, "text": text,
+        }}),
+    );
+    client.settle();
+    let document = json!({ "uri": uri.as_str() });
+    let at_use = json!({ "textDocument": document, "position": { "line": 3, "character": 8 } });
+    let requests: Vec<(&'static str, Value)> = vec![
+        (
+            "textDocument/diagnostic",
+            json!({ "textDocument": document }),
+        ),
+        ("textDocument/hover", at_use.clone()),
+        ("textDocument/definition", at_use.clone()),
+        (
+            "textDocument/references",
+            json!({
+                "textDocument": document,
+                "position": { "line": 3, "character": 8 },
+                "context": { "includeDeclaration": true },
+            }),
+        ),
+        (
+            "textDocument/documentSymbol",
+            json!({ "textDocument": document }),
+        ),
+        (
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": document }),
+        ),
+        ("workspace/symbol", json!({ "query": "a" })),
+    ];
+    let mut stretches = Vec::new();
+    for (method, params) in requests {
+        let mark = client.generations().len();
+        client.request(method, params);
+        client.settle();
+        let counts = client.generations()[mark..]
+            .iter()
+            .fold(ParseCounts::default(), |sum, g| ParseCounts {
+                parsed: sum.parsed + g.parses.parsed,
+                reused: sum.reused + g.parses.reused,
+            });
+        stretches.push((method, counts));
+    }
+    client.shut_down();
+    stretches
+}
+
+/// Single-file analysis reads the parse the diagnostics made: after the pull
+/// parses the buffer, no request on it parses again, and each reads a parse
+/// the memo holds.
+#[test]
+fn single_file_requests_reuse_the_diagnostics_parse() {
+    let stretches = orphan_request_parses();
+    let (first, rest) = stretches.split_first().unwrap();
+    assert_eq!(
+        first.1.parsed, 1,
+        "the pull parses the buffer: {stretches:?}"
+    );
+    for (method, counts) in rest {
+        assert!(
+            counts.parsed == 0 && counts.reused > 0,
+            "{method} parsed again or read no parse: {stretches:?}"
         );
     }
 }

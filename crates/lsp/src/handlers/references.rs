@@ -23,7 +23,9 @@
 //! sticking with the previous answer.
 
 use crate::uri::UriExt as _;
+use borzoi_cst::parser::FileKind;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AppExpr, AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
@@ -33,7 +35,6 @@ use borzoi_sema::{
 };
 use lsp_types::{Location, ReferenceParams, Uri};
 
-use crate::cst_panic_safe::parse_with_symbols;
 use crate::handlers::{indexed_range_to_lsp, preferred_uri, smallest_resolution_with_range};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
@@ -392,7 +393,7 @@ fn matching_in_file(
 fn single_file_references(
     state: &mut State,
     uri: &Uri,
-    text: &str,
+    text: &Arc<str>,
     byte: usize,
     include_declaration: bool,
 ) -> ReferencesAnswer {
@@ -404,13 +405,12 @@ fn single_file_references(
         project_files: 1,
         scan: ReferenceScan::empty(),
     };
-    let symbols = state.symbols_for_uri(uri);
-    let lang = state.lang_version_for_uri(uri);
-    let Some(parse) = parse_with_symbols(text, &symbols, lang) else {
+    let source = state.parse_buffer(uri, text, FileKind::Impl);
+    let Some(parse) = source.parse() else {
         return empty("parse_error");
     };
     let recovery = SyntaxRecovery::without_inference();
-    let Some(file) = ImplFile::cast(parse.root) else {
+    let Some(file) = ImplFile::cast(parse.root.clone()) else {
         return empty("unsupported_file");
     };
     let resolved = resolve_file(

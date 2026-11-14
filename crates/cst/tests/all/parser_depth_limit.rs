@@ -422,6 +422,48 @@ fn legal_depth_nested_module_is_clean() {
     assert_clean(nested_modules(LEGAL));
 }
 
+/// A parse that gives up on depth still reports what the preprocessor did:
+/// the depth error replaces the parser's diagnostics, not the lexer's, so a
+/// lex error, an unmatched `#endif`, an unclosed `#if` and a `#line` beside
+/// the breach are still carried for the LSP's diagnostics.
+#[test]
+fn a_breaching_parse_keeps_the_preprocessor_report() {
+    let src = format!(
+        "#line 3 \"g.fs\"\nlet s = `\n#endif\n{}\n#if X\n",
+        nested_parens(BREACH)
+    );
+    let symbols = std::collections::HashSet::new();
+    let (errors, report) = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn({
+            let src = src.clone();
+            move || {
+                let parsed = borzoi_cst::parser::parse_with_symbols(&src, &symbols);
+                (
+                    parsed
+                        .errors
+                        .iter()
+                        .map(|e| e.message.clone())
+                        .collect::<Vec<_>>(),
+                    parsed.preprocessor,
+                )
+            }
+        })
+        .expect("spawn parse thread")
+        .join()
+        .expect("parse thread overflowed its stack");
+    assert!(
+        errors.len() == 1 && errors[0].contains("too deep"),
+        "precondition: the parse breaches, got {errors:?}"
+    );
+    let want = borzoi_cst::directives::preprocess(&src, &std::collections::HashSet::new());
+    assert!(
+        want.errors.len() >= 3 && want.line_directives != Default::default(),
+        "precondition: the source has a lex error, two directive errors and a `#line`: {want:?}"
+    );
+    assert_eq!(report, want);
+}
+
 /// A declaration keyword after a deep chain of open `let` contexts: the lex
 /// filter's type-nesting check for `open`/`type`/`module`/`exception` walks the
 /// whole offside stack before the parser's depth guard runs, so the walk must

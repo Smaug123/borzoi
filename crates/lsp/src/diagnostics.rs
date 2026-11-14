@@ -1,46 +1,50 @@
-//! Token-stream diagnostics for `textDocument/publishDiagnostics`.
+//! Syntactic diagnostics for `textDocument/publishDiagnostics` and the pull
+//! model: what the lexer, the preprocessor and the parser report about one
+//! parse of a buffer ([`syntactic_diagnostics`]).
 //!
-//! Pure function over source text + active preprocessor symbols: drive
-//! [`borzoi_cst::directives::lex_with_symbols`] so `#if`/`#elif`
-//! branches that the symbol set rules out are not lexed (and so cannot
-//! produce diagnostics), then translate every reported
-//! [`PreprocError`](borzoi_cst::directives::PreprocError) into an LSP
-//! `Range` via its `diagnostic_message` / `reporting_span`. Positions are
-//! reported in UTF-16 code units, the
-//! default LSP position encoding (we don't yet read
-//! `general.positionEncodings` from the client during initialise).
+//! The parse is the memoised one ([`crate::parses::ParseMemo`]), and it
+//! records the preprocessor's report from the lex it made
+//! ([`borzoi_cst::parser::Parse::preprocessor`]), so the diagnostics need no
+//! lex of their own. Positions are reported in UTF-16 code units, the default
+//! LSP position encoding (we don't yet read `general.positionEncodings` from
+//! the client during initialise).
 //!
-//! Both lex errors and structural preprocessor errors are surfaced:
-//! malformed directive lines (`#if (`), unbalanced directives
-//! (`UnmatchedEndIf`, `OrphanElse`, `OrphanElif`), bad chains
+//! The first producer is the preprocessor's: every error the symbol-aware
+//! driver ([`borzoi_cst::directives::lex_with_symbols`]) reports, translated
+//! into an LSP `Range` via its `diagnostic_message` / `reporting_span`.
+//! `#if`/`#elif` branches that the symbol set rules out are not lexed, so they
+//! cannot produce diagnostics. Both lex errors and structural preprocessor
+//! errors are surfaced: malformed directive lines (`#if (`), unbalanced
+//! directives (`UnmatchedEndIf`, `OrphanElse`, `OrphanElif`), bad chains
 //! (`DoubleElse`, `ElifAfterElse`), and `#if` left unclosed at EOF. The
-//! driver already gates these on branch activity — directive-body and
-//! chain errors only reach us from active contexts, while orphan /
-//! unmatched / unclosed errors are structural and always reported — so
-//! the symbol-aware suppression that holds for lex errors holds here too.
+//! driver already gates these on branch activity — directive-body and chain
+//! errors only reach us from active contexts, while orphan / unmatched /
+//! unclosed errors are structural and always reported — so the symbol-aware
+//! suppression that holds for lex errors holds here too.
 //!
-//! [`parse_diagnostics`] adds a second producer: structural errors from
-//! the recursive-descent parser, run panic-safely and published next to
-//! the lexer diagnostics above. The parser is conditional-compilation aware
-//! — it consumes the directive driver with the *same* symbol set, so dead
-//! `#if` branches and the directive lines are trivia (not squiggles) while a
-//! syntax error in the **active** branch is still reported. It does *not*
-//! re-report what [`diagnostics_for`] owns: structural directive errors are
-//! filtered out of its raw stream (so an orphan `#endif` yields no parser
-//! diagnostic at all), and the spurious structural *cascade* the productions
-//! emit around an active-branch lex error — a token that fails to lex can't
-//! be parsed as an expression — is dropped where it overlaps the lexer's
-//! diagnostic, so a lexically-broken token squiggles once, not thrice.
+//! The second producer is the recursive-descent parser's structural errors,
+//! run panic-safely and published next to the preprocessor's. The parser is
+//! conditional-compilation aware — it consumes the directive driver with the
+//! *same* symbol set, so dead `#if` branches and the directive lines are
+//! trivia (not squiggles) while a syntax error in the **active** branch is
+//! still reported. It does *not* re-report what the first producer owns:
+//! structural directive errors the parser also lists are dropped where they
+//! overlap the preprocessor's, and so is the spurious structural *cascade*
+//! the productions emit around an active-branch lex error — a token that
+//! fails to lex can't be parsed as an expression — so a lexically-broken
+//! token squiggles once, not thrice.
 
 use std::collections::HashSet;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ops::Range as Span;
+use std::sync::Arc;
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, Range};
 
-use borzoi_cst::directives::{LineDirectiveStore, lex_with_symbols};
+use borzoi_cst::directives::{LineDirectiveStore, PreprocError, preprocess};
 use borzoi_cst::language_version::LanguageVersion;
-use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
+use borzoi_cst::parser::{FileKind, Parse};
 
+use crate::parses::SourceParse;
 use crate::position::LineIndex;
 
 /// Which top-level F# grammar a buffer is parsed under. A `.fsi` signature file
@@ -52,10 +56,20 @@ use crate::position::LineIndex;
 /// "expected `=`" error).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SourceKind {
-    /// `.fs` / `.fsx` — `parse_with_symbols` (the `IMPL_FILE` grammar).
+    /// `.fs` / `.fsx` — the `IMPL_FILE` grammar.
     Implementation,
-    /// `.fsi` — `parse_sig_with_symbols` (the `SIG_FILE` grammar).
+    /// `.fsi` — the `SIG_FILE` grammar.
     Signature,
+}
+
+impl SourceKind {
+    /// The parser's name for the grammar.
+    pub fn file_kind(self) -> FileKind {
+        match self {
+            SourceKind::Implementation => FileKind::Impl,
+            SourceKind::Signature => FileKind::Sig,
+        }
+    }
 }
 
 /// Diagnostics destined for a single file. `file == None` is the document's
@@ -74,47 +88,88 @@ pub struct FileDiagnostics {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// The full diagnostic set for an F# buffer, **partitioned by the virtual
-/// file** each diagnostic's start line maps to under the active-branch
-/// `#line` directives. Element 0 is always the same-file group
+/// The full diagnostic set for one parse of an F# buffer, **partitioned by
+/// the virtual file** each diagnostic's start line maps to under the
+/// active-branch `#line` directives. Element 0 is always the same-file group
 /// (`file: None`); cross-file groups follow in first-appearance order of
 /// their verbatim file string, one group per distinct string.
 ///
-/// The preprocessor producer ([`diagnostics_for`]) and the parser producer
-/// ([`parse_diagnostics`]) are combined, then each diagnostic governed by a
-/// `#line N "f"` is routed into `f`'s group (remapped onto `f`'s virtual
-/// coordinates), while same-file and undirected diagnostics stay in the
-/// `None` group. The server's F# branch calls this and hands the partition to
+/// The preprocessor's diagnostics and the parser's are combined, then each
+/// diagnostic governed by a `#line N "f"` is routed into `f`'s group
+/// (remapped onto `f`'s virtual coordinates), while same-file and undirected
+/// diagnostics stay in the `None` group. The server's F# branch calls this on
+/// the memoised parse and hands the partition to
 /// [`crate::publish::PublishState`], which publishes each group under its own
 /// URI.
+pub fn syntactic_diagnostics(source: &SourceParse) -> Vec<FileDiagnostics> {
+    let lines = LineIndex::new(source.text());
+    let preprocessed = source.preprocessed();
+    let mut diags = {
+        let _s = tracing::info_span!("lex_diagnostics").entered();
+        preprocessor_diagnostics(&preprocessed.errors, &lines)
+    };
+    {
+        let _s = tracing::info_span!("parse_diagnostics").entered();
+        match source.parse() {
+            Some(parse) => diags.extend(parser_diagnostics(parse, &preprocessed.errors, &lines)),
+            None => {
+                crate::log_warn!("parser panicked; skipping parser diagnostics for this buffer");
+            }
+        }
+    }
+    let _s = tracing::info_span!("line_directive_group").entered();
+    group_by_line_directives(diags, &preprocessed.line_directives)
+}
+
+/// [`syntactic_diagnostics`] of a fresh parse of `text`.
 pub fn grouped_diagnostics(
     text: &str,
     symbols: &HashSet<String>,
     kind: SourceKind,
     lang: LanguageVersion,
 ) -> Vec<FileDiagnostics> {
-    let mut diags = {
-        let _s = tracing::info_span!("lex_diagnostics").entered();
-        diagnostics_for(text, symbols)
-    };
-    {
-        let _s = tracing::info_span!("parse_diagnostics").entered();
-        diags.extend(parse_diagnostics(text, symbols, kind, lang));
-    }
-    let _s = tracing::info_span!("line_directive_group").entered();
-    group_by_line_directives(diags, &line_directive_store(text, symbols))
+    syntactic_diagnostics(&SourceParse::new(
+        Arc::from(text),
+        kind.file_kind(),
+        symbols,
+        lang,
+    ))
 }
 
+/// The preprocessor's diagnostics for `text` under `symbols` alone, from a
+/// lex of its own: the first of the two producers [`syntactic_diagnostics`]
+/// combines.
 pub fn diagnostics_for(text: &str, symbols: &HashSet<String>) -> Vec<Diagnostic> {
-    let lines = LineIndex::new(text);
-    lex_with_symbols(text, symbols)
-        .filter_map(|(tok, span)| {
-            let err = match tok {
-                Ok(_) => return None,
-                Err(e) => e,
-            };
-            let range = err.reporting_span(span);
-            Some(Diagnostic {
+    preprocessor_diagnostics(&preprocess(text, symbols).errors, &LineIndex::new(text))
+}
+
+/// The parser's diagnostics for a fresh parse of `text`: the second of the
+/// two producers [`syntactic_diagnostics`] combines. A parser panic yields
+/// none.
+pub fn parse_diagnostics(
+    text: &str,
+    symbols: &HashSet<String>,
+    kind: SourceKind,
+    lang: LanguageVersion,
+) -> Vec<Diagnostic> {
+    let source = SourceParse::new(Arc::from(text), kind.file_kind(), symbols, lang);
+    match source.parse() {
+        Some(parse) => parser_diagnostics(parse, &parse.preprocessor.errors, &LineIndex::new(text)),
+        None => Vec::new(),
+    }
+}
+
+/// Every preprocessor error as an LSP diagnostic, at its
+/// [`reporting_span`](PreprocError::reporting_span).
+fn preprocessor_diagnostics(
+    errors: &[(PreprocError, Span<usize>)],
+    lines: &LineIndex<'_>,
+) -> Vec<Diagnostic> {
+    errors
+        .iter()
+        .map(|(err, span)| {
+            let range = err.reporting_span(span.clone());
+            Diagnostic {
                 range: Range {
                     start: lines.position(range.start),
                     end: lines.position(range.end),
@@ -123,91 +178,58 @@ pub fn diagnostics_for(text: &str, symbols: &HashSet<String>) -> Vec<Diagnostic>
                 source: Some("borzoi".to_string()),
                 message: err.diagnostic_message(),
                 ..Default::default()
-            })
+            }
         })
         .collect()
 }
 
-/// Structural diagnostics from the recursive-descent parser, published
-/// alongside [`diagnostics_for`].
+/// The parse's structural diagnostics, less what the preprocessor's `errors`
+/// already report.
 ///
-/// The parser is run panic-safely. It is still very incomplete, so on
-/// arbitrary input one of its internal invariant guards may fire; a panic
-/// degrades to "no parser diagnostics for this buffer" — the lexer
-/// diagnostics still stand — rather than taking the server down.
-///
-/// Errors [`diagnostics_for`] already owns are *not* re-reported here. The
-/// parser parses the same active branches (it shares `symbols`), so dead
-/// branches and directive lines are trivia, never parser errors, and
-/// structural directive errors are filtered out of its raw stream — those
-/// belong solely to `diagnostics_for`. What still needs suppressing is the
-/// parser's *spurious structural cascade* around an **active-branch lex
-/// error**: a token that fails to lex can't be parsed as an expression, so
-/// the productions emit one or more structural errors at the lex-error span.
-/// Any parser error whose span overlaps a span `diagnostics_for` reports is
-/// dropped, so the user sees the lexer's single diagnostic there, not the
-/// cascade. (`reported_spans` covers every preproc-error span, not just lex
-/// ones: the parser now *also* surfaces directive errors — at the same
-/// [`reporting_span`](borzoi_cst::directives::PreprocError::reporting_span)
-/// this producer uses — so they fall in this
-/// overlap-dedup and the user sees `diagnostics_for`'s single squiggle, not
-/// two.) The one parser diagnostic *exempt* from the dedup is a language-version
-/// feature error (FS3350, e.g. `#elif` below F# 11): `diagnostics_for` never
-/// produces it, so it must survive even when it shares a directive's span with a
+/// Errors [`preprocessor_diagnostics`] owns are *not* re-reported here. The
+/// parser parses the same active branches (it shares the symbols), so dead
+/// branches and directive lines are trivia, never parser errors. What still
+/// needs suppressing is the parser's *spurious structural cascade* around an
+/// **active-branch lex error**: a token that fails to lex can't be parsed as
+/// an expression, so the productions emit one or more structural errors at
+/// the lex-error span. Any parser error whose span overlaps a span the
+/// preprocessor reports is dropped, so the user sees the lexer's single
+/// diagnostic there, not the cascade. (The overlap covers every preproc-error
+/// span, not just lex ones: the parser *also* surfaces directive errors — at
+/// the same [`reporting_span`](PreprocError::reporting_span) — so they fall in
+/// this overlap-dedup and the user sees one squiggle, not two.) The one parser
+/// diagnostic *exempt* from the dedup is a language-version feature error
+/// (FS3350, e.g. `#elif` below F# 11): the preprocessor never produces it, so
+/// it must survive even when it shares a directive's span with a
 /// malformed-condition error — see `is_language_version_diagnostic`.
-pub fn parse_diagnostics(
-    text: &str,
-    symbols: &HashSet<String>,
-    kind: SourceKind,
-    lang: LanguageVersion,
+fn parser_diagnostics(
+    parse: &Parse,
+    errors: &[(PreprocError, Span<usize>)],
+    lines: &LineIndex<'_>,
 ) -> Vec<Diagnostic> {
-    let reported_spans: Vec<std::ops::Range<usize>> = lex_with_symbols(text, symbols)
-        .filter_map(|(tok, span)| match tok {
-            Ok(_) => None,
-            Err(e) => Some(e.reporting_span(span)),
-        })
+    let reported_spans: Vec<Span<usize>> = errors
+        .iter()
+        .map(|(err, span)| err.reporting_span(span.clone()))
         .collect();
-
-    // `.fsi` parses under the signature grammar; `.fs` / `.fsx` under the
-    // implementation grammar. Both share the lexer/lex-filter pipeline; the kind
-    // only picks the top-level production. `lang` gates version-specific
-    // features (e.g. `#elif`) the same way for both.
-    let file_kind = match kind {
-        SourceKind::Implementation => FileKind::Impl,
-        SourceKind::Signature => FileKind::Sig,
-    };
-    let opts = ParseOptions {
-        file_kind,
-        symbols,
-        lang,
-    };
-    let parsed = match catch_unwind(AssertUnwindSafe(|| parse_with_options(text, opts))) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            crate::log_warn!("parser panicked; skipping parser diagnostics for this buffer");
-            return Vec::new();
-        }
-    };
-
     // Tag each parse diagnostic with its LSP severity, then share the dedup
-    // (against the lexer producer's spans) and the offset→position mapping.
-    let lines = LineIndex::new(text);
-    parsed
+    // (against the preprocessor's spans) and the offset→position mapping.
+    parse
         .errors
-        .into_iter()
+        .iter()
         .map(|e| (e, DiagnosticSeverity::ERROR))
         .chain(
-            parsed
+            parse
                 .warnings
-                .into_iter()
+                .iter()
                 .map(|e| (e, DiagnosticSeverity::WARNING)),
         )
-        // The overlap dedup drops the parser's *duplicates* of the lexer/
-        // preprocessor producer (the structural cascade around an active-branch
-        // lex error, and the parser's copy of a directive-syntax error). A
-        // language-version feature diagnostic (FS3350) is neither — `diagnostics_for`
-        // never produces it — so it must survive even when it shares a directive's
-        // span with a malformed-condition error (e.g. `#elif !` under < F# 11).
+        // The overlap dedup drops the parser's *duplicates* of the
+        // preprocessor's diagnostics (the structural cascade around an
+        // active-branch lex error, and the parser's copy of a directive-syntax
+        // error). A language-version feature diagnostic (FS3350) is neither —
+        // the preprocessor never produces it — so it must survive even when it
+        // shares a directive's span with a malformed-condition error (e.g.
+        // `#elif !` under < F# 11).
         .filter(|(e, _)| {
             is_language_version_diagnostic(&e.message)
                 || !reported_spans.iter().any(|l| spans_overlap(&e.span, l))
@@ -219,7 +241,7 @@ pub fn parse_diagnostics(
             },
             severity: Some(severity),
             source: Some("borzoi".to_string()),
-            message: e.message,
+            message: e.message.clone(),
             ..Default::default()
         })
         .collect()
@@ -227,12 +249,12 @@ pub fn parse_diagnostics(
 
 /// Whether `message` is a language-version feature diagnostic (FCS FS3350): a
 /// construct the parser flagged solely because the pinned `<LangVersion>`
-/// predates it (e.g. `#elif` below F# 11). The lexer/preprocessor producer
-/// ([`diagnostics_for`]) never emits these, so they must be exempt from the
-/// overlap dedup — otherwise one sharing a directive's span with a
-/// malformed-condition error would be silently dropped. Matched on the
-/// feature-independent FS3350 template tail rather than a per-feature string, so
-/// it covers every gated feature, not just `#elif`.
+/// predates it (e.g. `#elif` below F# 11). The preprocessor never emits
+/// these, so they must be exempt from the overlap dedup — otherwise one
+/// sharing a directive's span with a malformed-condition error would be
+/// silently dropped. Matched on the feature-independent FS3350 template tail
+/// rather than a per-feature string, so it covers every gated feature, not
+/// just `#elif`.
 fn is_language_version_diagnostic(message: &str) -> bool {
     message.contains("Please use language version")
 }
@@ -241,7 +263,7 @@ fn is_language_version_diagnostic(message: &str) -> bool {
 /// (the parser emits these for "expected …" placeholders) is treated as
 /// overlapping `[a, b)` when `a <= n <= b`, so a placeholder sitting
 /// exactly at the start or end of a lex error still dedups.
-fn spans_overlap(a: &std::ops::Range<usize>, b: &std::ops::Range<usize>) -> bool {
+fn spans_overlap(a: &Span<usize>, b: &Span<usize>) -> bool {
     if a.start == a.end {
         return b.start <= a.start && a.start <= b.end;
     }
@@ -249,17 +271,6 @@ fn spans_overlap(a: &std::ops::Range<usize>, b: &std::ops::Range<usize>) -> bool
         return a.start <= b.start && b.start <= a.end;
     }
     a.start < b.end && b.start < a.end
-}
-
-/// Drain a preprocessor pass purely to recover the active-branch `#line`
-/// directives. The store is only complete once the driver iterator is fully
-/// consumed (see [`borzoi_cst::directives::Driver::line_directives`]),
-/// so we run it to exhaustion and discard the tokens — they were already
-/// produced by [`diagnostics_for`].
-fn line_directive_store(text: &str, symbols: &HashSet<String>) -> LineDirectiveStore {
-    let mut driver = lex_with_symbols(text, symbols);
-    for _ in driver.by_ref() {}
-    driver.line_directives().clone()
 }
 
 /// Partition diagnostics by the virtual file their **start** line maps to

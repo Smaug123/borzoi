@@ -27,6 +27,7 @@ use borzoi_spawn::BoundedCommand;
 use host_fs::HostPath as _;
 use serde::Deserialize;
 
+pub mod diagnostics_reference;
 pub mod host_fs;
 pub mod inheritdoc_diff;
 pub mod inheritdoc_oracle;

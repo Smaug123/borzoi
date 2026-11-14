@@ -11,11 +11,18 @@
 //! asserts this (`tokens::lex_full_trivia`), so the parser suites and the
 //! corpus sweeps hold the table to it too; this group covers the lexical
 //! shapes those suites need not reach.
+//!
+//! The lex also reports what the swallow-mode driver does
+//! (`directives::preprocess`): every preprocessor error in stream order and
+//! the `#line` directives, which a parse carries for the LSP's diagnostics.
+//! The same cases hold it to that, and a parse to passing it on unchanged.
 
 use std::collections::{BTreeSet, HashSet};
 
-use borzoi_cst::directives::{PreprocError, lex_with_symbols_full_trivia};
+use borzoi_cst::directives::{PreprocError, lex_with_symbols_full_trivia, preprocess};
+use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::lexer::TokenKind;
+use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
 use borzoi_cst::tokens::{RawItem, RawKind, lex_full_trivia};
 use proptest::prelude::*;
 
@@ -133,12 +140,32 @@ fn reference<'a>(src: &'a str, symbols: &HashSet<String>) -> Reference<'a> {
     }
 }
 
+/// What a lex reported beside its stream, by shape: the preprocessor errors
+/// by variant, and whether a `#line` directive was recorded. A generator that
+/// stops reaching one has stopped testing that the report is the same.
+fn report_shapes(src: &str, symbols: &HashSet<String>, seen: &mut BTreeSet<String>) {
+    let report = preprocess(src, symbols);
+    for (err, _) in &report.errors {
+        let shape = format!("{err:?}");
+        let variant = shape.split(['(', ' ', '{']).next().unwrap_or_default();
+        seen.insert(variant.to_string());
+    }
+    if report.line_directives != Default::default() {
+        seen.insert("#line".to_string());
+    }
+}
+
 /// Assert the table rebuilds the reference on `src` under every symbol set,
 /// recording the kinds it saw in `seen`.
 fn check(src: &str, seen: &mut BTreeSet<RawKind>) {
     for symbols in symbol_sets() {
         let want = reference(src, &symbols);
         let got = lex_full_trivia(src, &symbols);
+        assert_eq!(
+            got.preprocessed,
+            preprocess(src, &symbols),
+            "the preprocessor's report differs on {src:?}"
+        );
         let rebuilt: Vec<RawItem<'_>> = got.tokens.items(..).collect();
         assert_eq!(rebuilt, want.stream, "stream differs on {src:?}");
         assert_eq!(got.preproc_errors, want.errors, "errors differ on {src:?}");
@@ -213,6 +240,71 @@ fn every_lexical_pair_rebuilds_the_driver_stream() {
         missed.is_empty(),
         "the lexical pairs never reach {missed:?}"
     );
+}
+
+/// `#if` chains no pair of [`LEXICAL`] spells: a second `#else`, and an
+/// `#elif` after an `#else`, in an active and in a dead chain, with an error
+/// token and a `#line` inside.
+const CHAINS: &[&str] = &[
+    "#if X\n#else\n#else\n#endif\n",
+    "#if X\n#else\n#elif Y\n#endif\n",
+    "#if X\n#if Y\n#else\n#else\n#endif\n#endif\n",
+    "#if X\n\"a\n#else\n#line 7 \"g.fs\"\n`\n#elif Y\n#endif\n",
+];
+
+/// A parse carries the lex's report unchanged, whatever the language version
+/// or file kind: every one-piece source over [`LEXICAL`] and every pair, and
+/// [`CHAINS`], at both ends of the version ladder. Together they reach every
+/// preprocessor error variant and a `#line` directive.
+#[test]
+fn a_parse_reports_what_the_preprocessor_does() {
+    let mut shapes = BTreeSet::new();
+    let mut sources: Vec<String> = LEXICAL
+        .iter()
+        .chain(CHAINS)
+        .map(|a| a.to_string())
+        .collect();
+    sources.extend(
+        LEXICAL
+            .iter()
+            .flat_map(|a| LEXICAL.iter().map(move |b| format!("{a}{b}"))),
+    );
+    for src in &sources {
+        for symbols in symbol_sets() {
+            report_shapes(src, &symbols, &mut shapes);
+            let want = preprocess(src, &symbols);
+            for (file_kind, lang) in [
+                (FileKind::Impl, LanguageVersion::MIN),
+                (FileKind::Sig, LanguageVersion::MAX),
+            ] {
+                let opts = ParseOptions {
+                    file_kind,
+                    symbols: &symbols,
+                    lang,
+                };
+                assert_eq!(
+                    parse_with_options(src, opts).preprocessor,
+                    want,
+                    "the parse's report differs on {src:?}"
+                );
+            }
+        }
+    }
+    let missed: Vec<_> = [
+        "Lex",
+        "Directive",
+        "UnmatchedEndIf",
+        "OrphanElse",
+        "OrphanElif",
+        "DoubleElse",
+        "ElifAfterElse",
+        "UnclosedIfAtEof",
+        "#line",
+    ]
+    .into_iter()
+    .filter(|shape| !shapes.contains(*shape))
+    .collect();
+    assert!(missed.is_empty(), "the sources never reach {missed:?}");
 }
 
 /// Every one- and two-piece source over the panic sweep's `WIDE` alphabet.

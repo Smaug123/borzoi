@@ -52,7 +52,6 @@ use borzoi_sema::{
 };
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 
-use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
 use crate::goto_source::DefinitionDocument;
 use crate::handlers::definition::{entity_definition_document, member_definition_document};
 use crate::handlers::definition_availability::{
@@ -122,7 +121,7 @@ enum ProjectClassify {
 fn definition_unavailable_hover(
     state: &mut State,
     uri: &lsp_types::Uri,
-    text: &str,
+    text: &Arc<str>,
     byte: usize,
 ) -> Option<Hover> {
     match project_unavailable(state, uri, text, byte) {
@@ -206,15 +205,13 @@ fn project_unavailable(
 fn single_file_unavailable(
     state: &mut State,
     uri: &lsp_types::Uri,
-    text: &str,
+    text: &Arc<str>,
     byte: usize,
     analysis: Analysis,
 ) -> Option<Hover> {
-    let symbols = state.symbols_for_uri(uri);
-    let lang = state.lang_version_for_uri(uri);
-    let parse = parse_with_symbols(text, &symbols, lang)?;
+    let source = state.parse_buffer(uri, text, FileKind::Impl);
     let recovery = SyntaxRecovery::without_inference();
-    let file = ImplFile::cast(parse.root)?;
+    let file = ImplFile::cast(source.parse()?.root.clone())?;
     let resolved = resolve_file(
         &file,
         &ProjectItems::default(),
@@ -232,8 +229,8 @@ fn single_file_unavailable(
     // abbreviation's target) is explained the same way. Where that grammar
     // loses the name (`val f : …`, whose `val` it reads as a stray token), the
     // signature grammar still finds the identifier; nothing resolved it.
-    let parse = parse_sig_with_symbols(text, &symbols, lang)?;
-    let (unavailable, range) = classify_signature(&parse.root, byte, analysis)?;
+    let source = state.parse_buffer(uri, text, FileKind::Sig);
+    let (unavailable, range) = classify_signature(&source.parse()?.root, byte, analysis)?;
     Some(make_hover(unavailable.explain(), text, range))
 }
 
@@ -375,14 +372,14 @@ fn project_hover(
 fn single_file_hover(
     state: &mut State,
     uri: &lsp_types::Uri,
-    text: &str,
+    text: &Arc<str>,
     byte: usize,
 ) -> Option<Hover> {
-    let symbols = state.symbols_for_uri(uri);
-    let lang = state.lang_version_for_uri(uri);
-    let parse = parse_with_symbols(text, &symbols, lang)?;
-    let recovery = SyntaxRecovery::of_guessed_version(&parse, text, &symbols, FileKind::Impl);
-    let file = ImplFile::cast(parse.root)?;
+    let source = state.parse_buffer(uri, text, FileKind::Impl);
+    let parse = source.parse()?;
+    let recovery =
+        SyntaxRecovery::of_guessed_version(parse, text, source.symbols(), FileKind::Impl);
+    let file = ImplFile::cast(parse.root.clone())?;
     // Single-file (orphan) hover: no project, so no referenced assemblies —
     // member-access typing has no env to resolve into and simply defers.
     let env = AssemblyEnv::default();

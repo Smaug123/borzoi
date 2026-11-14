@@ -33,6 +33,7 @@
 use crate::observed::Unobserved;
 use crate::uri::UriExt as _;
 use crate::vfs::Vfs;
+use borzoi_cst::parser::FileKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -44,7 +45,6 @@ use borzoi_sema::{
 };
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, Uri};
 
-use crate::cst_panic_safe::parse_with_symbols;
 use crate::goto_source::{
     DefinitionDocument, DefinitionSource, SourceFetcher, SourcePlan, SourceTarget,
     definition_document_for_range, definition_document_in_pdb,
@@ -681,14 +681,12 @@ fn location_for_resolution(
 fn single_file_definition(
     state: &mut State,
     uri: &Uri,
-    text: &str,
+    text: &Arc<str>,
     byte: usize,
 ) -> Option<Location> {
-    let symbols = state.symbols_for_uri(uri);
-    let lang = state.lang_version_for_uri(uri);
-    let parse = parse_with_symbols(text, &symbols, lang)?;
+    let source = state.parse_buffer(uri, text, FileKind::Impl);
     let recovery = SyntaxRecovery::without_inference();
-    let file = ImplFile::cast(parse.root)?;
+    let file = ImplFile::cast(source.parse()?.root.clone())?;
     let resolved = resolve_file(
         &file,
         &ProjectItems::default(),

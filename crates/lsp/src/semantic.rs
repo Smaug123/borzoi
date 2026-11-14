@@ -12,9 +12,10 @@
 //! sub-project incrementality a later optimisation, not a v1 requirement.
 
 use crate::observed::Unobserved;
+use crate::parses::{ParseMemo, SourceParse};
 use crate::vfs::Vfs;
 use borzoi_cst::parser::FileKind;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -187,24 +188,24 @@ impl ProjectParses {
     }
 }
 
-/// One cached parse **variant** of a Compile item (see
-/// [`SemanticState::file_parses`], which holds a list of these per path), stored
-/// with the exact inputs that decided it — not only the parse inputs (source
-/// text, `#if` symbols, language version) but the owning project's `LangVersion`
-/// *provenance* trust. A [`build_parses`] cache hit requires **every** one to
-/// match, so a variant is a pure function of its inputs: it can never be served
-/// stale, nor bypass the version-boundary gate.
-/// The last input matters because a hit *skips* that gate, whose accept/refuse
+/// One Compile item's parse as the fold reads it (see
+/// [`SemanticState::file_parses`], which holds a list of these per path): the
+/// memo's parse ([`ParseMemo`]), and what the fold derived from it, stored
+/// with the one further input that decided it, the owning project's
+/// `LangVersion` *provenance* trust. A [`build_parses`] cache hit requires
+/// the parse's inputs (source text, `#if` symbols, language version) and the
+/// trust to match, so a variant is a pure function of its inputs: it can
+/// never be served stale, nor bypass the version-boundary gate.
+/// The trust matters because a hit *skips* that gate, whose accept/refuse
 /// verdict depends on `lang_version_untrusted` — and one source file shared by
 /// two projects can carry different provenance at the same effective version, so
 /// a trusted project's accepted parse must not satisfy an untrusted one. See
 /// [`SemanticState::file_parses`].
 #[derive(Debug)]
 struct CachedParse {
-    /// The `#if` symbols the tree was parsed under.
-    symbols: HashSet<String>,
-    /// The language version the tree was parsed under.
-    lang: LanguageVersion,
+    /// The parse: its text, `#if` symbols and language version are the rest
+    /// of the key.
+    parse: Arc<SourceParse>,
     /// Whether the owning project's `LangVersion` provenance was untrusted when
     /// this tree was accepted. Part of the key because a hit skips the
     /// version-boundary gate, whose verdict is a function of this flag (not of
@@ -212,10 +213,12 @@ struct CachedParse {
     /// straddling file could wrongly satisfy an untrusted project that a cold
     /// build refuses.
     lang_version_untrusted: bool,
-    /// The exact source text that produced `file`.
+    /// The allocation of `parse`'s text the `Vfs` last handed out, so that the
+    /// next comparison with it is a pointer test.
     text: Arc<str>,
     /// The reusable parsed file — impl or signature, per the path's extension
-    /// (a syntax handle; a hit clones it — an `Arc` bump, not a re-parse).
+    /// (a syntax handle onto `parse`'s tree; a hit clones it — an `Arc` bump,
+    /// not a re-parse).
     file: SourceFile,
     /// What the parser had to recover from in `file`. Cached beside the tree
     /// because the `Parse` that produced both is dropped here, and a hit that
@@ -292,10 +295,15 @@ pub struct SemanticState {
     /// shell's message be a function of current state rather than of the event
     /// that provoked it.
     observed_fold_refusals: HashMap<ProjectId, FoldRefusal>,
-    /// Per-**file** parse cache — the parsed [`ImplFile`]s for each Compile item,
-    /// keyed by path. Lets [`build_parses`] re-parse only the file that changed on
-    /// a single-file edit and reuse every other file's tree (a syntax handle
-    /// clone), so a keystroke no longer re-parses the whole Compile order.
+    /// Every source's parses ([`ParseMemo`]): the fold, the syntactic
+    /// diagnostics and the single-file handlers each parse through it, so a
+    /// text read by all of them is parsed once.
+    parses: ParseMemo,
+    /// Per-**file** fold cache — the parsed [`ImplFile`]s for each Compile item
+    /// and what the fold derived from each, keyed by path. Lets
+    /// [`build_parses`] reuse every unchanged file's tree (a syntax handle
+    /// clone) and ask [`Self::parses`] only for the file that changed, so a
+    /// keystroke no longer re-parses the whole Compile order.
     /// Distinct from `project_parses`, which caches the assembled per-project
     /// [`ProjectParses`] and is dropped in full on any text-sync; this survives,
     /// keyed per file.
@@ -608,6 +616,11 @@ impl SemanticState {
         self.wants_refresh = true;
     }
 
+    /// The parse memo every reader of a source parses through.
+    pub fn parses_mut(&mut self) -> &mut ParseMemo {
+        &mut self.parses
+    }
+
     /// Drop **all** semantic caches — parses, resolved projects, *and* assembly
     /// envs. Used by `workspace/didChangeWatchedFiles` when a project-structure
     /// file changes on disk. Unlike [`Self::invalidate_project`] /
@@ -617,6 +630,7 @@ impl SemanticState {
     pub fn invalidate_all(&mut self) {
         self.project_parses.clear();
         self.observed_fold_refusals.clear();
+        self.parses.clear();
         self.file_parses.clear();
         self.resolved_projects.clear();
         self.inferred_projects.clear();
@@ -1537,7 +1551,13 @@ impl SemanticState {
         docs: &Vfs,
     ) -> Result<ProjectParses, FoldRefusal> {
         let key = ProjectId::new(project);
-        let outcome = build_parses(key.as_path(), workspace, docs, &mut self.file_parses);
+        let outcome = build_parses(
+            key.as_path(),
+            workspace,
+            docs,
+            &mut self.parses,
+            &mut self.file_parses,
+        );
         match &outcome {
             Ok(_) => {
                 // A refusal recovering changes every open buffer's tokens
@@ -1578,6 +1598,7 @@ fn build_parses(
     project: &Path,
     workspace: &mut Workspace,
     docs: &Vfs,
+    parses: &mut ParseMemo,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
 ) -> Result<ProjectParses, FoldRefusal> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
@@ -1679,13 +1700,22 @@ fn build_parses(
             );
             return Err(FoldRefusal::UnreadableCompileItem { file: include });
         };
-        // Per-file parse cache: reuse a variant whose every deciding input — the
+        // A `.fsi` Compile item parses under the signature grammar
+        // (`docs/fsi-signature-restriction-plan.md` Stage 1); everything else
+        // is an implementation file.
+        let signature = is_signature_file(&include);
+        let file_kind = if signature {
+            FileKind::Sig
+        } else {
+            FileKind::Impl
+        };
+        // Per-file fold cache: reuse a variant whose every deciding input — the
         // source text, the `#if` symbols, the language version, and the project's
         // `LangVersion`-provenance trust — matches. A hit is a handle clone
         // that also *skips* the version-boundary gate below, which is why
         // `lang_version_untrusted` is part of the match (it is that gate's one
-        // non-parse input). A miss falls through to parse (and, for a
-        // straddle-flagged file, re-run the gate) and records a variant. The
+        // non-parse input). A miss falls through to the parse memo (and, for a
+        // straddle-flagged file, re-runs the gate) and records a variant. The
         // input comparison is what keeps a stale variant from being served, so no
         // invalidation hook is load-bearing.
         //
@@ -1696,9 +1726,10 @@ fn build_parses(
             variants
                 .iter_mut()
                 .find(|c| {
-                    c.lang == lang
+                    c.parse.lang() == lang
+                        && c.parse.file_kind() == file_kind
                         && c.lang_version_untrusted == lang_version_untrusted
-                        && c.symbols == symbols
+                        && *c.parse.symbols() == symbols
                         && (Arc::ptr_eq(&c.text, &text) || *c.text == *text)
                 })
                 .map(|c| {
@@ -1713,16 +1744,10 @@ fn build_parses(
             recoveries.push(recovery);
             continue;
         }
-        // A `.fsi` Compile item parses under the signature grammar
-        // (`docs/fsi-signature-restriction-plan.md` Stage 1); everything else
-        // is an implementation file.
-        let signature = is_signature_file(&include);
-        let parse_result = if signature {
-            parse_sig_with_symbols(&text, &symbols, lang)
-        } else {
-            parse_with_symbols(&text, &symbols, lang)
-        };
-        let Some(parse) = parse_result else {
+        // The memo may already hold this parse: the syntactic diagnostics of
+        // an edited buffer parse it before the fold does.
+        let source = parses.parse(Some(&include), &text, file_kind, &symbols, lang);
+        let Some(parse) = source.parse() else {
             // The wrapper returns `None` only when the CST parser panicked.
             // Logged inside the wrapper.
             tracing::warn!(
@@ -1793,21 +1818,12 @@ fn build_parses(
         // version-gated — the tree is identical either side of the threshold,
         // so the shape gate above never fires on it.
         let recovery = if lang_version_untrusted {
-            SyntaxRecovery::of_guessed_version(
-                &parse,
-                &text,
-                &symbols,
-                if signature {
-                    FileKind::Sig
-                } else {
-                    FileKind::Impl
-                },
-            )
+            SyntaxRecovery::of_guessed_version(parse, &text, &symbols, file_kind)
         } else {
-            SyntaxRecovery::of(&parse)
+            SyntaxRecovery::of(parse)
         };
         let source_file = if signature {
-            match SigFile::cast(parse.root) {
+            match SigFile::cast(parse.root.clone()) {
                 Some(sig) => SourceFile::Sig(sig),
                 None => {
                     tracing::warn!(
@@ -1818,7 +1834,7 @@ fn build_parses(
                 }
             }
         } else {
-            match ImplFile::cast(parse.root) {
+            match ImplFile::cast(parse.root.clone()) {
                 Some(impl_file) => SourceFile::Impl(impl_file),
                 None => {
                     tracing::warn!(
@@ -1835,8 +1851,7 @@ fn build_parses(
         // else append (a linked file under another project's settings — kept
         // alongside so neither project's build thrashes the other's).
         let variant = CachedParse {
-            symbols: symbols.clone(),
-            lang,
+            parse: Arc::clone(&source),
             lang_version_untrusted,
             text: Arc::clone(&text),
             file: source_file.clone(),
@@ -1844,9 +1859,10 @@ fn build_parses(
         };
         let variants = file_parses.entry(include.clone()).or_default();
         if let Some(slot) = variants.iter_mut().find(|c| {
-            c.lang == lang
+            c.parse.lang() == lang
+                && c.parse.file_kind() == file_kind
                 && c.lang_version_untrusted == lang_version_untrusted
-                && c.symbols == symbols
+                && *c.parse.symbols() == symbols
         }) {
             *slot = variant;
         } else {
@@ -3536,6 +3552,7 @@ fn is_signature_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::observed::host_fs::HostPath as _;
+    use std::collections::HashSet;
 
     use proptest::prelude::*;
 
