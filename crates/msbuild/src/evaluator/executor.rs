@@ -73,7 +73,7 @@ pub(super) fn execute(state: &State<'_>, probe: &ExecutionProbe) -> ExecutionRea
 }
 
 /// How deep a chain of targets bringing each other up may run before the run
-/// declines. It bounds the recursion of [`Engine::build`] and of the cycle
+/// declines. It bounds the recursion of the cycle
 /// check; the SDK's restore targets reach a few dozen.
 const MAX_DEPTH: usize = 256;
 
@@ -287,6 +287,9 @@ impl<'s, 'r> Engine<'s, 'r> {
     }
 
     fn run(&mut self, probe: &ExecutionProbe) -> Result<ExecutionRead, Decline> {
+        if self.state.initial_targets_named {
+            return decline("a file names InitialTargets");
+        }
         let requested: Vec<String> = probe.targets.clone();
         self.push(&requested, None, Reason::Requested)?;
         let mut steps = 0usize;
@@ -450,8 +453,38 @@ impl<'s, 'r> Engine<'s, 'r> {
             match child.tag_name().name() {
                 "PropertyGroup" => self.property_group(child)?,
                 "ItemGroup" => self.item_group(child)?,
-                "Message" => {}
+                "Message" => self.message(child)?,
                 other => return decline(format!("target {target} runs {other}")),
+            }
+        }
+        Ok(())
+    }
+
+    /// The `Message` task writes nothing, but it fails the build on a
+    /// parameter it rejects (an unknown `Importance`), so only the shapes it
+    /// accepts run.
+    fn message(&mut self, task: Node<'_, '_>) -> Result<(), Decline> {
+        for attr in task.attributes() {
+            if !matches!(attr.name(), "Text" | "Importance" | "Condition") {
+                return decline(format!("Message has {}", attr.name()));
+            }
+        }
+        if task.children().any(|c| c.is_element()) {
+            return decline("Message has a child element");
+        }
+        if !self.decide(task)? {
+            return Ok(());
+        }
+        if let Some(raw) = attribute(task, "Text")? {
+            self.expand(&raw)?;
+        }
+        if let Some(raw) = attribute(task, "Importance")? {
+            let importance = escaping::unescape(self.expand(&raw)?.as_escaped());
+            if !["high", "normal", "low"]
+                .iter()
+                .any(|known| importance.trim().eq_ignore_ascii_case(known))
+            {
+                return decline(format!("Message has Importance {importance}"));
             }
         }
         Ok(())
@@ -473,7 +506,7 @@ impl<'s, 'r> Engine<'s, 'r> {
             {
                 return decline(format!("a target writes the reserved or global {name}"));
             }
-            let raw = plain_text(property)?;
+            let raw = element_text(property)?;
             let value = self.expand(&raw)?;
             self.lookup.insert_escaped(name, value);
             self.written.insert(lower);
@@ -487,7 +520,7 @@ impl<'s, 'r> Engine<'s, 'r> {
         }
         for item in group.children().filter(Node::is_element) {
             let item_type = item.tag_name().name();
-            let Some(include) = item.attribute("Include") else {
+            let Some(include) = attribute(item, "Include")? else {
                 return decline(format!(
                     "a target changes {item_type} other than by Include"
                 ));
@@ -495,10 +528,12 @@ impl<'s, 'r> Engine<'s, 'r> {
             if !self.decide(item)? {
                 continue;
             }
-            let mut metadata = BTreeMap::new();
-            for attribute in item.attributes() {
-                match attribute.name() {
-                    "Include" | "Condition" => {}
+            // The type's item-definition defaults, beneath the item's own.
+            let mut metadata = self.definitions(item_type)?;
+            for attr in item.attributes() {
+                match attr.name() {
+                    // Structural, not metadata.
+                    "Include" | "Condition" | "Label" => {}
                     "Exclude"
                     | "Remove"
                     | "Update"
@@ -507,17 +542,12 @@ impl<'s, 'r> Engine<'s, 'r> {
                     | "KeepDuplicates"
                     | "MatchOnMetadata"
                     | "MatchOnMetadataOptions" => {
-                        return decline(format!(
-                            "a target\'s {item_type} has {}",
-                            attribute.name()
-                        ));
+                        return decline(format!("a target's {item_type} has {}", attr.name()));
                     }
                     name => {
-                        let value = self.expand(attribute.value())?;
-                        metadata.insert(
-                            name.to_ascii_lowercase(),
-                            escaping::unescape(value.as_escaped()),
-                        );
+                        let raw = attribute(item, name)?.expect("an attribute present");
+                        let value = self.metadata_value(&raw)?;
+                        metadata.insert(name.to_ascii_lowercase(), value);
                     }
                 }
             }
@@ -525,14 +555,11 @@ impl<'s, 'r> Engine<'s, 'r> {
                 if !self.decide(child)? {
                     continue;
                 }
-                let raw = plain_text(child)?;
-                let value = self.expand(&raw)?;
-                metadata.insert(
-                    child.tag_name().name().to_ascii_lowercase(),
-                    escaping::unescape(value.as_escaped()),
-                );
+                let raw = element_text(child)?;
+                let value = self.metadata_value(&raw)?;
+                metadata.insert(child.tag_name().name().to_ascii_lowercase(), value);
             }
-            let expanded = self.expand(include)?;
+            let expanded = self.expand(&include)?;
             let mut added = Vec::new();
             for fragment in expanded.as_escaped().split(';') {
                 let fragment = fragment.trim();
@@ -542,6 +569,10 @@ impl<'s, 'r> Engine<'s, 'r> {
                 if escaping::filespec_has_wildcards(fragment) {
                     return decline(format!("a target includes the wildcard {fragment}"));
                 }
+                // MSBuild's Unix path fixup may respell a backslash.
+                if fragment.contains('\\') {
+                    return decline(format!("a target includes {fragment}, with a backslash"));
+                }
                 added.push(ExecutedItem {
                     identity: escaping::unescape(fragment),
                     metadata: metadata.clone(),
@@ -550,6 +581,38 @@ impl<'s, 'r> Engine<'s, 'r> {
             self.table(item_type)?.extend(added);
         }
         Ok(())
+    }
+
+    /// A metadatum's value: `raw` expanded and unescaped. A backslash is one
+    /// MSBuild's Unix path fixup may respell, so it declines.
+    fn metadata_value(&self, raw: &str) -> Result<String, Decline> {
+        let value = self.expand(raw)?;
+        if value.as_escaped().contains('\\') {
+            return decline(format!("a target's metadatum {raw} holds a backslash"));
+        }
+        Ok(escaping::unescape(value.as_escaped()))
+    }
+
+    /// The item-definition defaults of `item_type`, as the evaluation leaves
+    /// them, or decline when one is unknown.
+    fn definitions(&self, item_type: &str) -> Result<BTreeMap<String, String>, Decline> {
+        let mut defaults = BTreeMap::new();
+        let Some(values) = self
+            .state
+            .item_definition_values
+            .get(&item_type.to_ascii_lowercase())
+        else {
+            return Ok(defaults);
+        };
+        for (name, value) in values {
+            let Some(value) = value else {
+                return decline(format!(
+                    "an item definition of {item_type} gives {name} a default the walk does not know"
+                ));
+            };
+            defaults.insert(name.clone(), value.clone());
+        }
+        Ok(defaults)
     }
 
     /// The table of `item_type`, read from the walk the first time.
@@ -580,11 +643,11 @@ impl<'s, 'r> Engine<'s, 'r> {
 
     /// Decide `node`'s `Condition` (true when it has none).
     fn decide(&self, node: Node<'_, '_>) -> Result<bool, Decline> {
-        let Some(raw) = node.attribute("Condition") else {
+        let Some(raw) = attribute(node, "Condition")? else {
             return Ok(true);
         };
-        self.check_references(raw)?;
-        match condition::evaluate(raw, &self.lookup).outcome {
+        self.check_references(&raw)?;
+        match condition::evaluate(&raw, &self.lookup).outcome {
             condition::Outcome::True => Ok(true),
             condition::Outcome::False => Ok(false),
             condition::Outcome::Unsupported => {
@@ -661,26 +724,37 @@ fn plain_references(raw: &str) -> Option<Vec<&str>> {
     Some(names)
 }
 
-/// The text of `element`, which must be nothing but text and comments that
-/// are their source verbatim, or decline.
-fn plain_text(element: Node<'_, '_>) -> Result<String, Decline> {
-    let source = element.document().input_text();
-    let mut text = String::new();
-    for child in element.children() {
-        if child.is_comment() {
-            continue;
-        }
-        let verbatim = child.is_text()
-            && source
-                .get(child.range())
-                .is_some_and(|raw| Some(raw) == child.text());
-        if !verbatim {
-            return decline(format!(
-                "the body of {} is not plain text",
-                element.tag_name().name()
-            ));
-        }
-        text.push_str(child.text().unwrap_or_default());
+/// The text of `element` as MSBuild reads it ([`super::collect_element_text`]),
+/// or decline when MSBuild reads it otherwise than as its source spells it: a
+/// body holding more than text and comments (which MSBuild takes as inner
+/// XML), or text that line-ending normalisation or entity decoding touched.
+fn element_text(element: Node<'_, '_>) -> Result<String, Decline> {
+    if !super::item_pass::body_is_plain(element) {
+        return decline(format!(
+            "the body of {} is not plain text",
+            element.tag_name().name()
+        ));
     }
-    Ok(text.trim().to_owned())
+    super::collect_element_text(element).map_or_else(
+        || {
+            decline(format!(
+                "the body of {} is not modelled",
+                element.tag_name().name()
+            ))
+        },
+        Ok,
+    )
+}
+
+/// The value of `node`'s attribute `name`, or decline when XML attribute-value
+/// normalisation or entity decoding touched it: MSBuild reads such a value
+/// its own way (a literal tab survives).
+fn attribute(node: Node<'_, '_>, name: &str) -> Result<Option<String>, Decline> {
+    let Some(attr) = node.attributes().find(|a| a.name() == name) else {
+        return Ok(None);
+    };
+    if !super::item_pass::attribute_is_plain(node, &attr) {
+        return decline(format!("the attribute {name} is not its source verbatim"));
+    }
+    Ok(Some(attr.value().to_owned()))
 }

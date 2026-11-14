@@ -36,7 +36,7 @@ pub struct ReadProbe {
     /// Target names, in any case.
     pub targets: Vec<String>,
     /// Targets to run on the evaluation, and what to read after
-    /// ([`super::executor`]).
+    /// (`evaluator::executor`).
     pub execute: Option<super::executor::ExecutionProbe>,
 }
 

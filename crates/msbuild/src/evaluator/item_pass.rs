@@ -3493,7 +3493,7 @@ fn read_generic_item_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> Gene
 /// touched (a CRLF, which MSBuild keeps; a `&amp;`) is not the text roxmltree
 /// hands back, and an element or processing instruction makes MSBuild take the
 /// inner XML.
-fn body_is_plain(element: Node<'_, '_>) -> bool {
+pub(super) fn body_is_plain(element: Node<'_, '_>) -> bool {
     let source = element.document().input_text();
     element.children().all(|c| {
         c.is_comment()
@@ -3509,7 +3509,7 @@ fn body_is_plain(element: Node<'_, '_>) -> bool {
 /// break, a `&`). Only then is the value roxmltree hands back the one MSBuild
 /// evaluates: it reads such spellings otherwise (a literal tab survives; an
 /// encoded CDATA section is decoded).
-fn attribute_is_plain(node: Node<'_, '_>, attr: &roxmltree::Attribute<'_, '_>) -> bool {
+pub(super) fn attribute_is_plain(node: Node<'_, '_>, attr: &roxmltree::Attribute<'_, '_>) -> bool {
     let raw = node.document().input_text().get(attr.range_value());
     raw == Some(attr.value()) && !attr.value().contains(['\t', '\n', '\r', '&'])
 }

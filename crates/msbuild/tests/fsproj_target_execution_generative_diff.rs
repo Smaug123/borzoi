@@ -28,7 +28,12 @@ use common::{Oracle, SplitMix64};
 const TARGETS: [&str; 4] = ["T0", "T1", "T2", "T3"];
 const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// Values a target writes.
-const VALUES: [&str; 6] = ["x", "y", "$(A)z", "$(B)", "", "$(Gated)"];
+/// Padding is significant; a backslash is one MSBuild's Unix path fixup may
+/// respell in an item; a literal tab survives in MSBuild where XML attribute
+/// normalisation would turn it into a space.
+const VALUES: [&str; 9] = [
+    "x", "y", "$(A)z", "$(B)", "", "$(Gated)", " x ", "a\\b", "x\ty",
+];
 const CONDITIONS: [&str; 6] = [
     "'$(A)' == 'x'",
     "'$(A)' != 'x'",
@@ -40,6 +45,15 @@ const CONDITIONS: [&str; 6] = [
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
 /// `Gated` is untrusted.
 const UNDECIDABLE: &str = "$([System.String]::IsNullOrWhiteSpace(''))";
+
+/// The structural `Label` attribute, now and then: it is not metadata.
+fn label(rng: &mut SplitMix64) -> &'static str {
+    if rng.below(8) == 0 {
+        " Label=\"l\""
+    } else {
+        ""
+    }
+}
 
 fn condition(rng: &mut SplitMix64) -> String {
     if rng.below(3) == 0 {
@@ -69,7 +83,13 @@ fn others(rng: &mut SplitMix64, of: usize, later: bool) -> Vec<&'static str> {
 }
 
 fn project(rng: &mut SplitMix64) -> String {
-    let mut out = String::from("<Project>\n  <PropertyGroup>\n");
+    // `InitialTargets` run before any target the build asks for.
+    let initial = if rng.below(12) == 0 {
+        " InitialTargets=\"T3\""
+    } else {
+        ""
+    };
+    let mut out = format!("<Project{initial}>\n  <PropertyGroup>\n");
     out.push_str(&format!("    <A>{}</A>\n", rng.pick(&["x", "y"])));
     if rng.below(2) == 0 {
         out.push_str("    <B>b</B>\n");
@@ -82,6 +102,12 @@ fn project(rng: &mut SplitMix64) -> String {
     out.push_str("    <Deps>T2;T3</Deps>\n    <Hook>T1</Hook>\n  </PropertyGroup>\n");
     if rng.below(2) == 0 {
         out.push_str("  <ItemGroup>\n    <I Include=\"e\" M=\"m\" />\n  </ItemGroup>\n");
+    }
+    // Defaults an item a target creates takes too.
+    if rng.below(5) == 0 {
+        out.push_str(
+            "  <ItemDefinitionGroup>\n    <I><M>d</M><N>n</N></I>\n  </ItemDefinitionGroup>\n",
+        );
     }
     for index in 0..TARGETS.len() {
         target(rng, index, &mut out);
@@ -131,20 +157,25 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
                     for _ in 0..1 + rng.below(2) {
                         let property = rng.pick(&PROPERTIES);
                         out.push_str(&format!(
-                            "      <{property}{}>{}</{property}>\n",
+                            "      <{property}{}{}>{}</{property}>\n",
                             condition(rng),
+                            label(rng),
                             rng.pick(&VALUES)
                         ));
                     }
                     out.push_str("    </PropertyGroup>\n");
                 }
                 7 | 8 => out.push_str(&format!(
-                    "    <ItemGroup>\n      <I Include=\"{};k\" M=\"{}\"{} />\n    </ItemGroup>\n",
+                    "    <ItemGroup>\n      <I Include=\"{};k\" M=\"{}\"{}{} />\n    </ItemGroup>\n",
                     rng.pick(&VALUES),
                     rng.pick(&VALUES),
-                    condition(rng)
+                    condition(rng),
+                    label(rng)
                 )),
-                9 | 10 => out.push_str("    <Message Text=\"$(A)\" Importance=\"low\" />\n"),
+                9 | 10 => out.push_str(&format!(
+                    "    <Message Text=\"$(A)\" Importance=\"{}\" />\n",
+                    rng.pick(&["low", "high", " Normal ", "invalid"])
+                )),
                 _ => out.push_str("    <Error Condition=\"false\" Text=\"no\" />\n"),
             }
         }

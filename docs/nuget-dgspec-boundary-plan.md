@@ -1970,9 +1970,15 @@ the two differ where it matters:
   not exist (`Evaluator.ReadTargetElement`,
   `AddBeforeAndAfterTargetMappings`).
 - **Bodies**: intrinsic `PropertyGroup`s, `ItemGroup` `Include`s without
-  batching, and `Message`.
+  batching (each new item taking its type's item-definition defaults beneath
+  its own metadata, `Label` not metadata), and `Message` with the parameters
+  it accepts. Text and attributes are read by the walk's own XML rules:
+  padding kept, and a value that XML normalisation or entity decoding
+  touched declines, as does inner XML.
 
-It declines everything else: another task, `Inputs`/`Outputs`/`Returns`,
+It declines everything else: another task, `InitialTargets` (not run yet),
+`Inputs`/`Outputs`/`Returns`, a backslash in an item identity or metadatum
+(MSBuild's Unix path fixup may respell it),
 `%(…)` and `@(…)`, a property function, `MSBuildThisFile*` (which name the
 defining file inside a target), a read of any value the walk does not vouch
 for, a write to a reserved or global property, and a graph in which a target
