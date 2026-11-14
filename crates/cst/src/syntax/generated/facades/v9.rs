@@ -72,7 +72,6 @@ crate::syntax::facade_support::facade_node!(IdentExpr: IDENT_EXPR);
 crate::syntax::facade_support::facade_node!(IfThenElseExpr: IF_THEN_ELSE_EXPR);
 crate::syntax::facade_support::facade_node!(ImplFile: IMPL_FILE);
 crate::syntax::facade_support::facade_node!(ImplicitCtor: IMPLICIT_CTOR);
-crate::syntax::facade_support::facade_node!(IndexFromEndExpr: INDEX_FROM_END_EXPR);
 crate::syntax::facade_support::facade_node!(IndexRangeExpr: INDEX_RANGE_EXPR);
 crate::syntax::facade_support::facade_node!(InferredDowncastExpr: INFERRED_DOWNCAST_EXPR);
 crate::syntax::facade_support::facade_node!(InferredUpcastExpr: INFERRED_UPCAST_EXPR);
@@ -209,7 +208,6 @@ pub enum Expr {
     Fun(FunExpr),
     Ident(IdentExpr),
     IfThenElse(IfThenElseExpr),
-    IndexFromEnd(IndexFromEndExpr),
     IndexRange(IndexRangeExpr),
     InferredDowncast(InferredDowncastExpr),
     InferredUpcast(InferredUpcastExpr),
@@ -273,7 +271,6 @@ impl AstNode for Expr {
                 | SyntaxKind::FUN_EXPR
                 | SyntaxKind::IDENT_EXPR
                 | SyntaxKind::IF_THEN_ELSE_EXPR
-                | SyntaxKind::INDEX_FROM_END_EXPR
                 | SyntaxKind::INDEX_RANGE_EXPR
                 | SyntaxKind::INFERRED_DOWNCAST_EXPR
                 | SyntaxKind::INFERRED_UPCAST_EXPR
@@ -338,7 +335,6 @@ impl AstNode for Expr {
             SyntaxKind::FUN_EXPR => FunExpr::cast(node).map(Expr::Fun),
             SyntaxKind::IDENT_EXPR => IdentExpr::cast(node).map(Expr::Ident),
             SyntaxKind::IF_THEN_ELSE_EXPR => IfThenElseExpr::cast(node).map(Expr::IfThenElse),
-            SyntaxKind::INDEX_FROM_END_EXPR => IndexFromEndExpr::cast(node).map(Expr::IndexFromEnd),
             SyntaxKind::INDEX_RANGE_EXPR => IndexRangeExpr::cast(node).map(Expr::IndexRange),
             SyntaxKind::INFERRED_DOWNCAST_EXPR => {
                 InferredDowncastExpr::cast(node).map(Expr::InferredDowncast)
@@ -409,7 +405,6 @@ impl AstNode for Expr {
             Expr::Fun(n) => n.syntax(),
             Expr::Ident(n) => n.syntax(),
             Expr::IfThenElse(n) => n.syntax(),
-            Expr::IndexFromEnd(n) => n.syntax(),
             Expr::IndexRange(n) => n.syntax(),
             Expr::InferredDowncast(n) => n.syntax(),
             Expr::InferredUpcast(n) => n.syntax(),
@@ -475,7 +470,6 @@ impl Expr {
             Expr::Fun(n) => u::Expr::Fun(n.to_union()),
             Expr::Ident(n) => u::Expr::Ident(n.to_union()),
             Expr::IfThenElse(n) => u::Expr::IfThenElse(n.to_union()),
-            Expr::IndexFromEnd(n) => u::Expr::IndexFromEnd(n.to_union()),
             Expr::IndexRange(n) => u::Expr::IndexRange(n.to_union()),
             Expr::InferredDowncast(n) => u::Expr::InferredDowncast(n.to_union()),
             Expr::InferredUpcast(n) => u::Expr::InferredUpcast(n.to_union()),
@@ -1437,8 +1431,8 @@ impl AutoPropertyKind {
 }
 
 impl Expr {
-    pub(crate) fn from_union(value: u::Expr) -> Self {
-        match value {
+    pub(crate) fn from_union(value: u::Expr) -> Option<Self> {
+        Some(match value {
             u::Expr::AddressOf(n) => Expr::AddressOf(AddressOfExpr(n)),
             u::Expr::AnonRecd(n) => Expr::AnonRecd(AnonRecdExpr(n)),
             u::Expr::App(n) => Expr::App(AppExpr(n)),
@@ -1462,7 +1456,6 @@ impl Expr {
             u::Expr::Fun(n) => Expr::Fun(FunExpr(n)),
             u::Expr::Ident(n) => Expr::Ident(IdentExpr(n)),
             u::Expr::IfThenElse(n) => Expr::IfThenElse(IfThenElseExpr(n)),
-            u::Expr::IndexFromEnd(n) => Expr::IndexFromEnd(IndexFromEndExpr(n)),
             u::Expr::IndexRange(n) => Expr::IndexRange(IndexRangeExpr(n)),
             u::Expr::InferredDowncast(n) => Expr::InferredDowncast(InferredDowncastExpr(n)),
             u::Expr::InferredUpcast(n) => Expr::InferredUpcast(InferredUpcastExpr(n)),
@@ -1498,7 +1491,8 @@ impl Expr {
             u::Expr::While(n) => Expr::While(WhileExpr(n)),
             u::Expr::WhileBang(n) => Expr::WhileBang(WhileBangExpr(n)),
             u::Expr::Yield(n) => Expr::Yield(YieldExpr(n)),
-        }
+            _ => return None,
+        })
     }
 }
 
@@ -1522,14 +1516,14 @@ impl ExternCTypeSuffix {
 }
 
 impl InterpStringPart {
-    pub(crate) fn from_union(value: u::InterpStringPart) -> Self {
-        match value {
+    pub(crate) fn from_union(value: u::InterpStringPart) -> Option<Self> {
+        Some(match value {
             u::InterpStringPart::Fill { expr, qualifier } => InterpStringPart::Fill {
-                expr: Expr::from_union(expr),
+                expr: Expr::from_union(expr)?,
                 qualifier,
             },
             u::InterpStringPart::Fragment(x0) => InterpStringPart::Fragment(x0),
-        }
+        })
     }
 }
 
@@ -1778,7 +1772,7 @@ impl ActivePatName {
 
 impl AddressOfExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn is_byref(&self) -> bool {
         self.0.is_byref()
@@ -1793,7 +1787,7 @@ impl AndsPat {
 
 impl AnonRecdExpr {
     pub fn copy_source(&self) -> Option<Expr> {
-        self.0.copy_source().map(Expr::from_union)
+        self.0.copy_source().and_then(Expr::from_union)
     }
     pub fn fields(&self) -> impl Iterator<Item = RecordField> + '_ {
         self.0.fields().map(RecordField)
@@ -1829,10 +1823,10 @@ impl AnonType {
 
 impl AppExpr {
     pub fn arg(&self) -> Option<Expr> {
-        self.0.arg().map(Expr::from_union)
+        self.0.arg().and_then(Expr::from_union)
     }
     pub fn func(&self) -> Option<Expr> {
-        self.0.func().map(Expr::from_union)
+        self.0.func().and_then(Expr::from_union)
     }
     pub fn is_atomic(&self) -> bool {
         self.0.is_atomic()
@@ -1863,7 +1857,7 @@ impl AppType {
 
 impl ArrayOrListExpr {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
     pub fn is_array(&self) -> bool {
         self.0.is_array()
@@ -1902,16 +1896,16 @@ impl AsPat {
 
 impl AssertExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
 impl AssignExpr {
     pub fn target(&self) -> Option<Expr> {
-        self.0.target().map(Expr::from_union)
+        self.0.target().and_then(Expr::from_union)
     }
     pub fn value(&self) -> Option<Expr> {
-        self.0.value().map(Expr::from_union)
+        self.0.value().and_then(Expr::from_union)
     }
 }
 
@@ -1926,7 +1920,7 @@ impl AttribPat {
 
 impl Attribute {
     pub fn arg(&self) -> Option<Expr> {
-        self.0.arg().map(Expr::from_union)
+        self.0.arg().and_then(Expr::from_union)
     }
     pub fn target(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.target()
@@ -1953,7 +1947,7 @@ impl AutoProperty {
         self.0.attributes().map(AttributeList)
     }
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -1977,7 +1971,7 @@ impl Binding {
         self.0.ctor_self_id()
     }
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn is_inline(&self) -> bool {
         self.0.is_inline()
@@ -2001,7 +1995,7 @@ impl BindingReturnInfo {
 
 impl ComputationExpr {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
 }
 
@@ -2010,10 +2004,10 @@ impl ConsExpr {
         self.0.cons_token()
     }
     pub fn lhs(&self) -> Option<Expr> {
-        self.0.lhs().map(Expr::from_union)
+        self.0.lhs().and_then(Expr::from_union)
     }
     pub fn rhs(&self) -> Option<Expr> {
-        self.0.rhs().map(Expr::from_union)
+        self.0.rhs().and_then(Expr::from_union)
     }
 }
 
@@ -2049,19 +2043,19 @@ impl DelegateRepr {
 
 impl DoBangExpr {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
 }
 
 impl DoExpr {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
 }
 
 impl DotGetExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn long_ident(&self) -> Option<LongIdent> {
         self.0.long_ident().map(LongIdent)
@@ -2070,28 +2064,28 @@ impl DotGetExpr {
 
 impl DotIndexedGetExpr {
     pub fn index(&self) -> Option<Expr> {
-        self.0.index().map(Expr::from_union)
+        self.0.index().and_then(Expr::from_union)
     }
     pub fn object(&self) -> Option<Expr> {
-        self.0.object().map(Expr::from_union)
+        self.0.object().and_then(Expr::from_union)
     }
 }
 
 impl DotLambdaExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
 impl DotMissingExpr {
     pub fn receiver(&self) -> Option<Expr> {
-        self.0.receiver().map(Expr::from_union)
+        self.0.receiver().and_then(Expr::from_union)
     }
 }
 
 impl DowncastExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
         self.0.ty().map(Type::from_union)
@@ -2100,10 +2094,10 @@ impl DowncastExpr {
 
 impl DynamicExpr {
     pub fn arg(&self) -> Option<Expr> {
-        self.0.arg().map(Expr::from_union)
+        self.0.arg().and_then(Expr::from_union)
     }
     pub fn lhs(&self) -> Option<Expr> {
-        self.0.lhs().map(Expr::from_union)
+        self.0.lhs().and_then(Expr::from_union)
     }
 }
 
@@ -2118,7 +2112,7 @@ impl EnumCase {
         self.0.operator_name()
     }
     pub fn value(&self) -> Option<Expr> {
-        self.0.value().map(Expr::from_union)
+        self.0.value().and_then(Expr::from_union)
     }
 }
 
@@ -2145,7 +2139,7 @@ impl ExceptionDefnDecl {
 
 impl ExprDecl {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
@@ -2199,16 +2193,16 @@ impl ExternRet {
 
 impl FixedExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
 impl ForEachExpr {
     pub fn body(&self) -> Option<Expr> {
-        self.0.body().map(Expr::from_union)
+        self.0.body().and_then(Expr::from_union)
     }
     pub fn enum_expr(&self) -> Option<Expr> {
-        self.0.enum_expr().map(Expr::from_union)
+        self.0.enum_expr().and_then(Expr::from_union)
     }
     pub fn pat(&self) -> Option<Pat> {
         self.0.pat().map(Pat::from_union)
@@ -2217,10 +2211,10 @@ impl ForEachExpr {
 
 impl ForExpr {
     pub fn body(&self) -> Option<Expr> {
-        self.0.body().map(Expr::from_union)
+        self.0.body().and_then(Expr::from_union)
     }
     pub fn from_expr(&self) -> Option<Expr> {
-        self.0.from_expr().map(Expr::from_union)
+        self.0.from_expr().and_then(Expr::from_union)
     }
     pub fn ident(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.ident()
@@ -2229,7 +2223,7 @@ impl ForExpr {
         self.0.is_ascending()
     }
     pub fn to_expr(&self) -> Option<Expr> {
-        self.0.to_expr().map(Expr::from_union)
+        self.0.to_expr().and_then(Expr::from_union)
     }
 }
 
@@ -2238,7 +2232,7 @@ impl FunExpr {
         self.0.args().map(Pat::from_union)
     }
     pub fn body(&self) -> Option<Expr> {
-        self.0.body().map(Expr::from_union)
+        self.0.body().and_then(Expr::from_union)
     }
 }
 
@@ -2259,7 +2253,7 @@ impl GetSetAccessor {
         self.0.attributes().map(AttributeList)
     }
     pub fn body(&self) -> Option<Expr> {
-        self.0.body().map(Expr::from_union)
+        self.0.body().and_then(Expr::from_union)
     }
     pub fn is_get(&self) -> bool {
         self.0.is_get()
@@ -2304,16 +2298,16 @@ impl IdentExpr {
 
 impl IfThenElseExpr {
     pub fn condition(&self) -> Option<Expr> {
-        self.0.condition().map(Expr::from_union)
+        self.0.condition().and_then(Expr::from_union)
     }
     pub fn else_branch(&self) -> Option<Expr> {
-        self.0.else_branch().map(Expr::from_union)
+        self.0.else_branch().and_then(Expr::from_union)
     }
     pub fn has_else(&self) -> bool {
         self.0.has_else()
     }
     pub fn then_branch(&self) -> Option<Expr> {
-        self.0.then_branch().map(Expr::from_union)
+        self.0.then_branch().and_then(Expr::from_union)
     }
 }
 
@@ -2335,36 +2329,30 @@ impl ImplicitCtor {
     }
 }
 
-impl IndexFromEndExpr {
-    pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
-    }
-}
-
 impl IndexRangeExpr {
     pub fn lower(&self) -> Option<Expr> {
-        self.0.lower().map(Expr::from_union)
+        self.0.lower().and_then(Expr::from_union)
     }
     pub fn upper(&self) -> Option<Expr> {
-        self.0.upper().map(Expr::from_union)
+        self.0.upper().and_then(Expr::from_union)
     }
 }
 
 impl InferredDowncastExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
 impl InferredUpcastExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
 impl InheritMember {
     pub fn args(&self) -> Option<Expr> {
-        self.0.args().map(Expr::from_union)
+        self.0.args().and_then(Expr::from_union)
     }
     pub fn base_type(&self) -> Option<Type> {
         self.0.base_type().map(Type::from_union)
@@ -2376,7 +2364,7 @@ impl InheritMember {
 
 impl InlineIlExpr {
     pub fn args(&self) -> impl Iterator<Item = Expr> + '_ {
-        self.0.args().map(Expr::from_union)
+        self.0.args().filter_map(Expr::from_union)
     }
     pub fn instruction(&self) -> Option<crate::syntax::SyntaxToken> {
         self.0.instruction()
@@ -2403,7 +2391,7 @@ impl InterpStringExpr {
         self.0
             .parts()
             .into_iter()
-            .map(InterpStringPart::from_union)
+            .filter_map(InterpStringPart::from_union)
             .collect()
     }
 }
@@ -2428,16 +2416,16 @@ impl JoinInExpr {
         self.0.in_token()
     }
     pub fn lhs(&self) -> Option<Expr> {
-        self.0.lhs().map(Expr::from_union)
+        self.0.lhs().and_then(Expr::from_union)
     }
     pub fn rhs(&self) -> Option<Expr> {
-        self.0.rhs().map(Expr::from_union)
+        self.0.rhs().and_then(Expr::from_union)
     }
 }
 
 impl LazyExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
@@ -2461,7 +2449,7 @@ impl LetOrUseExpr {
         self.0.bindings().map(Binding)
     }
     pub fn body(&self) -> Option<Expr> {
-        self.0.body().map(Expr::from_union)
+        self.0.body().and_then(Expr::from_union)
     }
     pub fn is_bang(&self) -> bool {
         self.0.is_bang()
@@ -2482,7 +2470,7 @@ impl LibraryOnlyFieldGetExpr {
         self.0.field_num()
     }
     pub fn object(&self) -> Option<Expr> {
-        self.0.object().map(Expr::from_union)
+        self.0.object().and_then(Expr::from_union)
     }
 }
 
@@ -2558,19 +2546,19 @@ impl MatchBangExpr {
         self.0.clauses().map(MatchClause)
     }
     pub fn scrutinee(&self) -> Option<Expr> {
-        self.0.scrutinee().map(Expr::from_union)
+        self.0.scrutinee().and_then(Expr::from_union)
     }
 }
 
 impl MatchClause {
     pub fn guard(&self) -> Option<Expr> {
-        self.0.guard().map(Expr::from_union)
+        self.0.guard().and_then(Expr::from_union)
     }
     pub fn pat(&self) -> Option<Pat> {
         self.0.pat().map(Pat::from_union)
     }
     pub fn result(&self) -> Option<Expr> {
-        self.0.result().map(Expr::from_union)
+        self.0.result().and_then(Expr::from_union)
     }
 }
 
@@ -2579,7 +2567,7 @@ impl MatchExpr {
         self.0.clauses().map(MatchClause)
     }
     pub fn scrutinee(&self) -> Option<Expr> {
-        self.0.scrutinee().map(Expr::from_union)
+        self.0.scrutinee().and_then(Expr::from_union)
     }
 }
 
@@ -2678,7 +2666,7 @@ impl MeasureVar {
 
 impl MemberDo {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn is_static(&self) -> bool {
         self.0.is_static()
@@ -2807,7 +2795,7 @@ impl NestedModuleDecl {
 
 impl NewExpr {
     pub fn arg(&self) -> Option<Expr> {
-        self.0.arg().map(Expr::from_union)
+        self.0.arg().and_then(Expr::from_union)
     }
     pub fn target_type(&self) -> Option<Type> {
         self.0.target_type().map(Type::from_union)
@@ -2828,7 +2816,7 @@ impl NullPat {
 
 impl ObjExpr {
     pub fn arg(&self) -> Option<Expr> {
-        self.0.arg().map(Expr::from_union)
+        self.0.arg().and_then(Expr::from_union)
     }
     pub fn bindings(&self) -> impl Iterator<Item = Binding> + '_ {
         self.0.bindings().map(Binding)
@@ -2894,7 +2882,7 @@ impl OrPat {
 
 impl ParenExpr {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
 }
 
@@ -2912,7 +2900,7 @@ impl ParenType {
 
 impl QuoteExpr {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
     pub fn is_raw(&self) -> bool {
         self.0.is_raw()
@@ -2921,7 +2909,7 @@ impl QuoteExpr {
 
 impl QuotePat {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
 }
 
@@ -2954,7 +2942,7 @@ impl RationalConstRational {
 
 impl RecordExpr {
     pub fn copy_source(&self) -> Option<Expr> {
-        self.0.copy_source().map(Expr::from_union)
+        self.0.copy_source().and_then(Expr::from_union)
     }
     pub fn fields(&self) -> impl Iterator<Item = RecordField> + '_ {
         self.0.fields().map(RecordField)
@@ -2969,7 +2957,7 @@ impl RecordField {
         self.0.field_name().map(LongIdent)
     }
     pub fn value(&self) -> Option<Expr> {
-        self.0.value().map(Expr::from_union)
+        self.0.value().and_then(Expr::from_union)
     }
 }
 
@@ -3011,7 +2999,7 @@ impl RecordRepr {
 
 impl SequentialExpr {
     pub fn statements(&self) -> impl Iterator<Item = Expr> + '_ {
-        self.0.statements().map(Expr::from_union)
+        self.0.statements().filter_map(Expr::from_union)
     }
 }
 
@@ -3038,7 +3026,7 @@ impl SignatureParameterType {
 
 impl StaticConstExprType {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
 }
 
@@ -3071,7 +3059,7 @@ impl StaticOptCondition {
 
 impl StaticOptWhenClause {
     pub fn branch(&self) -> Option<Expr> {
-        self.0.branch().map(Expr::from_union)
+        self.0.branch().and_then(Expr::from_union)
     }
     pub fn conditions(&self) -> impl Iterator<Item = StaticOptCondition> + '_ {
         self.0.conditions().map(StaticOptCondition)
@@ -3083,13 +3071,13 @@ impl StaticOptimizationExpr {
         self.0.clauses().map(StaticOptWhenClause)
     }
     pub fn main_expr(&self) -> Option<Expr> {
-        self.0.main_expr().map(Expr::from_union)
+        self.0.main_expr().and_then(Expr::from_union)
     }
 }
 
 impl TraitCallExpr {
     pub fn arg(&self) -> Option<Expr> {
-        self.0.arg().map(Expr::from_union)
+        self.0.arg().and_then(Expr::from_union)
     }
     pub fn member_sig(&self) -> Option<MemberSig> {
         self.0.member_sig().map(MemberSig)
@@ -3104,13 +3092,13 @@ impl TraitCallExpr {
 
 impl TryExpr {
     pub fn finally_expr(&self) -> Option<Expr> {
-        self.0.finally_expr().map(Expr::from_union)
+        self.0.finally_expr().and_then(Expr::from_union)
     }
     pub fn is_try_finally(&self) -> bool {
         self.0.is_try_finally()
     }
     pub fn try_expr(&self) -> Option<Expr> {
-        self.0.try_expr().map(Expr::from_union)
+        self.0.try_expr().and_then(Expr::from_union)
     }
     pub fn with_clauses(&self) -> impl Iterator<Item = MatchClause> + '_ {
         self.0.with_clauses().map(MatchClause)
@@ -3119,7 +3107,7 @@ impl TryExpr {
 
 impl TupleExpr {
     pub fn elements(&self) -> impl Iterator<Item = Expr> + '_ {
-        self.0.elements().map(Expr::from_union)
+        self.0.elements().filter_map(Expr::from_union)
     }
     pub fn is_struct(&self) -> bool {
         self.0.is_struct()
@@ -3219,7 +3207,7 @@ impl TypeAbbrev {
 
 impl TypeAppExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn type_args(&self) -> Vec<Type> {
         self.0
@@ -3262,7 +3250,7 @@ impl TypeDefnsDecl {
 
 impl TypeTestExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
         self.0.ty().map(Type::from_union)
@@ -3271,7 +3259,7 @@ impl TypeTestExpr {
 
 impl TypedExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
         self.0.ty().map(Type::from_union)
@@ -3325,7 +3313,7 @@ impl UnionRepr {
 
 impl UpcastExpr {
     pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().map(Expr::from_union)
+        self.0.expr().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
         self.0.ty().map(Type::from_union)
@@ -3370,7 +3358,7 @@ impl ValSig {
         self.0.ident()
     }
     pub fn literal_value(&self) -> Option<Expr> {
-        self.0.literal_value().map(Expr::from_union)
+        self.0.literal_value().and_then(Expr::from_union)
     }
     pub fn ty(&self) -> Option<Type> {
         self.0.ty().map(Type::from_union)
@@ -3391,19 +3379,19 @@ impl VarType {
 
 impl WhileBangExpr {
     pub fn body(&self) -> Option<Expr> {
-        self.0.body().map(Expr::from_union)
+        self.0.body().and_then(Expr::from_union)
     }
     pub fn cond(&self) -> Option<Expr> {
-        self.0.cond().map(Expr::from_union)
+        self.0.cond().and_then(Expr::from_union)
     }
 }
 
 impl WhileExpr {
     pub fn body(&self) -> Option<Expr> {
-        self.0.body().map(Expr::from_union)
+        self.0.body().and_then(Expr::from_union)
     }
     pub fn cond(&self) -> Option<Expr> {
-        self.0.cond().map(Expr::from_union)
+        self.0.cond().and_then(Expr::from_union)
     }
 }
 
@@ -3424,7 +3412,7 @@ impl WithNullType {
 
 impl YieldExpr {
     pub fn inner(&self) -> Option<Expr> {
-        self.0.inner().map(Expr::from_union)
+        self.0.inner().and_then(Expr::from_union)
     }
     pub fn is_from(&self) -> bool {
         self.0.is_from()

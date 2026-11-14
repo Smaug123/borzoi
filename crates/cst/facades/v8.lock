@@ -59,7 +59,6 @@ node	IdentExpr	IDENT_EXPR
 node	IfThenElseExpr	IF_THEN_ELSE_EXPR
 node	ImplFile	IMPL_FILE
 node	ImplicitCtor	IMPLICIT_CTOR
-node	IndexFromEndExpr	INDEX_FROM_END_EXPR
 node	IndexRangeExpr	INDEX_RANGE_EXPR
 node	InferredDowncastExpr	INFERRED_DOWNCAST_EXPR
 node	InferredUpcastExpr	INFERRED_UPCAST_EXPR
@@ -193,7 +192,6 @@ enum	Expr	ForEach	ForEachExpr
 enum	Expr	Fun	FunExpr
 enum	Expr	Ident	IdentExpr
 enum	Expr	IfThenElse	IfThenElseExpr
-enum	Expr	IndexFromEnd	IndexFromEndExpr
 enum	Expr	IndexRange	IndexRangeExpr
 enum	Expr	InferredDowncast	InferredDowncastExpr
 enum	Expr	InferredUpcast	InferredUpcastExpr
@@ -546,7 +544,6 @@ accessor	ImplFile	modules	iter node ModuleOrNamespace	union.modules
 accessor	ImplicitCtor	args	option enum Pat	union.args
 accessor	ImplicitCtor	attributes	iter node AttributeList	union.attributes
 accessor	ImplicitCtor	self_id	option token	union.self_id
-accessor	IndexFromEndExpr	expr	option enum Expr	union.expr
 accessor	IndexRangeExpr	lower	option enum Expr	union.lower
 accessor	IndexRangeExpr	upper	option enum Expr	union.upper
 accessor	InferredDowncastExpr	expr	option enum Expr	union.expr

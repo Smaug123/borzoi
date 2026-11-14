@@ -329,16 +329,22 @@ impl LanguageFeature {
     /// The features the parser gates where they occur: the live rows with a
     /// `Kind` or `Positional` item. A parse at a version supporting all of
     /// them draws no such gate.
-    pub const POSITIONAL_GATES: [LanguageFeature; 9] = [
+    pub const POSITIONAL_GATES: [LanguageFeature; 15] = [
+        LanguageFeature::SingleUnderscorePattern,
+        LanguageFeature::WildCardInForLoop,
         LanguageFeature::RelaxWhitespace,
         LanguageFeature::DotlessFloat32Literal,
+        LanguageFeature::StringInterpolation,
         LanguageFeature::AttributesToRightOfModuleKeyword,
         LanguageFeature::InterfacesWithAbstractStaticMembers,
+        LanguageFeature::AccessorFunctionShorthand,
         LanguageFeature::ConstraintIntersectionOnFlexibleTypes,
         LanguageFeature::WhileBang,
         LanguageFeature::NullnessChecking,
+        LanguageFeature::BetterAnonymousRecordParsing,
         LanguageFeature::AllowTypedLetUseAndBang,
         LanguageFeature::ErrorOnInvalidDeclsInTypeDefinitions,
+        LanguageFeature::FromEndSlicing,
     ];
 
     /// The first version with the feature (FCS's `features` map).
@@ -837,7 +843,9 @@ impl LanguageFeature {
             LanguageFeature::LowerInterpolatedStringToConcat => &[],
             LanguageFeature::LowerIntegralRangesToFastLoops => &[],
             LanguageFeature::LowerSimpleMappingsInComprehensionsToFastLoops => &[],
-            LanguageFeature::ParsedHashDirectiveArgumentNonQuotes => &[FcsEffect::Diagnose],
+            LanguageFeature::ParsedHashDirectiveArgumentNonQuotes => {
+                &[FcsEffect::Diagnose, FcsEffect::Severity]
+            }
             LanguageFeature::EmptyBodiedComputationExpressions => &[],
             LanguageFeature::EnforceAttributeTargets => &[],
             LanguageFeature::UseTypeSubsumptionCache => &[],
@@ -848,7 +856,7 @@ impl LanguageFeature {
             LanguageFeature::WarnWhenUnitPassedToObjArg => &[],
             LanguageFeature::UseBangBindingValueDiscard => &[],
             LanguageFeature::BetterAnonymousRecordParsing => &[FcsEffect::Diagnose],
-            LanguageFeature::ScopedNowarn => &[FcsEffect::Diagnose],
+            LanguageFeature::ScopedNowarn => &[FcsEffect::Diagnose, FcsEffect::Severity],
             LanguageFeature::AllowTypedLetUseAndBang => &[FcsEffect::Diagnose],
             LanguageFeature::UnmanagedConstraintCsharpInterop => &[],
             LanguageFeature::AllowAccessModifiersToAutoPropertiesGettersAndSetters => &[],
@@ -869,11 +877,14 @@ impl LanguageFeature {
 /// (`parser::feature_gates`), and the `vN` facades leave it out below it.
 pub fn kind_feature(kind: SyntaxKind) -> Option<LanguageFeature> {
     match kind {
+        SyntaxKind::INTERP_STRING_EXPR => Some(LanguageFeature::StringInterpolation),
+        SyntaxKind::DOT_LAMBDA_EXPR => Some(LanguageFeature::AccessorFunctionShorthand),
         SyntaxKind::INTERSECTION_TYPE => {
             Some(LanguageFeature::ConstraintIntersectionOnFlexibleTypes)
         }
         SyntaxKind::WHILE_BANG_EXPR => Some(LanguageFeature::WhileBang),
         SyntaxKind::WITH_NULL_TYPE => Some(LanguageFeature::NullnessChecking),
+        SyntaxKind::INDEX_FROM_END_EXPR => Some(LanguageFeature::FromEndSlicing),
         _ => None,
     }
 }
@@ -881,17 +892,4 @@ pub fn kind_feature(kind: SyntaxKind) -> Option<LanguageFeature> {
 /// The kinds of the table's deferred `Kind` rows, with their feature: a
 /// feature introduced each, but neither the gates nor the facades act on
 /// it yet, so [`kind_feature`] does not return it.
-pub const DEFERRED_KIND_FEATURES: [(SyntaxKind, LanguageFeature); 3] = [
-    (
-        SyntaxKind::INTERP_STRING_EXPR,
-        LanguageFeature::StringInterpolation,
-    ),
-    (
-        SyntaxKind::DOT_LAMBDA_EXPR,
-        LanguageFeature::AccessorFunctionShorthand,
-    ),
-    (
-        SyntaxKind::INDEX_FROM_END_EXPR,
-        LanguageFeature::FromEndSlicing,
-    ),
-];
+pub const DEFERRED_KIND_FEATURES: [(SyntaxKind, LanguageFeature); 0] = [];

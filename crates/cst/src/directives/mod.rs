@@ -12,7 +12,7 @@ pub mod line_store;
 
 pub use driver::{
     Driver, FullTriviaDriver, PreprocError, Preprocessed, TriviaToken, lex_with_symbols,
-    lex_with_symbols_full_trivia, preprocess,
+    lex_with_symbols_full_trivia, lex_with_symbols_full_trivia_at, preprocess, preprocess_at,
 };
 pub use expr::{Expr, ParseError, ParseErrorKind, parse_if_expr};
 pub use line::{

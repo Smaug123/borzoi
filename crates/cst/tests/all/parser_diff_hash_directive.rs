@@ -5,7 +5,7 @@
 //! literals and source identifiers such as `__SOURCE_DIRECTORY__`), including
 //! the canonicalised source-identifier expansion.
 
-use crate::common::{assert_asts_match, assert_asts_match_fcs_rejects_ours_accepts};
+use crate::common::{assert_asts_match, assert_asts_match_allow_errors};
 
 /// A regular-string argument (`#I "/tmp"`).
 #[test]
@@ -49,11 +49,11 @@ fn diff_ast_hash_line_source_identifier_arg() {
 
 /// A plain-identifier argument (`#nowarn FS`, `#time on`) — FCS's
 /// `ParsedHashDirectiveArgument.Ident`, distinct from the magic source
-/// identifiers. `#nowarn FS` is an invalid warning id, so FCS sets
-/// `ParseHadErrors` while still emitting the directive AST.
+/// identifiers. `#nowarn FS` is an invalid warning id (FS0203), an error on
+/// both sides that leaves the directive AST alone.
 #[test]
 fn diff_ast_hash_plain_ident_args() {
-    assert_asts_match_fcs_rejects_ours_accepts("#nowarn FS\n");
+    assert_asts_match_allow_errors("#nowarn FS\n");
     assert_asts_match("#time on\n");
 }
 

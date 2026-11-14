@@ -819,6 +819,7 @@ pub fn filter_collect<'src>(tokens: &RawTokens<'src>, lang: LanguageVersion) -> 
     FilterRun {
         tokens: table,
         diagnostics: f.diagnostics,
+        gates: f.gates,
         shape_depends_on_language_version: f.shape_depends_on_language_version,
     }
 }
@@ -888,6 +889,12 @@ pub struct FilterRun<'a> {
     /// The offside / indentation diagnostics (FS0058 family) accumulated
     /// during the run.
     pub diagnostics: Vec<OffsideDiagnostic>,
+    /// Each language-version gate the run reached below its feature's
+    /// version, with the range FCS reports it at:
+    /// [`LanguageFeature::BetterAnonymousRecordParsing`]'s splits of `>|}`
+    /// and `@>|}`, which the filter makes at every version. The parser
+    /// reports each as the feature's FS3350.
+    pub gates: Vec<(LanguageFeature, Span)>,
     /// Whether this run reached a decision point whose outcome differs
     /// across language versions. There are three kinds:
     ///
@@ -904,14 +911,16 @@ pub struct FilterRun<'a> {
     ///    F# 6 (`Filter::pop_ctxt`), when the next token would not have
     ///    removed it anyway (`Filter::resolve_match_ghost`).
     ///
-    /// `false` **proves** the filtered stream — and therefore the parse
-    /// tree — is identical under every [`LanguageVersion`]: two hypothetical
-    /// runs under different versions produce identical streams up to their
-    /// first divergence point, that point is reached in the same state by
-    /// both, and it is by construction one of the decisions above — exactly
-    /// where this flag is set. Consumers that don't know the project's real
-    /// language version (an untrusted `<LangVersion>` provenance) can
-    /// therefore trust a `false`-flagged parse outright.
+    /// `false` **proves** the filtered stream of this token table is identical
+    /// under every [`LanguageVersion`]: two hypothetical runs under different
+    /// versions produce identical streams up to their first divergence point,
+    /// that point is reached in the same state by both, and it is by
+    /// construction one of the decisions above — exactly where this flag is
+    /// set. The table itself depends on the version only through a `$$"""`
+    /// opener, which [`crate::parser::Parse::shape_depends_on_language_version`]
+    /// adds, so consumers that don't know the project's real language version
+    /// (an untrusted `<LangVersion>` provenance) can trust a parse that flag
+    /// leaves `false` outright.
     ///
     /// `true` is a sound **over**-approximation: the differing stack
     /// operations can reconverge to the identical stream (an EOF-anchored
@@ -1042,6 +1051,23 @@ struct Filter<'a> {
     /// order detected. Drained by [`filter_collect`]. Empty until the emission
     /// stages of `docs/offside-diagnostics-plan.md` land.
     diagnostics: Vec<OffsideDiagnostic>,
+    /// [`FilterRun::gates`], in the order reached.
+    gates: Vec<(LanguageFeature, Span)>,
+    /// Whether [`LanguageFeature::BetterAnonymousRecordParsing`] is on, so
+    /// that its splits report nothing.
+    better_anonymous_record_parsing: bool,
+    /// The range FCS's lexbuf holds as its lexeme (`lexbuf.LexemeRange`): the
+    /// token its lexer read last, until the filter hands the parser a token,
+    /// which sets it to that token's (`returnToken`). A check the filter makes
+    /// with `CheckLanguageFeatureAndRecover lexbuf.LexemeRange` reports there,
+    /// which is the checked token's range only if the lexer read it last: a
+    /// token peeked while an earlier one was handled, and popped from the
+    /// delayed stack later, reports at the token handed over before it.
+    lexbuf_range: Span,
+    /// The raw index of a token our lexer lexes apart from the one before it
+    /// but FCS's lexer reads within the same lexeme: the `}` of `>|}`, which
+    /// FCS lexes as one token. Pulling it leaves [`Self::lexbuf_range`] alone.
+    lexeme_continues_at: Option<usize>,
     /// Set when this run reaches a decision whose outcome turns on the
     /// language version: a [`PushStrictness::VersionGated`] context push whose
     /// anchor is offside, or a `relaxWhitespace2` pop that matters. See
@@ -1185,6 +1211,11 @@ impl<'a> Filter<'a> {
             reports_invalid_decls_in_type: lang
                 .supports(LanguageFeature::ErrorOnInvalidDeclsInTypeDefinitions),
             diagnostics: Vec::new(),
+            gates: Vec::new(),
+            better_anonymous_record_parsing: lang
+                .supports(LanguageFeature::BetterAnonymousRecordParsing),
+            lexbuf_range: 0..0,
+            lexeme_continues_at: None,
             shape_depends_on_language_version: false,
             match_ghost: None,
             pushes: None,
@@ -1244,6 +1275,19 @@ impl<'a> Filter<'a> {
             };
             let span = self.raw.span(i);
             let tok_span = TokSpan::new(span.clone());
+            if self.lexeme_continues_at.take() != Some(i) {
+                self.lexbuf_range = span.clone();
+            }
+            // FCS's lexer reads `>|}` as one token, `GREATER_BAR_RBRACE`.
+            if matches!(token, TokenContent::Real(TokenKind::Op))
+                && &self.source[span.clone()] == ">|"
+                && i + 1 < self.raw.len()
+                && self.raw.kind(i + 1) == RawKind::Lexed(TokenKind::RBrace)
+                && self.raw.span(i + 1).start == span.end
+            {
+                self.lexbuf_range = span.start..span.end + 1;
+                self.lexeme_continues_at = Some(i + 1);
+            }
             // Cross the gap before this token, then its own bytes.
             let start = self.advance_cursor_to(span.start);
             let end = self.advance_cursor_to(span.end);
@@ -1264,6 +1308,7 @@ impl<'a> Filter<'a> {
         // last active token would put an EOF-anchored offside squiggle before
         // that region.
         let pos = self.advance_cursor_to(self.source.len());
+        self.lexbuf_range = self.source.len()..self.source.len();
         Some(TokenTup {
             token: TokenContent::Eof,
             span: TokSpan::new(self.source.len()..self.source.len()),
@@ -1768,6 +1813,12 @@ impl<'a> Filter<'a> {
                         TokenContent::Real(TokenKind::RBrace) => TokenKind::BarRBrace,
                         _ => unreachable!("matched in the peek guard above"),
                     };
+                    // FCS's `GREATER_BAR_RBRACE` smash checks the feature
+                    // (LexFilter.fs:1214); its `GREATER_BAR_RBRACK` one does
+                    // not.
+                    if fused_tok == TokenKind::BarRBrace && op_text == ">|" {
+                        self.gate_better_anonymous_record_parsing();
+                    }
                     tail_to_emit = Some(TokenTup {
                         token: TokenContent::Real(fused_tok),
                         span: TokSpan::new(tail_start_byte..next.span.end as usize),
@@ -2921,6 +2972,18 @@ impl<'a> Filter<'a> {
         );
     }
 
+    /// FCS's `CheckLanguageFeatureAndRecover
+    /// LanguageFeature.BetterAnonymousRecordParsing lexbuf.LexemeRange`, made
+    /// as it splits a `>|}` or `@>|}`.
+    fn gate_better_anonymous_record_parsing(&mut self) {
+        if !self.better_anonymous_record_parsing {
+            self.gates.push((
+                LanguageFeature::BetterAnonymousRecordParsing,
+                self.lexbuf_range.clone(),
+            ));
+        }
+    }
+
     /// FCS's `insertToken` (LexFilter.fs:1375). Push `tt` back to delayed,
     /// return a synthetic carrying `virt` at the trigger's full range —
     /// FCS uses `(startPosOfTokenTup tokenTup, tokenTup.LexbufState.EndPos)`
@@ -3041,6 +3104,8 @@ impl Filter<'_> {
         }
         let tt = self.hw_token_fetch(true)?;
         let span = tt.span.range();
+        // FCS's `returnToken`: the lexbuf now holds the token handed over.
+        self.lexbuf_range = span.clone();
         let kind = match tt.token {
             TokenContent::Real(kind) => {
                 debug_assert!(

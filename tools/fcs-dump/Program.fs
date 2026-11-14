@@ -7448,6 +7448,20 @@ let private fileBatchLangVersionArgs (root: JsonElement) : string[] =
         [| "--langversion:" + s.Trim() |]
     | _ -> [||]
 
+/// Every entry of `diagnostics`, with its full range: `{ Code, Severity,
+/// Message, StartLine, StartCol, EndLine, EndCol }` (lines 1-based, columns
+/// 0-based UTF-16, as FCS reports them).
+let private rangedRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    diagnostics
+    |> Array.map (fun d ->
+        {| Code = d.ErrorNumber
+           Severity = string d.Severity
+           Message = d.Message
+           StartLine = d.StartLine
+           StartCol = d.StartColumn
+           EndLine = d.EndLine
+           EndCol = d.EndColumn |})
+
 /// The error-severity entries of `diagnostics`, as `{ Line, Code, Message }`.
 let private errorRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
     diagnostics
@@ -7583,6 +7597,10 @@ let private fileBatchCore () =
                 // feature error FCS reports while parsing can be missing there.
                 // Batch-only.
                 JsonSerializer.Serialize({| Errors = errorRecords parseResults.Diagnostics |}, compact)
+            | "check-diagnostics" ->
+                // The check's diagnostics with their ranges, for the language
+                // features FCS checks only in the type checker. Batch-only.
+                JsonSerializer.Serialize({| Diagnostics = rangedRecords checkResults.Diagnostics |}, compact)
             | "overloads" ->
                 let calls = collectOverloads (implFile ())
                 JsonSerializer.Serialize({| File = absolute; Calls = calls; Errors = errorLines () |}, compact)
