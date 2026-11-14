@@ -204,12 +204,18 @@ impl Read {
     /// A racy stamp ([`FileStamp::racy`]) holds only while the file's bytes
     /// are the ones the read that took it saw, which it carries a digest of
     /// when a whole-file read took it; otherwise it never holds: the file
-    /// may have changed since within the same timestamp tick.
+    /// may have changed since within the same timestamp tick. A stamp that
+    /// failed otherwise than by absence is asked again as the whole-file
+    /// read it may have been ([`read_stamped_now`]): a file that can be
+    /// `stat`ed and not read keeps failing the read, not the `stat`.
     pub fn still_holds(&self) -> bool {
         match &self.observation {
             Observation::Stamp(Ok(stamp)) if stamp.racy => stamp
                 .digest
                 .is_some_and(|digest| racy_content_now(&self.path, digest).0),
+            Observation::Stamp(Err(failure)) if !failure.is_absent() => {
+                read_stamped_now(&self.path) == self.observation
+            }
             _ => answer_now(&self.path, &self.observation) == self.observation,
         }
     }
@@ -394,6 +400,31 @@ pub fn bytes_digest(bytes: &[u8]) -> u128 {
         hasher.finish()
     };
     (u128::from(half(0)) << 64) | u128::from(half(1))
+}
+
+/// What [`read_stamped`] would record for `path` now, without recording it:
+/// the stamp the open file had before it was read, the read's failure if it
+/// failed after that, and for a racy stamp a digest of the bytes.
+pub fn read_stamped_now(path: &Path) -> Observation {
+    let (stamp, bytes) = stamped_bytes(path);
+    Observation::Stamp(recorded_stamp(stamp, &bytes))
+}
+
+/// The stamp a whole-file read records ([`read_stamped`]): the open file's
+/// stamp, the read's failure if it failed after that, and for a racy stamp
+/// a digest of the bytes read.
+fn recorded_stamp(
+    stamp: Result<FileStamp, Failure>,
+    bytes: &Result<Vec<u8>, Failure>,
+) -> Result<FileStamp, Failure> {
+    match (stamp, bytes) {
+        (Ok(_), Err(failure)) => Err(failure.clone()),
+        (Ok(stamp), Ok(bytes)) if stamp.racy => Ok(FileStamp {
+            digest: Some(bytes_digest(bytes)),
+            ..stamp
+        }),
+        (stamp, _) => stamp,
+    }
 }
 
 /// Whether the file at `path`, read whole now, holds the bytes a racy stamp
@@ -708,14 +739,7 @@ pub fn stamp(observer: &Observer, path: &Path) -> Result<FileStamp, Failure> {
 /// recorded with its failure.
 pub fn read_stamped(observer: &Observer, path: &Path) -> Result<Vec<u8>, Failure> {
     let (stamp, bytes) = stamped_bytes(path);
-    let recorded = match (stamp, &bytes) {
-        (Ok(_), Err(failure)) => Err(failure.clone()),
-        (Ok(stamp), Ok(bytes)) if stamp.racy => Ok(FileStamp {
-            digest: Some(bytes_digest(bytes)),
-            ..stamp
-        }),
-        (stamp, _) => stamp,
-    };
+    let recorded = recorded_stamp(stamp, &bytes);
     observer.record_open(path, Observation::Stamp(recorded));
     bytes
 }

@@ -118,6 +118,13 @@ pub trait Probe: Disk {
     fn racy_content(&self, _path: &Path, _digest: u128) -> Option<FileStamp> {
         None
     }
+    /// What a whole-file read of `path` records now
+    /// (`borzoi_msbuild::observed::read_stamped_now`): how a stamp that
+    /// failed otherwise than by absence is asked again. A disk that cannot
+    /// read answers as a `stat` would.
+    fn read_stamped(&self, path: &Path, query: &Observation) -> Observation {
+        self.answer(path, query)
+    }
 }
 
 /// One recorded read, and the witness that confirmed it last.
@@ -274,6 +281,21 @@ impl<D: Probe> ReadChecks<D> {
             && recorded.racy
         {
             return self.racy_stamp_holds(check, recorded);
+        }
+        // A stamp that failed otherwise than by absence may be a whole-file
+        // read that failed after a `stat` succeeded: asked as a `stat`, it
+        // would never hold again with nothing changing.
+        if let Observation::Stamp(Err(failure)) = &read.observation
+            && !failure.is_absent()
+        {
+            let mut counts = self.counts.get();
+            counts.opens += 1;
+            self.counts.set(counts);
+            return self
+                .files
+                .disk()
+                .read_stamped(&read.path, &read.observation)
+                == read.observation;
         }
         if let Observation::Text(recorded) = &read.observation {
             return self.files.text_answer(&read.path) == *recorded;

@@ -462,10 +462,11 @@ pub struct SemanticState {
     /// the whole owning DLL (FSharp.Core is ~2.4 MB) and re-extracts its PDB.
     /// An entry answers only while the DLL's stamp is the one recorded, and
     /// one recorded within the racy window of the DLL's last change is never
-    /// served ([`Self::pdb_image`]); a sidecar `.pdb` is used only when it
-    /// matches the DLL's debug directory, so it moves with the DLL. So no
-    /// invalidation is needed for correctness, and [`Self::invalidate_all`]
-    /// clears the map only to bound memory.
+    /// served ([`Self::pdb_image`]). A sidecar `.pdb` is used only when it
+    /// matches the DLL's debug directory, but its presence is not in the key:
+    /// one added beside an unchanged DLL is seen after a referenced-assembly
+    /// watch event ([`Self::invalidate_assembly_state`]) or a structural one
+    /// ([`Self::invalidate_all`]), which clear the map.
     pdb_images: HashMap<PathBuf, PdbImage>,
     /// What XML-documentation lookup caches: the parsed sidecar `.xml` files
     /// hover has read, each validated against the file's `(size, mtime)` on
@@ -709,6 +710,11 @@ impl SemanticState {
         for env in &unrecorded {
             self.drop_env(env);
         }
+        // A cached PDB image rests on the DLL's stamp and on the sidecar
+        // `.pdb` the DLL names, whose stamp it does not record: a symbol file
+        // added beside an unchanged DLL reaches the cache only through an
+        // event of this class.
+        self.pdb_images.clear();
         // An env built afresh for every request (a transient sidecar
         // failure, never cached) may answer differently now, and an open
         // buffer's tokens with it.

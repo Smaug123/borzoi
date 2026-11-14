@@ -730,6 +730,47 @@ fn a_racy_stamp_holds_while_its_bytes_do_on_the_host() {
     );
 }
 
+/// On the host: a whole-file read of a file that can be `stat`ed but not
+/// read records the read's failure, and that holds, by reading again, while
+/// the file stays unreadable (asked as a `stat`, it would never hold, and an
+/// env reading it would be rebuilt in every generation); once the file can
+/// be read it fails.
+#[cfg(unix)]
+#[test]
+fn a_failed_whole_file_read_holds_while_it_keeps_failing_on_the_host() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("A.dll");
+    std::fs::write(&path, b"abcd").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let observer = borzoi_msbuild::observed::Observer::new();
+    if borzoi_msbuild::observed::read_stamped(&observer, &path).is_ok() {
+        // Running as a user no permission stops: nothing to test.
+        return;
+    }
+    let read = observer.finish().0.reads()[0].clone();
+    assert!(
+        matches!(&read.observation, Observation::Stamp(Err(f)) if !f.is_absent()),
+        "precondition: {read:?}"
+    );
+    assert!(read.still_holds(), "an unchanged failed read was stale");
+    let check = Check::new(read.clone());
+    let mut checker: ReadChecks = ReadChecks::default();
+    for at in 0..2 {
+        checker.begin_generation(Nanos(i128::MAX / 2 + at));
+        assert!(checker.holds(&check), "generation {at}");
+        checker.end_generation();
+    }
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!read.still_holds(), "a read that now succeeds still held");
+    checker.begin_generation(Nanos(i128::MAX / 2 + 2));
+    assert!(
+        !checker.holds(&check),
+        "a read that now succeeds still held"
+    );
+    checker.end_generation();
+}
+
 /// A racy stamp with no digest of what was read never holds, in a
 /// generation or out of one, whatever the file now says: a same-size write
 /// within its tick leaves every field the same. The window is the `Vfs`'s.

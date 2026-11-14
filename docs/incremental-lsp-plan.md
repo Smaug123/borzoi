@@ -2420,9 +2420,11 @@ WoofWare.Incremental with the on-disk cache off).
   unwitnessed.
 - **`pdb_images` is keyed by the DLL's stamp** (`FileStamp`, through the
   `GoToDefinition` reader). An entry answers only while the DLL's stamp is
-  the recorded one, and a racy stamp is never cached under; a sidecar `.pdb`
-  is used only when it matches the DLL's debug directory, so it moves with
-  the DLL. Nothing clears the map for correctness.
+  the recorded one, and a racy stamp is never cached under. The sidecar
+  `.pdb` the DLL names is not in the key, so a referenced-assembly watch
+  event still clears the map, as before: a symbol file added beside an
+  unchanged DLL reaches it that way (found by Codex). `.pdb` files are not
+  watched, so one added with no `.dll` event is unseen, as before.
 - **Both trust opt-ins drop every env** when they change
   (`set_on_demand_restore_enabled`, as `set_csharp_project_references_enabled`
   did), since neither is in the env's key and a structural event no longer
@@ -2438,6 +2440,13 @@ WoofWare.Incremental with the on-disk cache off).
   records the stamp (and digest) its bytes rest on, and under a racy stamp
   the cache is not asked at all (an answer resting on a racy stamp could
   never be confirmed again; found by Codex).
+- **A failed whole-file read is asked again as one.** `read_stamped` of a
+  DLL that can be `stat`ed and not read records the read's failure as the
+  stamp's answer; asked again as a `stat`, it succeeded, so it never held
+  and the env was rebuilt, and the client refreshed, in every generation.
+  `Read::still_holds` and `ReadChecks::holds` now ask a stamp that failed
+  otherwise than by absence as the whole-file read
+  (`read_stamped_now`; found by Codex).
 - **A generation number is a workspace's.** An entry confirmed in
   generation `n` is trusted for the rest of `n` only while the workspace
   confirming it owns its checks (`Workspace::owns`): a replaced workspace

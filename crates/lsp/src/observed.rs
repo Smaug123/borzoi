@@ -234,6 +234,14 @@ impl crate::read_checks::Probe for HostDisk {
         borzoi_msbuild::observed::answer_now(path, query)
     }
 
+    fn read_stamped(
+        &self,
+        path: &Path,
+        _query: &borzoi_msbuild::observed::Observation,
+    ) -> borzoi_msbuild::observed::Observation {
+        borzoi_msbuild::observed::read_stamped_now(path)
+    }
+
     fn racy_content(
         &self,
         path: &Path,
