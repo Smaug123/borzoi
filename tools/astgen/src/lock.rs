@@ -5,17 +5,27 @@
 //!
 //! | tag        | fields                      | one line per                     |
 //! |------------|-----------------------------|----------------------------------|
+//! | `alias-of` | facade module               | (an alias's only line)           |
 //! | `node`     | node, `SyntaxKind`          | kind a node newtype casts from   |
 //! | `enum`     | dispatch enum, variant, node| dispatch-enum variant            |
 //! | `value`    | value enum, variant, payload| value-enum variant               |
 //! | `derive`   | value enum, trait           | trait a value enum derives       |
-//! | `accessor` | owner node, method, shape   | public accessor                  |
+//! | `accessor` | owner, method, shape[, delegate] | public accessor             |
 //!
 //! A shape is [`Shape::render`]'s spelling (`option enum Expr`, `iter node
 //! Binding`, `bool`); a payload is `unit`, a tuple of shapes `(token)`, or
 //! named fields `{expr = enum Expr, qualifier = option token}`. Node newtypes
 //! and dispatch enums all derive the same traits, so only value enums carry
 //! `derive` lines. Lines starting `#` are comments.
+//!
+//! A per-version facade's lock (`crates/cst/facades/vN.lock`) gives each
+//! accessor a fifth field, its **delegate** `union.<method>`: the union
+//! accessor whose result the facade's accessor re-casts. A derived facade's
+//! delegate is the union accessor of the same name; a published facade whose
+//! union accessor has been renamed keeps its own name and points the delegate
+//! at the new one. The union's lock has no delegates. A facade whose surface
+//! equals an earlier version's is an alias of it, and its lock is the single
+//! line `alias-of\t<module>`.
 //!
 //! The records are sorted by tag (in the table's order), then field by field,
 //! with no duplicates; [`parse`] refuses any other order, so a lock has one
@@ -108,6 +118,9 @@ impl Payload {
 /// One record of a lock. The variant order is the lock's section order.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Line {
+    /// This facade is `pub use super::<target>::*`: the earlier facade
+    /// `target`'s types, whose surface it equals.
+    AliasOf { target: String },
     /// Node newtype `node` casts from `kind`.
     Node { node: String, kind: String },
     /// Dispatch enum `name` has `variant(node)`.
@@ -124,17 +137,20 @@ pub enum Line {
     },
     /// Value enum `name` derives `trait_`.
     Derive { name: String, trait_: String },
-    /// Node `owner` has `pub fn name(&self) -> shape`.
+    /// Node `owner` has `pub fn name(&self) -> shape`; in a facade's lock its
+    /// body re-casts the result of the union accessor `delegate`.
     Accessor {
         owner: String,
         name: String,
         shape: Shape,
+        delegate: Option<String>,
     },
 }
 
 impl Line {
     fn render(&self) -> String {
         match self {
+            Line::AliasOf { target } => format!("alias-of\t{target}"),
             Line::Node { node, kind } => format!("node\t{node}\t{kind}"),
             Line::Enum {
                 name,
@@ -147,8 +163,17 @@ impl Line {
                 payload,
             } => format!("value\t{name}\t{variant}\t{}", payload.render()),
             Line::Derive { name, trait_ } => format!("derive\t{name}\t{trait_}"),
-            Line::Accessor { owner, name, shape } => {
-                format!("accessor\t{owner}\t{name}\t{}", shape.render())
+            Line::Accessor {
+                owner,
+                name,
+                shape,
+                delegate,
+            } => {
+                let mut out = format!("accessor\t{owner}\t{name}\t{}", shape.render());
+                if let Some(delegate) = delegate {
+                    out.push_str(&format!("\tunion.{delegate}"));
+                }
+                out
             }
         }
     }
@@ -157,6 +182,9 @@ impl Line {
         let fields: Vec<&str> = text.split('\t').collect();
         let ty = |s: &str| type_name(s);
         match fields[..] {
+            ["alias-of", target] => Ok(Line::AliasOf {
+                target: module_name(target)?,
+            }),
             ["node", node, kind] => Ok(Line::Node {
                 node: ty(node)?,
                 kind: kind_name(kind)?,
@@ -179,6 +207,15 @@ impl Line {
                 owner: ty(owner)?,
                 name: field_name(name)?,
                 shape: parse_shape(shape)?,
+                delegate: None,
+            }),
+            ["accessor", owner, name, shape, delegate] => Ok(Line::Accessor {
+                owner: ty(owner)?,
+                name: field_name(name)?,
+                shape: parse_shape(shape)?,
+                delegate: Some(field_name(delegate.strip_prefix("union.").ok_or_else(
+                    || format!("delegate {delegate:?} is not `union.<method>`"),
+                )?)?),
             }),
             _ => Err("not a record: an unknown tag, or the wrong number of fields".to_string()),
         }
@@ -216,6 +253,16 @@ fn field_name(text: &str) -> Result<String, String> {
         |c| c.is_ascii_lowercase() || c == '_',
         |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_',
         "a method or field name",
+    )
+}
+
+/// A facade module name: `v4_6`, `v10`, `preview`.
+fn module_name(text: &str) -> Result<String, String> {
+    check_word(
+        text,
+        |c| c.is_ascii_lowercase(),
+        |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_',
+        "a facade module name",
     )
 }
 
@@ -294,10 +341,18 @@ impl Lock {
                 Line::Value { name, .. } => {
                     names.values.insert(name.clone());
                 }
-                Line::Derive { .. } | Line::Accessor { .. } => {}
+                Line::AliasOf { .. } | Line::Derive { .. } | Line::Accessor { .. } => {}
             }
         }
         names
+    }
+
+    /// The facade this lock aliases, when it is an alias's.
+    pub fn alias_of(&self) -> Option<&str> {
+        self.lines.iter().find_map(|line| match line {
+            Line::AliasOf { target } => Some(target.as_str()),
+            _ => None,
+        })
     }
 
     /// Every way the records fail to describe one coherent surface: a name
@@ -305,10 +360,26 @@ impl Lock {
     /// declared twice or over an undeclared node, a value-enum variant
     /// declared twice, a `derive` on something other than a value enum, an
     /// accessor declared twice or on something other than a node, or a shape
-    /// naming an undeclared type.
+    /// naming an undeclared type; an `alias-of` line beside any other; or
+    /// some accessors with a delegate (a facade's lock) and some without (the
+    /// union's).
     pub fn check(&self) -> Vec<String> {
         let names = self.names();
         let mut errors = Vec::new();
+        if self.alias_of().is_some() && self.lines.len() > 1 {
+            errors.push("an `alias-of` lock has no other line".to_string());
+        }
+        let delegated: BTreeSet<bool> = self
+            .lines
+            .iter()
+            .filter_map(|line| match line {
+                Line::Accessor { delegate, .. } => Some(delegate.is_some()),
+                _ => None,
+            })
+            .collect();
+        if delegated.len() > 1 {
+            errors.push("some accessors have a delegate and some do not".to_string());
+        }
         for (a, b, set_a, set_b) in [
             ("node", "dispatch enum", &names.nodes, &names.enums),
             ("node", "value enum", &names.nodes, &names.values),
@@ -332,6 +403,7 @@ impl Lock {
         };
         for line in &self.lines {
             match line {
+                Line::AliasOf { .. } => {}
                 Line::Node { node, kind } => {
                     if let Some(other) = kind_owner.insert(kind, node) {
                         errors.push(format!("`{kind}` is cast by both `{other}` and `{node}`"));
@@ -366,7 +438,9 @@ impl Lock {
                         errors.push(format!("`{name}` derives `{trait_}` but is no value enum"));
                     }
                 }
-                Line::Accessor { owner, name, shape } => {
+                Line::Accessor {
+                    owner, name, shape, ..
+                } => {
                     if !accessors.insert((owner, name)) {
                         errors.push(format!("accessor `{owner}::{name}` is declared twice"));
                     }
@@ -429,16 +503,19 @@ mod tests {
                     owner: s("AppExpr"),
                     name: s("func"),
                     shape: Shape::Option(Elem::Enum(s("Expr"))),
+                    delegate: None,
                 },
                 Line::Accessor {
                     owner: s("AppExpr"),
                     name: s("parts"),
                     shape: Shape::Vec(Elem::Value(s("Part"))),
+                    delegate: None,
                 },
                 Line::Accessor {
                     owner: s("AppExpr"),
                     name: s("op_name"),
                     shape: Shape::Option(Elem::Tuple(vec![Elem::StaticStr, Elem::TextRange])),
+                    delegate: None,
                 },
             ]
             .into(),
@@ -501,6 +578,7 @@ mod tests {
             owner: s("Expr"),
             name: s("x"),
             shape: Shape::One(Elem::Node(s("Missing"))),
+            delegate: None,
         });
         lock.lines.insert(Line::Derive {
             name: s("Expr"),

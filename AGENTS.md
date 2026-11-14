@@ -18,14 +18,24 @@ This is a Cargo workspace with nine members:
   `text-size` (and, behind that test-only feature, `rowan`). Intended to be
   reusable outside this repo, through its *substrate*: the untyped tree
   (`SyntaxNode`, `SyntaxKind`, `AstNode`) and the version gate
-  (`syntax::projection`). The typed facade over it — the *union* of every
-  language version's surface (`ImplFile`, `Expr`, `Pat`, `Type`, `ModuleDecl`,
-  …, in `syntax/union.rs` and `syntax/generated/`) and the shallow `v8`/`v9`
-  facades that re-export it — gains a variant whenever a construct is
-  modelled, so it is exported, at unchanged `syntax::` paths, only under the
-  `unstable-union` feature. `borzoi-sema`, the LSP, `borzoi-corpus-diff` and
-  cst's own tests turn it on; workspace builds therefore always have it, so
-  CI's lint job also builds, lints and documents the crate without it.
+  (`syntax::projection`), and through one typed facade per language version,
+  `syntax::{v4_6, v4_7, v5 … v11, preview}`, each behind the cargo feature of
+  its name (`unstable-preview` for `preview`) and read through
+  `Parse::view::<syntax::vN::ParsedInput>()`. A facade owns every node type
+  and enum of its version's surface; `tools/astgen` generates each from its
+  lock (`crates/cst/facades/vN.lock`), which today is derived from the union's,
+  and a version whose surface equals an earlier one's is an alias of it. The
+  typed AST the facades re-cast — the *union* of every language version's
+  surface (`ImplFile`, `Expr`, `Pat`, `Type`, `ModuleDecl`, …, in
+  `syntax/union.rs` and `syntax/generated/`) — gains a variant whenever a
+  construct is modelled, so it is exported, at unchanged `syntax::` paths, only
+  under the `unstable-union` feature. `borzoi-sema`, the LSP,
+  `borzoi-corpus-diff` and cst's own tests turn it on, and sema and the LSP
+  turn on no facade; workspace builds therefore always have the union, so CI's
+  lint job also builds, lints and documents the crate without it.
+  `tests/all/facade_properties` holds every facade's node types, enums and
+  accessors to the union's (P2–P4 of `docs/ast-versioning-plan.md`) over a
+  table astgen generates from the locks.
 - `crates/msbuild/` — `borzoi-msbuild`. MSBuild `.fsproj` parser /
   evaluator: extracts the Compile order, expands `$(…)` substitution, evaluates
   the condition subset, detects/follows `Directory.Build.props|targets`,
@@ -578,6 +588,7 @@ nix develop -c cargo test -p borzoi-cst  --profile gate --test all layout_pertur
 nix develop -c cargo test -p borzoi-cst  --test all recovery_sweep::       -- --ignored  # ~3 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_diff_decl_sequence_grid::every_declaration_pair_streams -- --ignored  # ~3 min
 nix develop -c cargo test -p borzoi-cst  --test all flat_tree_reference::corpus -- --ignored  # ~2.5 min
+nix develop -c cargo test -p borzoi-cst  --test all facade_properties::corpus -- --ignored  # ~4 min
 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
 nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored  #  ~25 s
 nix develop -c cargo test -p borzoi-sema --test all silent_region_sweep:: -- --ignored  #  ~1.5 min

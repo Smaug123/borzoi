@@ -3,12 +3,13 @@
 > **Status (2026-11-13).** A living plan. The decisions below are settled; the
 > work is an eight-PR sequence ([PR sequence](#pr-sequence)), of which PR 1 (the
 > feature table, #15), PR 2 (diagnostic classes), PR 4 (the union behind
-> `unstable-union`, #13, #670) and PR 5 (astgen owns every node) have landed.
-> Earlier stages that still stand: `LanguageVersion` as a parse input
-> (#592/#597/#606), the LSP's `<LangVersion>` wiring (#613), and the generated
-> `syntax::v8` / `syntax::v9` facades (#618 and after). The goal: before the next F# compiler upgrade (a new
-> language version), every earlier language version has a stable, exhaustive
-> typed facade, and the upgrade itself is the proof that the scheme extends.
+> `unstable-union`, #13, #670), PR 5 (astgen owns every node) and PR 6 (a deep
+> facade per language version, `Parse::view`) have landed. Earlier stages that
+> still stand: `LanguageVersion` as a parse input (#592/#597/#606) and the
+> LSP's `<LangVersion>` wiring (#613). The goal: before the next F# compiler
+> upgrade (a new language version), every earlier language version has a
+> stable, exhaustive typed facade, and the upgrade itself is the proof that the
+> scheme extends.
 > Companion to [`parser-plan.md`](parser-plan.md), which owns the parser; this
 > doc owns the *public typed-AST surface* and how it stays stable as F# evolves.
 
@@ -92,9 +93,8 @@ The union is what sema and the LSP use (they need the maximal, preview tree).
 It sits behind the cargo feature `unstable-union` (D11), which sema, the LSP,
 corpus-diff and cst's own tests enable; without it, `syntax` exports only the
 substrate (#13, landed in #670). The hand-written union lives in the private
-`syntax::union`. The `v8`/`v9` facades sit behind the same feature for now,
-because they re-export union node types; the deep facades of PR 6 own their
-types and come out from behind it.
+`syntax::union`. The per-version facades own their types and sit behind
+features of their own (D4); only their `to_union` escape needs this one.
 
 ### D3. `LanguageVersion` is a first-class parse input (the index)
 
@@ -139,11 +139,35 @@ refactor that breaks a frozen delegate needs an explicit hand-written compat
 shim — the cost D6 accepts, made visible. Each facade sits behind a cargo
 feature; sema and the LSP enable none; cst's tests enable all.
 
-The canonical read is `Parse::view::<V>()`: it checks `parse.lang ∈
-V::VERSIONS` and returns the root as `V`'s file node. A node out of `V`'s
-surface reads as an absent child (its cast is `None`), and a legality
-diagnostic covers it (D9). Viewing a tree through a different version's facade
-is not the main path; exact match sidesteps removal entirely.
+The canonical read is `parse.view::<vN::ParsedInput>()`. `ParsedInput` is
+each facade's root enum (`ImplFile` / `SigFile`, after FCS's `ParsedInput`),
+and it implements the sealed trait `syntax::Facade`, whose `VERSIONS` are the
+facade's version and its aliases'. `view` returns `Result<V, ViewError>`: a
+parse whose `lang` the facade does not serve is an error naming both, not a
+silent projection, because the facade's exhaustiveness is a claim about its
+own version's syntax only. Under a facade that serves the parse's version, a
+node out of its surface reads as an absent child (its cast is `None`), and a
+gate diagnostic covers it (D9). Exact match sidesteps removal entirely.
+
+How a facade is built (`tools/astgen/src/facade.rs`):
+
+- A node is `facade_node!(Name: KIND | …)` (`syntax/facade_support.rs`): a
+  newtype over the union's node that casts exactly its lock's kinds, prints
+  (`Debug`) as the union's node does, and has `to_union` under
+  `unstable-union`. A dispatch enum carries only its surface's variants; a
+  value enum is copied, with its docs from astgen's tables.
+- An accessor is one line: call the union accessor its lock line delegates to
+  and re-cast the result. A re-cast that can fail (a dispatch enum narrower
+  than the union's, a value enum one of whose variants can fail, a node whose
+  union counterpart casts more kinds) drops the element: an `Option` becomes
+  `None`, an iterator or `Vec` skips it. So `v4_6::TupleType::segments()`
+  leaves out a segment holding a `WithNull`, and an `InterpStringPart::Fill`
+  over an out-of-surface expression is skipped.
+- The generator refuses, naming it, what it cannot re-cast mechanically: an
+  accessor returning a fallible type bare (no container to absorb the drop),
+  and a facade node, variant, value variant or accessor delegate with no
+  matching union counterpart. Each is where a published facade needs a
+  hand-written compat shim; none exists today.
 
 ### D5. Single source of truth: the feature table (#15)
 
@@ -161,19 +185,28 @@ sets), node types, and accessors (signature and union delegate).
 The format is one fact per tab-separated line, tagged `node` (a node newtype
 and one kind it casts from), `enum` (a dispatch-enum variant and its node),
 `value` (a value-enum variant and its payload), `derive` (a trait a value enum
-derives) or `accessor` (owner, method and return shape), sorted with no
-duplicates, so a lock has one spelling (`tools/astgen/src/lock.rs`). A kind
+derives) or `accessor` (owner, method and return shape; in a facade's lock
+also its delegate, `union.<method>`), sorted with no duplicates, so a lock has
+one spelling (`tools/astgen/src/lock.rs`). An alias's lock is the single line
+`alias-of <module>`. A kind
 set is the `node` lines of the variant's node. Because every fact is its own
 line, what a frozen surface may take — a new accessor, a new kind for an
 existing node — is an added line, and anything else removes or rewrites one.
-The union's own lock, `crates/cst/facades/union.lock`, exists today and is
-always regenerated; an accessor's delegate is the union accessor of the same
-name until a facade needs a compat shim.
+The union's own lock, `crates/cst/facades/union.lock`, is always
+regenerated. Each facade's lock, `crates/cst/facades/vN.lock`, is derived from
+it: every node all of whose kinds the table's live `Kind` rows admit at the
+version, the variants over those, and every accessor whose owner and return
+type survive, delegating to the union accessor of its own name. A delegate
+that names another union accessor is how a published facade survives a
+rename.
 
 - An **unpublished** facade's lock is derived and regenerated freely.
-- A **published** facade (astgen's `PUBLISHED` list) is generated *from* its
-  lock: the generator reads it and never writes it, and the staleness test
-  checks `code == gen(lock)`.
+- A **published** facade (astgen's `PUBLISHED` list, empty until PR 7) is
+  generated *from* its lock: the generator reads it and never writes it, and
+  the staleness test checks `code == gen(lock)`. Every facade's code is a
+  function of its lock and the union's already (astgen's
+  `code_is_a_function_of_the_lock` re-reads each derived lock from its text and
+  regenerates identically), so publishing changes only who writes the lock.
 
 Checks:
 
@@ -208,12 +241,24 @@ wrongness**: a consumer can always drop to `.syntax()`.
 
 ### D8. One module per `LanguageVersion`
 
-`syntax::{v4_6, v4_7, v5, v6, v7, v8, v9, v10, v11, preview}`. A version whose
-surface equals its neighbour's is `pub use super::vX::*`, recorded as
-`alias-of` in its lock — so shared type identity between aliases is part of the
-contract (accepted). The expected distinct surfaces are {4.6, 4.7}, {5, 6, 7},
-{8}, {9, 10, 11} and preview. A kind with no FCS `LanguageFeature` gets no
-interval, so it is in every facade (`Expr::Typar` is in all of them).
+`syntax::{v4_6, v4_7, v5, v6, v7, v8, v9, v10, v11, preview}`, one per
+`LanguageVersion` (astgen reads the version list from the feature table's
+parser, so a new version brings its facade), each behind the cargo feature of
+its name. A version whose derived lock equals the previous run's is
+`pub use super::vX::*`, recorded as `alias-of` in its lock — so shared type
+identity between aliases is part of the contract (accepted). An alias's
+feature also compiles, and so exposes, the module it aliases. `preview` is
+never an alias and never aliased, and sits behind `unstable-preview` (D11), so
+no stable facade's `VERSIONS` names the preview version.
+
+The distinct surfaces today are {4.6, 4.7, 5, 6, 7} (`v4_6`), {8} (`v8`:
+`Expr::WhileBang`, `Type::Intersection`), {9, 10, 11} (`v9`: `Type::WithNull`)
+and `preview`, whose surface is `v9`'s. The table's three deferred `Kind` rows
+give no interval until PR 3 makes them live; then regeneration splits them
+into the expected {4.6, 4.7}, {5, 6, 7} (`Expr::InterpString`), {8}
+(`Expr::DotLambda` too), {9, 10, 11} and preview (`Expr::IndexFromEnd`). A
+kind with no FCS `LanguageFeature` gets no interval, so it is in every facade
+(`Expr::Typar` is in all of them).
 
 ### D9. Gate and surface are different questions; diagnostics carry a class
 
@@ -245,8 +290,12 @@ versions, report `Recovery`, and the other gated parse-time features report
 `Legality`.
 
 `Parse::errors` minus the `Legality` ones stays FCS-*parse*-faithful
-(`Parse::recovery_errors`). P2 is restated: `view::<V>()` is total when there
-are no legality diagnostics, and otherwise every hole lies under one.
+(`Parse::recovery_errors`). Every gate diagnostic also names its feature,
+whatever its class (`ParseDiagnostic::gate`, set by the one constructor both
+producers use), so a `Recovery` gate is told from a syntax error structurally.
+P2 is restated over that field: `view::<V>()` is total when there are no gate
+diagnostics, and otherwise every hole lies under one for its own kind's
+feature.
 
 Held by cst's `diagnostic_classes` tests: every live parse-time row of the
 table has a fixture, and at every version below the feature's a `Legality`
@@ -359,10 +408,10 @@ and new or moved parse-time sites to classify.
 **Deferred rows.** `INTERP_STRING_EXPR` (`StringInterpolation`, 5.0),
 `DOT_LAMBDA_EXPR` (`AccessorFunctionShorthand`, 8.0) and `INDEX_FROM_END_EXPR`
 (`FromEndSlicing`, preview) are recorded as `Kind` rows with
-`engaged = deferred(PR 3 …)`. They drive neither a gate nor a facade interval,
-so the `v8`/`v9` facades and every gate are exactly what the hand-written
-tables gave. They go live in PR 3, with D9's legality diagnostics, and reach
-the facades in PR 6.
+`engaged = deferred(PR 3 …)`. They drive neither a gate nor a facade
+interval, so every facade holds their kinds and no gate fires on them. They
+go live in PR 3, with D9's legality diagnostics, and the facades follow by
+regeneration.
 
 ## The central invariant (and how it is enforced)
 
@@ -374,15 +423,41 @@ classifications over a shared `SyntaxNode`, so this is cheap to test:
   diagnostic under pin N. Per-feature fixtures, and differentially FCS at every
   version (`parser_diff_feature_gates`, 4.6 … 11.0 and preview).
 - **P2 — Projection totality.** For a tree parsed at P, `view::<vP>()` is total
-  when there are no legality diagnostics, and otherwise every hole lies under
-  one.
+  when there are no gate diagnostics, and otherwise every hole lies under a
+  gate diagnostic for its own kind's feature.
 - **P3 — Round-trip identity.** For any `vP` node, lowering to the union and
   re-projecting yields the same node — "the union has not coarsened".
 - **P4 — Interval consistency.** The union's classification refines every
   `vN`'s: no two kinds distinct in some `vN` collapse in the union.
 
-Today P2–P4 are tested for `Type` and nullness only (`ast_projection.rs`);
-PR 6 makes them generic over every (facade, enum) pair.
+P2–P4 are held over every facade, node type, dispatch enum and accessor by
+cst's `facade_properties` tests, from a table (`matrix.rs`) astgen generates
+from the locks. On fixtures (one per live `Kind` row), generated programs and
+a sample of the corpus in the normal suite, and on the whole corpus in an
+ignored sweep CI runs:
+
+- P2: a *hole* (a node some union node type casts and no facade one does) has
+  exactly a kind the table puts outside the facade's versions, and in a parse
+  the facade serves it lies under a gate diagnostic for its own kind's
+  feature, inside the hole's range: one whose `gate` is
+  `Some(kind_feature(kind))` and whose class is `DiagnosticClass::of_gate` of
+  that feature. Every diagnostic is held to the field's contract besides: a
+  gate is on a feature newer than the parse's version and classed `of_gate`
+  of it, and a `Legality { feature }` diagnostic has `gate == Some(feature)`.
+- P3: a facade cast lowers, to the substrate and through `to_union`, to the
+  same node, and away from holes each facade type casts what the union's does.
+- P4: a facade value prints exactly as the union's (same variant, same
+  node), so nothing a facade tells apart collapses in the union; and on an
+  owner with no hole beneath it every facade accessor returns what the
+  union's does. The normal suite must run an accessor of every return shape in
+  every facade, and the corpus sweep every accessor (a construct no corpus
+  file holds gets a fixture).
+
+The gate diagnostic is found by its `gate` field, never its text. Its class
+is `Legality { feature }`, except for nullness: `NullnessChecking`'s FCS effect
+is `Reshape`, so its gate is a `Recovery` diagnostic, and a `WithNull` hole
+under F# 8 lies under that. So P2 reads "every hole lies under a gate
+diagnostic for its feature" rather than "under a `Legality` one".
 
 ## Landed stages
 
@@ -413,12 +488,15 @@ PR 6 makes them generic over every (facade, enum) pair.
   differential, and the `version_dependence_census` corpus manifest.
 - **PR 4 — the union behind `unstable-union`** (#13, #670): the hand-written
   union in a private `syntax::union`, re-exported only under the feature, with a
-  featureless clippy and doc step in CI. `v8`/`v9` are behind it too until PR 6.
+  featureless clippy and doc step in CI.
 - **PR 5 — astgen owns every node** (D4): the standalone nodes and the value
   enums moved into astgen's tables (`generated::union_standalone`); astgen reads
   every accessor's signature out of `union.rs` and classifies its return shape,
-  and emits the union's lock, `crates/cst/facades/union.lock` (D6). The `v8` /
-  `v9` facades still re-export the union's dispatch-enum categories only.
+  and emits the union's lock, `crates/cst/facades/union.lock` (D6).
+- **PR 6 — deep facades for every version** (#14, #17, #12): one module per
+  `LanguageVersion` (D8), each generated from its derived lock (D4, D6);
+  `Parse::view` over the sealed `Facade` trait; `syntax::preview` behind
+  `unstable-preview`; P2–P4 over every facade (`facade_properties`).
 
 ## PR sequence
 
@@ -432,11 +510,11 @@ PR 6 makes them generic over every (facade, enum) pair.
    (`BetterAnonymousRecordParsing`) — each gated, or `Unmodelled` with its
    reason. The three deferred `Kind` rows go live.
 4. **Union behind `unstable-union`** (#13). Independent of 1–3. *Landed*
-   (#670); the `v8`/`v9` facades are behind the feature too until PR 6.
+   (#670).
 5. **astgen owns every node** and reads accessor signatures (D4); it emits the
    union's lock only. *Landed.*
 6. **Deep facades for every version and preview** (#14, #17),
-   `Parse::view::<V>()` (#12), generic P2/P3/P4.
+   `Parse::view::<V>()` (#12), generic P2/P3/P4. *Landed.*
 7. **Freeze**: `PUBLISHED = v4_6 … v10`, the CI lock check, consumer fixtures,
    and a permanent synthetic-feature test (a fake feature and kind at "12.0",
    in memory: every published facade regenerates byte-identically, and the new
@@ -445,11 +523,11 @@ PR 6 makes them generic over every (facade, enum) pair.
 
 ## Still to do
 
-Everything in PRs 3 and 6–8 above. Beyond them:
+Everything in PRs 3, 7 and 8 above. Beyond them:
 
 - **Stale issues.** #21's text predates the relax-whitespace and `#nowarn`
-  work; its remaining scope is PR 3's list. #14's "interval data below 8.0" is
-  the table's job; what remains of it is PR 6.
+  work; its remaining scope is PR 3's list. #14 (facades below 8.0) and #12
+  (`Parse::view`) are done by PR 6, and #17 (preview) is decided (D11).
 - **`display_name` is FSComp.txt's text as FCS returns it**: the quoted text
   after `String.Format` with no arguments, which is what FCS's resource
   generator applies (so `builder {{ }}` reads `builder { }`). For the gated

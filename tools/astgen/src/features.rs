@@ -40,7 +40,7 @@ pub const HEADER: [&str; 9] = [
 
 /// Every version a row may name, ascending: its spelling in the table, the
 /// `LanguageVersion` variant, and FCS's decimal (`previewVersion = 9999`).
-const VERSIONS: &[(&str, &str, f64)] = &[
+pub(crate) const VERSIONS: &[(&str, &str, f64)] = &[
     ("4.6", "V4_6", 4.6),
     ("4.7", "V4_7", 4.7),
     ("5.0", "V5_0", 5.0),

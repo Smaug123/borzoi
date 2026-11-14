@@ -211,6 +211,11 @@ fn each_gate_keeps_the_promise_of_its_class() {
             .into_iter()
             .map(|lang| (lang, parse_at(source, lang)))
             .collect();
+        for (lang, p) in &parses {
+            for d in p.errors.iter().chain(&p.warnings) {
+                crate::facade_properties::check_gate_field(d, *lang, &format!("{source:?}"));
+            }
+        }
         let mut fail = |lang: LanguageVersion, what: String| {
             failures.push(format!("{feature:?} at {lang}, {source:?}: {what}"));
         };

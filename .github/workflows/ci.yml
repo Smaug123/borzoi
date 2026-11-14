@@ -396,6 +396,16 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             flat_tree_reference::corpus -- --ignored --nocapture
 
+      - name: Hold every per-version facade to the union over the corpus
+        if: steps.gate.outputs.run == 'true'
+        # The ordinary suite reads fixtures and a sample of the corpus through
+        # every facade; this reads every corpus file, parsed at a version each
+        # facade serves, and requires every facade accessor to run on some
+        # fixture or corpus file.
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            facade_properties::corpus -- --ignored --nocapture
+
       - name: Sweep the parser for panics on adversarial input
         if: steps.gate.outputs.run == 'true'
         # The corpus above is the F# compiler's own sources: well-formed by
