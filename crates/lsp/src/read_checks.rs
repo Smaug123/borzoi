@@ -87,6 +87,7 @@ pub fn a_fact(observation: &Observation) -> bool {
             .all(|entry| matches!(entry, Listed::Entry { kind: Ok(_), .. })),
         Observation::Listing(Err(failure)) => failure.is_absent(),
         Observation::Canonical(answer) => answered_or_absent(answer),
+        Observation::Stamp(answer) => answered_or_absent(answer) && !observation.is_racy_stamp(),
     }
 }
 
@@ -229,6 +230,10 @@ impl<D: Probe> ReadChecks<D> {
     /// generation, the query is asked.
     pub fn holds(&self, check: &Check) -> bool {
         let read = &check.read;
+        // A racy stamp speaks for the file only when it was taken.
+        if read.observation.is_racy_stamp() {
+            return false;
+        }
         if let Observation::Text(recorded) = &read.observation {
             return self.files.text_answer(&read.path) == *recorded;
         }
@@ -331,7 +336,9 @@ impl<D: Probe> ReadChecks<D> {
                 self.resolution(path, true)
             }
             Observation::LinkKind(_) => self.resolution(path, false),
-            Observation::Text(_) => None,
+            // A file's stamp, like its text, moves with no directory's
+            // stamp moving.
+            Observation::Text(_) | Observation::Stamp(_) => None,
         }
     }
 
@@ -412,7 +419,9 @@ impl<D: Probe> ReadChecks<D> {
         let mut counts = self.counts.get();
         match read.observation {
             Observation::Text(_) => counts.opens += 1,
-            Observation::Kind(_) | Observation::LinkKind(_) => counts.stats += 1,
+            Observation::Kind(_) | Observation::LinkKind(_) | Observation::Stamp(_) => {
+                counts.stats += 1;
+            }
             Observation::Listing(_) => counts.listings += 1,
             Observation::Canonical(_) => counts.canonicalizations += 1,
         }

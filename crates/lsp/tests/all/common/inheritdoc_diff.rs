@@ -94,7 +94,11 @@ pub fn build_env(
     references: &[PathBuf],
     cache: &AssemblyCache,
 ) -> (Arc<AssemblyEnv>, Vec<PathBuf>) {
-    let (env, kept) = build_env_from_dll_paths(references.iter().map(PathBuf::as_path), cache);
+    let (env, kept) = build_env_from_dll_paths(
+        references.iter().map(PathBuf::as_path),
+        cache,
+        &borzoi_msbuild::observed::Observer::new(),
+    );
     (Arc::new(env), kept)
 }
 

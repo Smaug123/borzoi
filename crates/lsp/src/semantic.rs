@@ -25,6 +25,7 @@ use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, Impor
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
+use borzoi_msbuild::observed::{self as msbuild_observed, EntryKind, Observer, ReadSet};
 use borzoi_sema::{
     AbbreviationVisibility, AssemblyEnv, InferredProject, ProjectFile, ResolvedProject, SourceFile,
     SyntaxRecovery,
@@ -845,8 +846,14 @@ impl SemanticState {
         target_framework: &ServedTfm,
         workspace: &Workspace,
     ) -> Vec<PathBuf> {
-        self.reference_set_for_project(project, dotnet_root, target_framework, workspace)
-            .dlls
+        self.reference_set_for_project(
+            project,
+            dotnet_root,
+            target_framework,
+            workspace,
+            &Observer::new(),
+        )
+        .dlls
     }
 
     /// [`Self::reference_dlls_for_project`]'s whole resolution: the DLLs and
@@ -857,10 +864,12 @@ impl SemanticState {
         dotnet_root: Option<&Path>,
         target_framework: &ServedTfm,
         workspace: &Workspace,
+        observer: &Observer,
     ) -> ReferenceSet {
-        let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref());
-        let graph = workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms);
-        let ref_targets = graph_ref_targets(&graph, project);
+        let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), observer);
+        let graph =
+            workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms, observer);
+        let ref_targets = graph_ref_targets(&graph, project, observer);
         // Observability / differential surface: it diffs against MSBuild's
         // `ReferencePath` on *restored* projects, so it reads the assets file
         // like the assets path does and never drives the on-demand restore
@@ -873,7 +882,34 @@ impl SemanticState {
             &ref_targets,
             &recovered_ref_tfms,
             None,
+            observer,
         )
+    }
+
+    /// [`Self::reference_dlls_for_project`], and what resolving them read:
+    /// the read set the env built from them would carry, less the DLLs'
+    /// own stamps, which the env build records as it reads each one. The
+    /// read-set soundness tests hold it to the file system.
+    pub fn reference_resolution_for_project(
+        &mut self,
+        project: &Path,
+        dotnet_root: Option<&Path>,
+        target_framework: &ServedTfm,
+        workspace: &Workspace,
+    ) -> (Vec<PathBuf>, EnvReads) {
+        let observer = Observer::new();
+        let set = self.reference_set_for_project(
+            project,
+            dotnet_root,
+            target_framework,
+            workspace,
+            &observer,
+        );
+        let reads = EnvReads {
+            reads: observer.finish().0,
+            unrecorded: set.unrecorded,
+        };
+        (set.dlls, reads)
     }
 
     /// [`Self::assembly_env_for_project`] plus a *retryable* flag: `true` when a
@@ -933,6 +969,27 @@ impl SemanticState {
         (cached.dlls.to_vec(), retryable)
     }
 
+    /// What the resolution of the env this state serves for `project` read
+    /// (its cache entry's [`EnvReads`]), and the *retryable* flag of
+    /// [`Self::env_reference_dlls_for_project`].
+    pub fn env_reads_for_project(
+        &mut self,
+        project: &Path,
+        dotnet_root: Option<&Path>,
+        target_framework: &ServedTfm,
+        workspace: &Workspace,
+    ) -> (Arc<EnvReads>, bool) {
+        let restore_env = self.restore_env(workspace);
+        let (cached, retryable) = self.cached_assembly_env(
+            project,
+            dotnet_root,
+            target_framework,
+            workspace,
+            restore_env,
+        );
+        (cached.reads, retryable)
+    }
+
     /// The cache entry for `project`'s env: the env and the reference-DLL list
     /// it was built from, which are one resolution's two outputs and are cached
     /// as one value so they cannot drift apart.
@@ -968,7 +1025,11 @@ impl SemanticState {
         let project = id.as_path();
         let key = (
             id.clone(),
-            dotnet_root.map(canonicalise),
+            dotnet_root.map(|root| {
+                Unobserved::EnvKey
+                    .canonicalize(root)
+                    .unwrap_or_else(|_| root.to_path_buf())
+            }),
             target_framework.clone(),
         );
         if let Some(cached) = self.assembly_envs.get(&key) {
@@ -984,13 +1045,17 @@ impl SemanticState {
         // dependency contributes the edges the real build would. Only done on
         // a miss: both re-read the closure from disk, which would be wasteful
         // per lookup.
-        let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref());
-        let graph = workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms);
-        let ref_targets = graph_ref_targets(&graph, project);
+        // Every query the resolution makes is recorded here, and the env
+        // carries the read set ([`EnvReads`]).
+        let observer = Observer::new();
+        let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), &observer);
+        let graph =
+            workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms, &observer);
+        let ref_targets = graph_ref_targets(&graph, project, &observer);
         // Borrow `assembly_cache` (shared) and `sidecar` (mut) as disjoint
         // fields — the sidecar drives any C# `.csproj` references this project
         // has, lazily spawning on first need, when the host opted into them.
-        let (env, dlls, retryable) = build_assembly_env(
+        let (env, dlls, retryable, unrecorded) = build_assembly_env(
             project,
             dotnet_root,
             target_framework,
@@ -999,10 +1064,15 @@ impl SemanticState {
             &ref_targets,
             &recovered_ref_tfms,
             restore_env,
+            &observer,
         );
+        let (reads, counts) = observer.finish();
+        let reads = EnvReads { reads, unrecorded };
+        crate::observed::report_env_resolution(counts, &reads);
         let cached = CachedAssemblyEnv {
             env: Arc::new(env),
             dlls: dlls.into(),
+            reads: Arc::new(reads),
         };
         // A *transient* C# sidecar transport failure (`retryable`) is the only
         // reason not to cache: the handle was dropped for respawn, so the next
@@ -1901,7 +1971,36 @@ fn build_parses(
 struct CachedAssemblyEnv {
     env: Arc<AssemblyEnv>,
     dlls: Arc<[PathBuf]>,
+    /// What the resolution that built `env` read.
+    reads: Arc<EnvReads>,
 }
+
+/// What one resolution of an assembly env read
+/// (`docs/incremental-lsp-plan.md`, D3, Stage 6a): every query it recorded,
+/// with its answer, and the readers that answered part of it without
+/// recording what they read.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EnvReads {
+    /// The recorded queries: the project-graph walk's probes and the read
+    /// sets of the evaluations it ran or confirmed, the assets files, the
+    /// framework packs and packages, the output-DLL search, and each DLL's
+    /// stamp.
+    pub reads: ReadSet,
+    /// The readers whose queries `reads` lacks: [`UNRECORDED_RESTORE`] and
+    /// [`UNRECORDED_CSHARP`]. Empty exactly when `reads` is everything the
+    /// resolution depends on.
+    pub unrecorded: Vec<&'static str>,
+}
+
+/// An on-demand restore ran, and read a warm package cache and a scratch
+/// directory it deletes (`crate::restore`, an `Unobserved::Restore` reader),
+/// whether it answered the resolution's artifacts or declined.
+pub const UNRECORDED_RESTORE: &str = "an on-demand restore's scratch output";
+
+/// The C# sidecar was asked for a C# reference, and read the C# sources
+/// itself (the `CSharpSources` input class, unwitnessed by design), whether
+/// it delivered metadata or not.
+pub const UNRECORDED_CSHARP: &str = "the C# sources the sidecar compiled";
 
 /// Build the assembly env for a fresh cache miss. Always returns *some*
 /// env — empty if anything went wrong (D5 degrades to under-resolution) — and
@@ -1922,7 +2021,8 @@ fn build_assembly_env(
     ref_targets: &GraphRefTargets,
     recovered_ref_tfms: &BTreeMap<PathBuf, String>,
     restore_env: Option<&SdkDiscoveryEnv>,
-) -> (AssemblyEnv, Vec<PathBuf>, bool) {
+    observer: &Observer,
+) -> (AssemblyEnv, Vec<PathBuf>, bool, Vec<&'static str>) {
     let _span = tracing::info_span!("build_assembly_env", project = %project.display()).entered();
     let refs = resolve_reference_dlls(
         project,
@@ -1932,8 +2032,10 @@ fn build_assembly_env(
         ref_targets,
         recovered_ref_tfms,
         restore_env,
+        observer,
     );
-    let (mut env, kept) = build_env_from_dll_paths(refs.dlls.iter().map(PathBuf::as_path), cache);
+    let (mut env, kept) =
+        build_env_from_dll_paths(refs.dlls.iter().map(PathBuf::as_path), cache, observer);
     // A declared reference we **tried and failed to read** leaves its identity
     // and types unknown, which is the same hazard a skipped DLL poses and the
     // one `identities_incomplete` models — but it never reaches
@@ -1966,7 +2068,7 @@ fn build_assembly_env(
             "project references have no built output; their types are unavailable until built"
         );
     }
-    (env, kept, refs.retryable)
+    (env, kept, refs.retryable, refs.unrecorded)
 }
 
 /// What one declared `<ProjectReference>` edge contributed to the env.
@@ -2036,6 +2138,9 @@ struct ReferenceSet {
     edges: Vec<ReferenceEdge>,
     /// See [`build_assembly_env`]'s *retryable*.
     retryable: bool,
+    /// The readers whose queries the resolution could not record
+    /// ([`EnvReads::unrecorded`]).
+    unrecorded: Vec<&'static str>,
 }
 
 impl ReferenceSet {
@@ -2049,6 +2154,7 @@ impl ReferenceSet {
             dlls: Vec::new(),
             edges: Vec::new(),
             retryable,
+            unrecorded: Vec::new(),
         }
     }
 
@@ -2157,7 +2263,7 @@ struct FsharpRefTarget {
 /// *problems* (cycles, missing targets, unsupported kinds) are the
 /// diagnostics layer's business, not the fold's: a problematic target is
 /// simply not a node, so nothing here is fabricated from it.
-fn graph_ref_targets(graph: &ProjectGraph, entry: &Path) -> GraphRefTargets {
+fn graph_ref_targets(graph: &ProjectGraph, entry: &Path, observer: &Observer) -> GraphRefTargets {
     let entry_key = lexically_normalize(entry);
     let mut targets = GraphRefTargets::default();
     for node in &graph.nodes {
@@ -2166,17 +2272,17 @@ fn graph_ref_targets(graph: &ProjectGraph, entry: &Path) -> GraphRefTargets {
                 // Recorded for the entry too: the entry's own suppressed
                 // references are missing from the env just as a sibling's are.
                 if node.references_uncertain {
-                    targets.suppressed.push(canonicalise(&node.path));
+                    targets.suppressed.push(canonicalise(&node.path, observer));
                 }
                 if !paths_equal(&node.path, &entry_key) {
                     targets.fsharp.push(FsharpRefTarget {
-                        path: canonicalise(&node.path),
+                        path: canonicalise(&node.path, observer),
                         tfm: node.tfm.clone(),
                         output_name: node.output_name.clone(),
                     });
                 }
             }
-            ProjectKind::CSharp => targets.csharp.push(canonicalise(&node.path)),
+            ProjectKind::CSharp => targets.csharp.push(canonicalise(&node.path, observer)),
             // Never a node (an unsupported-kind edge is a GraphProblem), but
             // stay exhaustive so a builder change can't silently fold one.
             ProjectKind::Other => {}
@@ -2204,6 +2310,7 @@ fn graph_ref_targets(graph: &ProjectGraph, entry: &Path) -> GraphRefTargets {
 /// Degradations follow [`build_assembly_env`]'s rules (D5): no root / no
 /// assets / a failed resolve → empty. The `bool` is the *retryable* flag
 /// ([`build_assembly_env`] documents it).
+#[allow(clippy::too_many_arguments)]
 fn resolve_reference_dlls(
     project: &Path,
     dotnet_root: Option<&Path>,
@@ -2212,6 +2319,7 @@ fn resolve_reference_dlls(
     ref_targets: &GraphRefTargets,
     recovered_ref_tfms: &BTreeMap<PathBuf, String>,
     restore_env: Option<&SdkDiscoveryEnv>,
+    observer: &Observer,
 ) -> ReferenceSet {
     // An untrusted TFM verdict serves nothing (3.3d round 19). This is NOT
     // the `NoneDeclared` fallback below: with no declared TFM the restore is
@@ -2254,7 +2362,8 @@ fn resolve_reference_dlls(
     // present-file branch does, so cross-project F#/C# edges resolve in both
     // cases. A cold cache / timeout / no restore environment declines to today's
     // empty env.
-    let resolved = if Unobserved::EnvResolution.is_file(&assets_path) {
+    let mut unrecorded = Vec::new();
+    let resolved = if msbuild_observed::is_file(observer, &assets_path) {
         // Root-only enumeration: the assets file supplies only *artifacts* here
         // (package/framework DLLs and per-producer TFMs — the edges are
         // `ref_targets`'), and chasing the transitive closure would error on a
@@ -2272,8 +2381,8 @@ fn resolve_reference_dlls(
             // `Untrusted` returned empty above, so `as_deref` is `None` exactly
             // for `NoneDeclared` here.
             match target_framework.as_deref() {
-                Some(tfm) => resolve_assemblies_for_tfm(&assets_path, dotnet_root, tfm),
-                None => resolve_assemblies_root_only(&assets_path, dotnet_root),
+                Some(tfm) => resolve_assemblies_for_tfm(&assets_path, dotnet_root, tfm, observer),
+                None => resolve_assemblies_root_only(&assets_path, dotnet_root, observer),
             }
         };
         match resolve_result {
@@ -2296,6 +2405,12 @@ fn resolve_reference_dlls(
         // walk, so such a reference's output DLL may be omitted. Single-target
         // refs resolve from the node's own TFM; and this is never *worse* than
         // the assets-present path degrades under a partial restore.
+        // A restore that runs reads what it reads unrecorded, whatever it
+        // concludes: a decline for a package missing from the warm cache
+        // depends on that cache as a success does.
+        if restore_env.is_some() {
+            unrecorded.push(UNRECORDED_RESTORE);
+        }
         match restore_to_scratch_assemblies(project, dotnet_root, target_framework, restore_env) {
             RestoreOutcome::Resolved(resolved) => resolved,
             RestoreOutcome::Declined => {
@@ -2305,7 +2420,10 @@ fn resolve_reference_dlls(
                     "no project.assets.json and the on-demand restore declined; \
                      assembly env defaults to empty"
                 );
-                return ReferenceSet::declined(false);
+                return ReferenceSet {
+                    unrecorded,
+                    ..ReferenceSet::declined(false)
+                };
             }
             RestoreOutcome::TransientFailure => {
                 // Don't cache: a spawn error / timeout / wedge may clear, and the
@@ -2315,7 +2433,10 @@ fn resolve_reference_dlls(
                     project = %project.display(),
                     "on-demand restore failed transiently; not caching, will retry"
                 );
-                return ReferenceSet::declined(true);
+                return ReferenceSet {
+                    unrecorded,
+                    ..ReferenceSet::declined(true)
+                };
             }
         }
     };
@@ -2325,8 +2446,11 @@ fn resolve_reference_dlls(
     // sibling F# project's types. A reference whose output isn't built is
     // silently skipped (D5: under-resolve, never wrong) — the same graceful
     // degradation the un-restored and unparseable-DLL paths already use.
-    let fsharp_edges =
-        fsharp_project_ref_edges(&ref_targets.fsharp, &resolved.project_ref_assembly_names);
+    let fsharp_edges = fsharp_project_ref_edges(
+        &ref_targets.fsharp,
+        &resolved.project_ref_assembly_names,
+        observer,
+    );
     let ref_dlls = edge_dlls(&fsharp_edges);
     if !ref_dlls.is_empty() {
         tracing::info!(
@@ -2342,6 +2466,7 @@ fn resolve_reference_dlls(
     // failure additionally marks the env non-cacheable so the next request
     // retries against a respawned sidecar rather than serving this incomplete
     // one.
+    let csharp_references_enabled = matches!(sidecar, CsharpReferences::Enabled(_));
     let (csharp_edges, retryable) = csharp_project_ref_edges(
         sidecar,
         project,
@@ -2349,7 +2474,14 @@ fn resolve_reference_dlls(
         recovered_ref_tfms,
         &ref_targets.csharp,
         &resolved.project_ref_tfms,
+        observer,
     );
+    // The sidecar is consulted for any C# reference when the host enabled
+    // it, and what it reads is unrecorded whatever it answers: a build that
+    // fails on a compile error depends on the sources as one that succeeds.
+    if csharp_references_enabled && !ref_targets.csharp.is_empty() {
+        unrecorded.push(UNRECORDED_CSHARP);
+    }
     let csharp_ref_dlls = edge_dlls(&csharp_edges);
     if !csharp_ref_dlls.is_empty() {
         tracing::info!(
@@ -2412,6 +2544,7 @@ fn resolve_reference_dlls(
         dlls,
         edges,
         retryable,
+        unrecorded,
     };
     ReferenceSet {
         retryable: set.retryable || set.has_transient_failure(),
@@ -2486,6 +2619,7 @@ fn csharp_project_ref_edges(
     recovered: &BTreeMap<PathBuf, String>,
     csproj_refs: &[PathBuf],
     base_tfms: &BTreeMap<PathBuf, String>,
+    observer: &Observer,
 ) -> (Vec<ReferenceEdge>, bool) {
     if csproj_refs.is_empty() {
         return (Vec::new(), false);
@@ -2537,7 +2671,8 @@ fn csharp_project_ref_edges(
         // Closure-wide TFM map for per-node workspace construction. Best-effort:
         // a partial restore (the ref's own `project.assets.json` missing) makes
         // this error; the sidecar accepts an empty map and falls back to `tfm`.
-        let project_tfms = resolve_transitive_project_tfms(csproj, tfm).unwrap_or_default();
+        let project_tfms =
+            resolve_transitive_project_tfms(csproj, tfm, observer).unwrap_or_default();
         let meta = sidecar.metadata_dlls_for_csproj(
             &dotnet_exe,
             dotnet_root,
@@ -2599,29 +2734,30 @@ fn csharp_project_ref_edges(
 /// verdict, 3.3d round 19) and seeds nothing — consistent with the walk,
 /// whose untrusted-TFM demotion fires before any seed is consulted (and
 /// moot for the env fold, whose untrusted arm serves no DLLs at all).
-fn env_ref_tfms(entry_project: &Path, entry_tfm: Option<&str>) -> BTreeMap<PathBuf, String> {
-    let mut map = entry_ref_tfms(entry_project, entry_tfm);
+fn env_ref_tfms(
+    entry_project: &Path,
+    entry_tfm: Option<&str>,
+    observer: &Observer,
+) -> BTreeMap<PathBuf, String> {
+    let mut map = entry_ref_tfms(entry_project, entry_tfm, observer);
     if let Some(tfm) = entry_tfm {
-        map.insert(canonicalise(entry_project), tfm.to_string());
+        map.insert(canonicalise(entry_project, observer), tfm.to_string());
     }
     map
 }
 
-fn entry_ref_tfms(entry_project: &Path, entry_tfm: Option<&str>) -> BTreeMap<PathBuf, String> {
+fn entry_ref_tfms(
+    entry_project: &Path,
+    entry_tfm: Option<&str>,
+    observer: &Observer,
+) -> BTreeMap<PathBuf, String> {
     let Some(tfm) = entry_tfm else {
         return BTreeMap::new();
     };
-    match resolve_transitive_project_tfms(entry_project, tfm) {
+    match resolve_transitive_project_tfms(entry_project, tfm, observer) {
         Ok(map) => map
             .into_iter()
-            .map(|(path, tfm)| {
-                (
-                    Unobserved::EnvResolution
-                        .canonicalize(&path)
-                        .unwrap_or(path),
-                    tfm,
-                )
-            })
+            .map(|(path, tfm)| (canonicalise(&path, observer), tfm))
             .collect(),
         Err(err) => {
             tracing::info!(
@@ -2645,7 +2781,7 @@ fn dotnet_exe_for(dotnet_root: &Path) -> PathBuf {
         "dotnet"
     };
     let candidate = dotnet_root.join(exe);
-    if Unobserved::EnvResolution.is_file(&candidate) {
+    if Unobserved::CSharpSidecar.is_file(&candidate) {
         candidate
     } else {
         PathBuf::from(exe)
@@ -2688,12 +2824,13 @@ fn dotnet_exe_for(dotnet_root: &Path) -> PathBuf {
 fn fsharp_project_ref_edges(
     project_refs: &[FsharpRefTarget],
     assembly_names: &BTreeMap<PathBuf, String>,
+    observer: &Observer,
 ) -> Vec<ReferenceEdge> {
     project_refs
         .iter()
         .map(|t| ReferenceEdge {
             project: t.path.clone(),
-            outcome: fsharp_project_ref_outcome(t, assembly_names),
+            outcome: fsharp_project_ref_outcome(t, assembly_names, observer),
         })
         .collect()
 }
@@ -2701,6 +2838,7 @@ fn fsharp_project_ref_edges(
 fn fsharp_project_ref_outcome(
     t: &FsharpRefTarget,
     assembly_names: &BTreeMap<PathBuf, String>,
+    observer: &Observer,
 ) -> ReferenceOutcome {
     // `graph_ref_targets` only files `ProjectKind::FSharp` nodes here, so this
     // is belt-and-braces — but a builder change that broke it must not silently
@@ -2726,8 +2864,8 @@ fn fsharp_project_ref_outcome(
         };
     };
     let located = match &t.tfm {
-        NodeTfm::Known(tfm) => locate_fsharp_output_dll(&t.path, Some(tfm), output_name),
-        NodeTfm::NoneDeclared => locate_fsharp_output_dll(&t.path, None, output_name),
+        NodeTfm::Known(tfm) => locate_fsharp_output_dll(&t.path, Some(tfm), output_name, observer),
+        NodeTfm::NoneDeclared => locate_fsharp_output_dll(&t.path, None, output_name, observer),
         NodeTfm::Unresolved | NodeTfm::NotEvaluated => {
             tracing::info!(
                 fsproj = %t.path.display(),
@@ -2782,6 +2920,7 @@ fn locate_fsharp_output_dll(
     fsproj: &Path,
     producer_tfm: Option<&str>,
     output_name: &str,
+    observer: &Observer,
 ) -> OutputLocation {
     let mut dll_name = std::ffi::OsString::from(output_name);
     dll_name.push(".dll");
@@ -2798,14 +2937,14 @@ fn locate_fsharp_output_dll(
     // case-insensitive property comparison on the path segment it writes.
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut tfm_dirs: Vec<String> = Vec::new();
-    let Some(configs) = child_dirs(&bin) else {
+    let Some(configs) = child_dirs(&bin, observer) else {
         return OutputLocation::Undecidable {
             why: "the bin directory could not be read",
             transient: true,
         };
     };
     for config in configs {
-        let Some(tfm_dirs_on_disk) = child_dirs(&config) else {
+        let Some(tfm_dirs_on_disk) = child_dirs(&config, observer) else {
             return OutputLocation::Undecidable {
                 why: "a bin subdirectory could not be read",
                 transient: true,
@@ -2825,13 +2964,13 @@ fn locate_fsharp_output_dll(
             // put an output we could not examine into the proven-absence
             // bucket. Ask for the metadata so a non-`NotFound` error is a
             // refusal to decide instead.
-            match Unobserved::EnvResolution.metadata(&dll) {
-                Ok(meta) if meta.is_file() => {
+            match msbuild_observed::kind(observer, &dll) {
+                Ok(EntryKind::File) => {
                     candidates.push(dll);
                     tfm_dirs.push(dir_name.to_ascii_lowercase());
                 }
                 Ok(_) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) if err.is_absent() => {}
                 Err(err) => {
                     tracing::info!(dll = %dll.display(), error = %err, "cannot stat a candidate output");
                     return OutputLocation::Undecidable {
@@ -2913,10 +3052,10 @@ enum OutputLocation {
 /// `Path::is_dir` folds a failed `stat` into `false`. Discarding either would
 /// hide the matching directory and make an unread tree look empty, so both
 /// propagate.
-fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
-    let entries = match Unobserved::EnvResolution.read_dir(dir) {
+fn child_dirs(dir: &Path, observer: &Observer) -> Option<Vec<PathBuf>> {
+    let entries = match msbuild_observed::read_dir(observer, dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(err) if err.is_absent() => return Some(Vec::new()),
         Err(err) => {
             tracing::info!(dir = %dir.display(), error = %err, "cannot read a bin subdirectory");
             return None;
@@ -2931,16 +3070,16 @@ fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
                 return None;
             }
         };
-        let path = entry.path();
-        match Unobserved::EnvResolution.metadata(&path) {
-            Ok(meta) if meta.is_dir() => dirs.push(path),
+        let path = entry.path;
+        match msbuild_observed::kind(observer, &path) {
+            Ok(EntryKind::Dir) => dirs.push(path),
             Ok(_) => {}
             // A dangling symlink, or an entry unlinked between the `read_dir`
             // and the `stat`. Nothing is there to have been missed, so skip it
             // — aborting would turn one stale link into a whole reference we
             // claim not to have read, and from there into a globally
             // incomplete env.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) if err.is_absent() => {}
             Err(err) => {
                 tracing::info!(path = %path.display(), error = %err, "cannot stat a directory entry");
                 return None;
@@ -3063,6 +3202,7 @@ fn unified_reference_keep_mask(identities: &[Option<AssemblyIdentity>]) -> Vec<b
 pub fn build_env_from_dll_paths<'a>(
     dlls: impl Iterator<Item = &'a Path>,
     cache: &AssemblyCache,
+    observer: &Observer,
 ) -> (AssemblyEnv, Vec<PathBuf>) {
     let paths: Vec<&Path> = dlls.collect();
     let _span = tracing::info_span!("build_env_from_dll_paths", count = paths.len()).entered();
@@ -3078,7 +3218,7 @@ pub fn build_env_from_dll_paths<'a>(
             .map(|(i, p)| {
                 let _span =
                     tracing::info_span!("enumerate_dll_type_defs", dll = %p.display()).entered();
-                (i, enumerate_dll_type_defs_cached(cache, p))
+                (i, enumerate_dll_type_defs_cached(cache, p, observer))
             })
             .collect()
     } else {
@@ -3096,6 +3236,9 @@ pub fn build_env_from_dll_paths<'a>(
                     let parent = parent.clone();
                     s.spawn(move || {
                         let _entered = parent.enter();
+                        // An observer per worker: one is not shared across
+                        // threads, so each joins its reads to the caller's.
+                        let local_observer = Observer::new();
                         let mut local = Vec::new();
                         loop {
                             // Work-stealing: each worker claims the next index, so
@@ -3107,9 +3250,12 @@ pub fn build_env_from_dll_paths<'a>(
                                 dll = %path.display()
                             )
                             .entered();
-                            local.push((i, enumerate_dll_type_defs_cached(cache, path)));
+                            local.push((
+                                i,
+                                enumerate_dll_type_defs_cached(cache, path, &local_observer),
+                            ));
                         }
-                        local
+                        (local, local_observer.finish())
                     })
                 })
                 .collect();
@@ -3119,7 +3265,10 @@ pub fn build_env_from_dll_paths<'a>(
             handles
                 .into_iter()
                 .filter_map(|h| h.join().ok())
-                .flatten()
+                .flat_map(|(local, reads)| {
+                    observer.absorb(reads);
+                    local
+                })
                 .collect()
         })
     };
@@ -3263,9 +3412,14 @@ pub fn build_env_from_dll_paths<'a>(
 fn enumerate_dll_type_defs_cached(
     cache: &AssemblyCache,
     path: &Path,
+    observer: &Observer,
 ) -> Result<ReferencedAssemblyProjection, SkipCause> {
+    // The env depends on the DLL as of this stamp, taken before the cache is
+    // asked: a cache hit is the projection of the DLL at the stamp the cache
+    // checks, and a write after this one moves the stamp recorded here.
+    let _ = msbuild_observed::stamp(observer, path);
     let mut cause = None;
-    let hit = cache.get_or_populate(path, || match enumerate_dll_type_defs(path) {
+    let hit = cache.get_or_populate(path, || match enumerate_dll_type_defs(path, observer) {
         Ok(projection) => Some(projection),
         Err(why) => {
             cause = Some(why);
@@ -3289,8 +3443,11 @@ fn enumerate_dll_type_defs_cached(
 /// The [`SkipCause`] separates the one refusal that is a fact about the *input*
 /// — the file is not a managed assembly — from every refusal that is a fact
 /// about *this reader*. Only the latter leaves anything unknown.
-fn enumerate_dll_type_defs(path: &Path) -> Result<ReferencedAssemblyProjection, SkipCause> {
-    let bytes = match Unobserved::EnvResolution.read(path) {
+fn enumerate_dll_type_defs(
+    path: &Path,
+    observer: &Observer,
+) -> Result<ReferencedAssemblyProjection, SkipCause> {
+    let bytes = match msbuild_observed::read_stamped(observer, path) {
         Ok(b) => b,
         Err(err) => {
             tracing::warn!(dll = %path.display(), error = %err, "failed to read DLL; skipping");
@@ -3465,10 +3622,8 @@ fn catch_reader_panic<T>(path: &Path, stage: &str, op: impl FnOnce() -> T) -> Op
 /// graph walk's lexical spellings against the paths NuGet recorded in an assets
 /// file. Never for identifying a *project*: two spellings of one `.fsproj` can
 /// be two different MSBuild projects (see [`ProjectId`]).
-fn canonicalise(path: &Path) -> PathBuf {
-    Unobserved::EnvResolution
-        .canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf())
+fn canonicalise(path: &Path, observer: &Observer) -> PathBuf {
+    msbuild_observed::canonicalize(observer, path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// A project, identified by the spelling it is evaluated under: the caller's
@@ -3676,6 +3831,7 @@ mod tests {
         let (_, kept) = build_env_from_dll_paths(
             [unreadable.as_path(), native.as_path()].into_iter(),
             &AssemblyCache::disabled(),
+            &borzoi_msbuild::observed::Observer::new(),
         );
         assert!(
             kept.is_empty(),
@@ -4933,7 +5089,11 @@ mod tests {
             &[],
         );
 
-        let recovered = entry_ref_tfms(&entry, Some("net8.0-windows"));
+        let recovered = entry_ref_tfms(
+            &entry,
+            Some("net8.0-windows"),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         let canon_cs = crate::observed::host_fs::canonicalize(&cs).unwrap();
         assert_eq!(
             recovered.get(&canon_cs).map(String::as_str),
@@ -4944,7 +5104,12 @@ mod tests {
         // Pin the failure this closes: the base-TFM guess cannot find the
         // producer's target at all.
         assert!(
-            resolve_transitive_project_tfms(&cs, "net8.0").is_err(),
+            resolve_transitive_project_tfms(
+                &cs,
+                "net8.0",
+                &borzoi_msbuild::observed::Observer::new()
+            )
+            .is_err(),
             "base-TFM lookup in the producer's own assets was expected to miss"
         );
     }
@@ -4956,8 +5121,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let entry = tmp.path().join("Fs/Fs.fsproj");
         write(&entry, &fsproj(&[]));
-        assert!(entry_ref_tfms(&entry, None).is_empty());
-        assert!(entry_ref_tfms(&entry, Some("net8.0")).is_empty());
+        assert!(
+            entry_ref_tfms(&entry, None, &borzoi_msbuild::observed::Observer::new()).is_empty()
+        );
+        assert!(
+            entry_ref_tfms(
+                &entry,
+                Some("net8.0"),
+                &borzoi_msbuild::observed::Observer::new()
+            )
+            .is_empty()
+        );
     }
 
     /// `invalidate_project` only clears the compile-order parses, not the
@@ -5052,7 +5226,7 @@ mod tests {
                 span: 0..0,
             }],
         };
-        let targets = graph_ref_targets(&graph, entry);
+        let targets = graph_ref_targets(&graph, entry, &borzoi_msbuild::observed::Observer::new());
         // The fixture paths don't exist, so canonicalisation falls back to the
         // node paths themselves. The node's TFM verdict rides along verbatim.
         assert_eq!(
@@ -5084,7 +5258,7 @@ mod tests {
             ],
             problems: Vec::new(),
         };
-        let targets = graph_ref_targets(&graph, &entry);
+        let targets = graph_ref_targets(&graph, &entry, &borzoi_msbuild::observed::Observer::new());
         assert_eq!(
             targets.fsharp,
             vec![FsharpRefTarget {
@@ -5185,8 +5359,13 @@ mod tests {
     fn locate_output_dll_finds_built_dll() {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Release", "net10.0", b"stub");
-        let found =
-            locate_fsharp_output_dll(&proj, None, "Lib").expect_found("built DLL is located");
+        let found = locate_fsharp_output_dll(
+            &proj,
+            None,
+            "Lib",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect_found("built DLL is located");
         assert!(found.ends_with("bin/Release/net10.0/Lib.dll"), "{found:?}");
     }
 
@@ -5197,7 +5376,12 @@ mod tests {
         write(&proj, "<Project />");
         // No bin/ at all.
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Lib"),
+            locate_fsharp_output_dll(
+                &proj,
+                None,
+                "Lib",
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             OutputLocation::Found(_)
         ));
     }
@@ -5212,7 +5396,13 @@ mod tests {
         write(&debug, "");
         std::fs::write(&debug, b"dbg").unwrap();
 
-        let found = locate_fsharp_output_dll(&proj, None, "Lib").expect_found("a DLL is located");
+        let found = locate_fsharp_output_dll(
+            &proj,
+            None,
+            "Lib",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect_found("a DLL is located");
         assert!(
             found.ends_with("bin/Debug/net10.0/Lib.dll"),
             "expected the Debug build to win, got {found:?}"
@@ -5229,7 +5419,12 @@ mod tests {
         let other = tmp.path().join("bin/Debug/net10.0/Other.dll");
         write(&other, "");
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Lib"),
+            locate_fsharp_output_dll(
+                &proj,
+                None,
+                "Lib",
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             OutputLocation::Found(_)
         ));
     }
@@ -5247,11 +5442,22 @@ mod tests {
 
         // Stem-based lookup misses (there is no Lib.dll)…
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Lib"),
+            locate_fsharp_output_dll(
+                &proj,
+                None,
+                "Lib",
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             OutputLocation::Found(_)
         ));
         // …but the recovered name finds the override's output.
-        let found = locate_fsharp_output_dll(&proj, None, "Renamed").expect_found("located");
+        let found = locate_fsharp_output_dll(
+            &proj,
+            None,
+            "Renamed",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect_found("located");
         assert!(
             found.ends_with("bin/Debug/net10.0/Renamed.dll"),
             "{found:?}"
@@ -5266,7 +5472,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"stub");
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Renamed"),
+            locate_fsharp_output_dll(
+                &proj,
+                None,
+                "Renamed",
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             OutputLocation::Found(_)
         ));
     }
@@ -5285,7 +5496,12 @@ mod tests {
         std::fs::write(&eight, b"eight").unwrap();
         assert!(
             !matches!(
-                locate_fsharp_output_dll(&proj, None, "Lib"),
+                locate_fsharp_output_dll(
+                    &proj,
+                    None,
+                    "Lib",
+                    &borzoi_msbuild::observed::Observer::new()
+                ),
                 OutputLocation::Found(_)
             ),
             "two TFM variants with no producer TFM must skip, not guess"
@@ -5304,7 +5520,13 @@ mod tests {
         write(&eight, "");
         std::fs::write(&eight, b"eight").unwrap();
 
-        let found = locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib").expect_found("located");
+        let found = locate_fsharp_output_dll(
+            &proj,
+            Some("net8.0"),
+            "Lib",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect_found("located");
         assert!(
             found.ends_with("bin/Debug/net8.0/Lib.dll"),
             "expected the producer TFM's build, got {found:?}"
@@ -5319,7 +5541,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"ten");
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib"),
+            locate_fsharp_output_dll(
+                &proj,
+                Some("net8.0"),
+                "Lib",
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             OutputLocation::Found(_)
         ));
     }
@@ -5354,7 +5581,11 @@ mod tests {
         project_refs: &[FsharpRefTarget],
         assembly_names: &BTreeMap<PathBuf, String>,
     ) -> Vec<PathBuf> {
-        edge_dlls(&fsharp_project_ref_edges(project_refs, assembly_names))
+        edge_dlls(&fsharp_project_ref_edges(
+            project_refs,
+            assembly_names,
+            &borzoi_msbuild::observed::Observer::new(),
+        ))
     }
 
     /// The single outcome of a one-edge resolution.
@@ -5362,7 +5593,11 @@ mod tests {
         project_refs: &[FsharpRefTarget],
         assembly_names: &BTreeMap<PathBuf, String>,
     ) -> ReferenceOutcome {
-        let edges = fsharp_project_ref_edges(project_refs, assembly_names);
+        let edges = fsharp_project_ref_edges(
+            project_refs,
+            assembly_names,
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(edges.len(), 1, "helper is for a single edge");
         edges.into_iter().next().expect("one edge").outcome
     }
@@ -5574,7 +5809,10 @@ mod tests {
     fn child_dirs_separates_an_absent_tree_from_an_unreadable_one() {
         let tmp = TempDir::new().unwrap();
         assert_eq!(
-            child_dirs(&tmp.path().join("nope")),
+            child_dirs(
+                &tmp.path().join("nope"),
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             Some(Vec::new()),
             "an absent directory is a proven absence"
         );
@@ -5585,7 +5823,7 @@ mod tests {
         let not_a_dir = tmp.path().join("bin");
         write(&not_a_dir, "");
         assert_eq!(
-            child_dirs(&not_a_dir),
+            child_dirs(&not_a_dir, &borzoi_msbuild::observed::Observer::new()),
             None,
             "a tree we cannot read must not read as empty"
         );
@@ -5604,11 +5842,13 @@ mod tests {
         let edges = fsharp_project_ref_edges(
             &[ref_target(proj, NodeTfm::Known("net10.0".into()))],
             &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
         );
         let set = ReferenceSet {
             dlls: Vec::new(),
             edges,
             retryable: false,
+            unrecorded: Vec::new(),
         };
         assert_eq!(set.unread().count(), 1);
         assert!(
@@ -5625,8 +5865,10 @@ mod tests {
             edges: fsharp_project_ref_edges(
                 &[ref_target(stable, NodeTfm::Unresolved)],
                 &BTreeMap::new(),
+                &borzoi_msbuild::observed::Observer::new(),
             ),
             retryable: false,
+            unrecorded: Vec::new(),
         };
         assert_eq!(set.unread().count(), 1);
         assert!(!set.has_transient_failure());
@@ -5648,7 +5890,12 @@ mod tests {
 
         assert!(
             matches!(
-                locate_fsharp_output_dll(&proj, Some("net10.0"), "Lib"),
+                locate_fsharp_output_dll(
+                    &proj,
+                    Some("net10.0"),
+                    "Lib",
+                    &borzoi_msbuild::observed::Observer::new()
+                ),
                 OutputLocation::Undecidable { .. }
             ),
             "an unreadable bin tree is undecidable, not a proven absence"
@@ -5675,7 +5922,12 @@ mod tests {
 
         assert!(
             matches!(
-                locate_fsharp_output_dll(&proj, None, "Lib"),
+                locate_fsharp_output_dll(
+                    &proj,
+                    None,
+                    "Lib",
+                    &borzoi_msbuild::observed::Observer::new()
+                ),
                 OutputLocation::Undecidable { .. }
             ),
             "two built TFMs and no producer TFM cannot be resolved"
@@ -5717,7 +5969,11 @@ mod tests {
             ref_target(stray, NodeTfm::Known("net10.0".into())),
         ];
 
-        let edges = fsharp_project_ref_edges(&refs, &BTreeMap::new());
+        let edges = fsharp_project_ref_edges(
+            &refs,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             edges.len(),
             refs.len(),
@@ -5802,7 +6058,7 @@ mod tests {
             problems: Vec::new(),
         };
 
-        let targets = graph_ref_targets(&graph, entry);
+        let targets = graph_ref_targets(&graph, entry, &borzoi_msbuild::observed::Observer::new());
         assert_eq!(
             targets.suppressed,
             vec![PathBuf::from(entry), PathBuf::from(dep)],
@@ -5837,6 +6093,7 @@ mod tests {
             dlls: Vec::new(),
             edges,
             retryable: false,
+            unrecorded: Vec::new(),
         };
         assert_eq!(
             set.unread().collect::<Vec<_>>(),
@@ -5869,6 +6126,7 @@ mod tests {
             dlls: Vec::new(),
             edges,
             retryable: false,
+            unrecorded: Vec::new(),
         };
 
         let unbuilt = set(vec![edge("A.fsproj", ReferenceOutcome::NotBuilt)]);
@@ -5979,6 +6237,78 @@ mod tests {
             "expected the referenced project's `MiniLibFs` namespace in the env; \
              env len = {}",
             env.len()
+        );
+    }
+
+    /// A resolution that consults an unrecording reader says so whatever the
+    /// reader concludes: an on-demand restore that declines (here, with no
+    /// `dotnet` to run), and C# references the sidecar is enabled for that
+    /// deliver nothing (here, with no producer TFM known), each leave the
+    /// resolution depending on what that reader would read.
+    #[test]
+    fn a_consulted_unrecording_reader_is_named_whatever_it_concludes() {
+        let tmp = TempDir::new().unwrap();
+        let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+        let project = root.join("App/App.fsproj");
+        write(&project, "<Project />");
+        let dotnet = root.join("dotnet");
+        std::fs::create_dir_all(&dotnet).unwrap();
+        let restore_env = SdkDiscoveryEnv {
+            dotnet_root: Some(root.join("no-dotnet")),
+            ..SdkDiscoveryEnv::default()
+        };
+        let declined = resolve_reference_dlls(
+            &project,
+            Some(&dotnet),
+            &ServedTfm::NoneDeclared,
+            CsharpReferences::Disabled,
+            &GraphRefTargets::default(),
+            &BTreeMap::new(),
+            Some(&restore_env),
+            &Observer::new(),
+        );
+        assert!(
+            declined.dlls.is_empty(),
+            "precondition: the restore declines"
+        );
+        assert_eq!(declined.unrecorded, vec![UNRECORDED_RESTORE]);
+
+        write_app_assets(project.parent().unwrap(), false);
+        let mut sidecar = SidecarManager::default();
+        let targets = GraphRefTargets {
+            csharp: vec![root.join("Lib/Lib.csproj")],
+            ..GraphRefTargets::default()
+        };
+        let unread = resolve_reference_dlls(
+            &project,
+            Some(&dotnet),
+            &ServedTfm::NoneDeclared,
+            CsharpReferences::Enabled(&mut sidecar),
+            &targets,
+            &BTreeMap::new(),
+            None,
+            &Observer::new(),
+        );
+        assert_eq!(
+            unread.unread().count(),
+            1,
+            "precondition: the C# reference delivers nothing"
+        );
+        assert_eq!(unread.unrecorded, vec![UNRECORDED_CSHARP]);
+        let disabled = resolve_reference_dlls(
+            &project,
+            Some(&dotnet),
+            &ServedTfm::NoneDeclared,
+            CsharpReferences::Disabled,
+            &targets,
+            &BTreeMap::new(),
+            None,
+            &Observer::new(),
+        );
+        assert!(
+            disabled.unrecorded.is_empty(),
+            "a disabled sidecar reads nothing: {:?}",
+            disabled.unrecorded
         );
     }
 
@@ -6121,6 +6451,7 @@ mod tests {
             Some(&dotnet_root),
             &ServedTfm::NoneDeclared,
             &Workspace::default(),
+            &borzoi_msbuild::observed::Observer::new(),
         );
         assert_eq!(
             refs.edges,
@@ -6167,6 +6498,7 @@ mod tests {
             Some(&dotnet_root),
             &ServedTfm::NoneDeclared,
             &Workspace::default(),
+            &borzoi_msbuild::observed::Observer::new(),
         );
         assert_eq!(
             refs.edges,
@@ -6784,7 +7116,7 @@ mod tests {
         // that poisons the env, never the "not managed" exemption.
         let missing = Path::new("/definitely/not/a/real/path/nope.dll");
         assert_eq!(
-            enumerate_dll_type_defs(missing).err(),
+            enumerate_dll_type_defs(missing, &borzoi_msbuild::observed::Observer::new()).err(),
             Some(SkipCause::UnknownIdentity)
         );
 
@@ -6795,7 +7127,7 @@ mod tests {
         let junk = tmp.path().join("junk.dll");
         write(&junk, "this is not a PE file at all");
         assert_eq!(
-            enumerate_dll_type_defs(&junk).err(),
+            enumerate_dll_type_defs(&junk, &borzoi_msbuild::observed::Observer::new()).err(),
             Some(SkipCause::UnknownIdentity)
         );
     }
@@ -6848,12 +7180,15 @@ mod tests {
             Some(ImportError::NotAManagedAssembly)
         );
         assert_eq!(
-            enumerate_dll_type_defs(&native).err(),
+            enumerate_dll_type_defs(&native, &borzoi_msbuild::observed::Observer::new()).err(),
             Some(SkipCause::NotAManagedAssembly)
         );
 
-        let (env, _) =
-            build_env_from_dll_paths([native.as_path()].into_iter(), &AssemblyCache::disabled());
+        let (env, _) = build_env_from_dll_paths(
+            [native.as_path()].into_iter(),
+            &AssemblyCache::disabled(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert!(
             !env.identities_incomplete(),
             "a file with no CLI directory has no manifest name to hide"
@@ -6866,6 +7201,7 @@ mod tests {
         let (env, _) = build_env_from_dll_paths(
             [native.as_path(), unreadable.as_path()].into_iter(),
             &AssemblyCache::disabled(),
+            &borzoi_msbuild::observed::Observer::new(),
         );
         assert!(
             env.identities_incomplete(),

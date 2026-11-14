@@ -251,7 +251,12 @@ pub(crate) fn unique_nonce() -> u128 {
 /// the fixture has been `dotnet restore`d before invoking this (every
 /// call site here pairs it with a prior [`lock_fixture`] guard).
 pub(crate) fn project_tfms_for(csproj: &Path) -> BTreeMap<PathBuf, String> {
-    resolve_transitive_project_tfms(csproj, "net10.0").unwrap_or_else(|e| {
+    resolve_transitive_project_tfms(
+        csproj,
+        "net10.0",
+        &borzoi_msbuild::observed::Observer::new(),
+    )
+    .unwrap_or_else(|e| {
         panic!(
             "resolve closure-wide TFM map for {}: {e:?}",
             csproj.display()

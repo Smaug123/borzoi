@@ -64,15 +64,38 @@ impl Observer {
         (ReadSet { reads }, self.counts.get())
     }
 
+    /// Another observer's reads and counts, as if this one had made them:
+    /// what a caller that observes on several threads, each through an
+    /// observer of its own, joins them with.
+    pub fn absorb(&self, (reads, counts): (ReadSet, ReadCounts)) {
+        self.reads.borrow_mut().extend(reads.reads);
+        self.counts.set(self.counts.get() + counts);
+    }
+
     fn record(&self, path: &Path, observation: Observation) {
         let mut counts = self.counts.get();
         match &observation {
             Observation::Text(_) => counts.opens += 1,
-            Observation::Kind(_) | Observation::LinkKind(_) => counts.stats += 1,
+            Observation::Kind(_) | Observation::LinkKind(_) | Observation::Stamp(_) => {
+                counts.stats += 1;
+            }
             Observation::Listing(_) => counts.listings += 1,
             Observation::Canonical(_) => counts.canonicalizations += 1,
         }
         self.counts.set(counts);
+        self.push(path, observation);
+    }
+
+    /// Record a whole-file read whose observation is the file's stamp
+    /// ([`read_stamped`]): an open, not a `stat`.
+    fn record_open(&self, path: &Path, observation: Observation) {
+        let mut counts = self.counts.get();
+        counts.opens += 1;
+        self.counts.set(counts);
+        self.push(path, observation);
+    }
+
+    fn push(&self, path: &Path, observation: Observation) {
         self.reads.borrow_mut().push(Read {
             path: path.to_path_buf(),
             observation,
@@ -177,8 +200,12 @@ impl Read {
 
     /// Whether the query, asked of the host's file system now, gets the
     /// answer recorded.
+    ///
+    /// A racy stamp ([`FileStamp::racy`]) never holds: the file may have
+    /// changed since within the same timestamp tick.
     pub fn still_holds(&self) -> bool {
-        answer_now(&self.path, &self.observation) == self.observation
+        !self.observation.is_racy_stamp()
+            && answer_now(&self.path, &self.observation) == self.observation
     }
 }
 
@@ -222,6 +249,19 @@ pub enum Observation {
     Listing(Result<Vec<Listed>, Failure>),
     /// The path with every symlink resolved (`realpath`).
     Canonical(Result<PathBuf, Failure>),
+    /// The file's identity and when it last changed (`stat`), for a reader
+    /// that keeps neither its bytes nor their digest: one that reads a large
+    /// binary file ([`read_stamped`]), or reads it through a cache keyed by
+    /// its stamp ([`stamp`]).
+    Stamp(Result<FileStamp, Failure>),
+}
+
+impl Observation {
+    /// Whether this is a stamp taken within [`STAMP_RACY_WINDOW`] of the
+    /// file's last change, which no later observation can confirm.
+    pub fn is_racy_stamp(&self) -> bool {
+        matches!(self, Observation::Stamp(Ok(stamp)) if stamp.racy)
+    }
 }
 
 /// `query`'s query (its answer is ignored) asked of the host's file system
@@ -235,6 +275,7 @@ pub fn answer_now(path: &Path, query: &Observation) -> Observation {
         Observation::LinkKind(_) => Observation::LinkKind(link_kind_of(path)),
         Observation::Listing(_) => Observation::Listing(listed(&listing_of(path))),
         Observation::Canonical(_) => Observation::Canonical(canonical_of(path)),
+        Observation::Stamp(_) => Observation::Stamp(stamp_of(path)),
     }
 }
 
@@ -263,6 +304,82 @@ impl TextDigest {
             len: text.len() as u64,
             hash: (u128::from(half(0)) << 64) | u128::from(half(1)),
         }
+    }
+}
+
+/// How close to the time a stamp is taken a file's last change may lie for
+/// the stamp to be racy: the coarsest local timestamp granularity in common
+/// use (HFS+'s second, FAT's two), as the LSP's `Vfs` rules (git's
+/// racy-timestamp rule).
+pub const STAMP_RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A file's identity and its last changes, as `stat` reports them: the
+/// device and inode, the size, and the modification and change times in
+/// nanoseconds. The change time cannot be set from user space, so a rewrite
+/// that keeps the size and resets the modification time still moves it;
+/// it is `None` on a host whose `std` exposes none.
+///
+/// Two writes of the same size within one timestamp tick leave every field
+/// the same, so a stamp taken within [`STAMP_RACY_WINDOW`] of the file's
+/// last change, or on a host with no change time, is `racy`: it speaks for
+/// the file only at the moment it was taken, and never holds again
+/// ([`Read::still_holds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FileStamp {
+    pub dev: u64,
+    pub ino: u64,
+    pub len: u64,
+    pub mtime_ns: i128,
+    pub ctime_ns: Option<i128>,
+    pub racy: bool,
+}
+
+impl FileStamp {
+    #[cfg(unix)]
+    fn of(meta: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        let nanos = |secs: i64, nsec: i64| i128::from(secs) * 1_000_000_000 + i128::from(nsec);
+        let mtime_ns = nanos(meta.mtime(), meta.mtime_nsec());
+        let ctime_ns = Some(nanos(meta.ctime(), meta.ctime_nsec()));
+        FileStamp {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.size(),
+            mtime_ns,
+            ctime_ns,
+            racy: racy(mtime_ns, ctime_ns),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn of(meta: &std::fs::Metadata) -> Self {
+        let mtime_ns = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos() as i128);
+        FileStamp {
+            dev: 0,
+            ino: 0,
+            len: meta.len(),
+            mtime_ns,
+            ctime_ns: None,
+            racy: true,
+        }
+    }
+}
+
+/// Whether a file last changed at `mtime_ns` and `ctime_ns` is racy now:
+/// either time within [`STAMP_RACY_WINDOW`] of the wall clock, or after it,
+/// or no change time at all.
+fn racy(mtime_ns: i128, ctime_ns: Option<i128>) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as i128);
+    let window = STAMP_RACY_WINDOW.as_nanos() as i128;
+    match ctime_ns {
+        Some(ctime) => now - mtime_ns < window || now - ctime < window,
+        None => true,
     }
 }
 
@@ -447,6 +564,39 @@ fn canonical_of(path: &Path) -> Result<PathBuf, Failure> {
     std::fs::canonicalize(path).map_err(|e| Failure::of(&e))
 }
 
+#[allow(clippy::disallowed_methods)]
+fn stamp_of(path: &Path) -> Result<FileStamp, Failure> {
+    std::fs::metadata(path)
+        .map(|meta| FileStamp::of(&meta))
+        .map_err(|e| Failure::of(&e))
+}
+
+/// The file at `path`, opened and stamped through its descriptor, then read
+/// whole: stamp first, so that a write landing after it moves the stamp.
+#[allow(clippy::disallowed_methods)]
+fn stamped_bytes(path: &Path) -> (Result<FileStamp, Failure>, Result<Vec<u8>, Failure>) {
+    use std::io::Read as _;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) => return (Err(Failure::of(&e)), Err(Failure::of(&e))),
+    };
+    let stamp = match file.metadata() {
+        Ok(meta) => FileStamp::of(&meta),
+        Err(e) => return (Err(Failure::of(&e)), Err(Failure::of(&e))),
+    };
+    // Reserved fallibly, as `std::fs::read` does: a file too large to hold
+    // fails the read with `OutOfMemory` rather than aborting the process.
+    let mut bytes = Vec::new();
+    if let Err(e) = bytes.try_reserve_exact(usize::try_from(stamp.len).unwrap_or(0)) {
+        let e = std::io::Error::new(ErrorKind::OutOfMemory, e);
+        return (Ok(stamp), Err(Failure::of(&e)));
+    }
+    match file.read_to_end(&mut bytes) {
+        Ok(_) => (Ok(stamp), Ok(bytes)),
+        Err(e) => (Ok(stamp), Err(Failure::of(&e))),
+    }
+}
+
 /// [`std::fs::read_to_string`].
 pub fn read_to_string(observer: &Observer, path: &Path) -> Result<String, Failure> {
     let result = read_text(path);
@@ -504,6 +654,28 @@ pub fn canonicalize(observer: &Observer, path: &Path) -> Result<PathBuf, Failure
     let result = canonical_of(path);
     observer.record(path, Observation::Canonical(result.clone()));
     result
+}
+
+/// The file's [`FileStamp`]: [`std::fs::metadata`].
+pub fn stamp(observer: &Observer, path: &Path) -> Result<FileStamp, Failure> {
+    let result = stamp_of(path);
+    observer.record(path, Observation::Stamp(result.clone()));
+    result
+}
+
+/// [`std::fs::read`], recorded as the stamp the open file had before it was
+/// read rather than as a digest of the bytes: for a large binary file that a
+/// caller reads whole and need not hash. A write that lands after the stamp
+/// moves it, so the stamp never speaks for bytes the read did not see. A
+/// read that fails after the stamp is recorded with its failure.
+pub fn read_stamped(observer: &Observer, path: &Path) -> Result<Vec<u8>, Failure> {
+    let (stamp, bytes) = stamped_bytes(path);
+    let recorded = match (&stamp, &bytes) {
+        (Ok(_), Err(failure)) => Err(failure.clone()),
+        _ => stamp,
+    };
+    observer.record_open(path, Observation::Stamp(recorded));
+    bytes
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -579,6 +751,36 @@ mod tests {
 
     use super::host_fs::HostPath as _;
     use super::*;
+
+    /// A stamped read records the stamp the file had when it was read, which
+    /// [`stamp`] reads alike, as one query. A file changed within
+    /// [`STAMP_RACY_WINDOW`] of the stamp gives a racy one, which never
+    /// holds, unchanged or not; past the window the stamp holds until a
+    /// rewrite, at the same size, moves it. An absent file is recorded absent
+    /// by both.
+    #[test]
+    fn a_stamped_read_records_a_stamp_a_rewrite_moves() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("A.dll");
+        std::fs::write(&path, b"abcd").unwrap();
+        let racy = Observer::new();
+        assert!(stamp(&racy, &path).unwrap().racy);
+        assert!(racy.finish().0.first_stale().is_some(), "a racy stamp held");
+
+        std::thread::sleep(STAMP_RACY_WINDOW + std::time::Duration::from_millis(200));
+        let observer = Observer::new();
+        assert_eq!(read_stamped(&observer, &path).unwrap(), b"abcd");
+        assert!(!stamp(&observer, &path).unwrap().racy);
+        let missing = tmp.path().join("B.dll");
+        assert!(read_stamped(&observer, &missing).unwrap_err().is_absent());
+        assert!(stamp(&observer, &missing).unwrap_err().is_absent());
+        let (reads, counts) = observer.finish();
+        assert_eq!(reads.len(), 2, "{reads:?}");
+        assert_eq!((counts.opens, counts.stats), (2, 2));
+        assert_eq!(reads.first_stale(), None);
+        std::fs::write(&path, b"wxyz").unwrap();
+        assert!(reads.first_stale().is_some_and(|read| read.path == path));
+    }
 
     /// Clippy reads only the nearest `clippy.toml`, so the crate's replaces
     /// the workspace's: it must carry every one of the workspace's settings,

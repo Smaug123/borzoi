@@ -98,8 +98,12 @@ fn fsproj_to_csharp_metadata_e2e() {
 
     // After `dotnet restore` lands `obj/project.assets.json`, the LSP-style
     // helper can derive the closure-wide TFM map a real caller would send.
-    let project_tfms = resolve_transitive_project_tfms(fixture.csproj_path(), "net10.0")
-        .expect("resolve closure-wide TFM map for sidecar fixture");
+    let project_tfms = resolve_transitive_project_tfms(
+        fixture.csproj_path(),
+        "net10.0",
+        &borzoi_msbuild::observed::Observer::new(),
+    )
+    .expect("resolve closure-wide TFM map for sidecar fixture");
     let result = handle
         .build_metadata(fixture.csproj_path(), "Debug", "net10.0", &project_tfms)
         .expect("buildMetadata of the C# fixture should succeed");

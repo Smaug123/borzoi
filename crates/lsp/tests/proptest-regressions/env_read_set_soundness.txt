@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 879463a64b767b8e8346b5418443118085bad57ccfef419d01d4e0a3a01605d7 # shrinks to world = World { packages: [], pack_versions: [(1, false)], siblings: [Sibling { built: [], in_assets: false, names_output: false }] }
+cc 3168f37de6da5dc441d556b7c9f53ebb3e400f41b4fbf4957a9c9ea37e7e73a0 # shrinks to world = World { packages: [], pack_versions: [(1, false)], siblings: [Sibling { built: [], in_assets: true, names_output: false, multi: true }] }
+cc fadb89f06eb26fc881a82709c56327bb25c12f2d8d86c0574ee997f2033e1276 # shrinks to world = World { packages: [], pack_versions: [(1, false)], siblings: [Sibling { built: ["net8.0"], in_assets: false, names_output: false, multi: false }] }

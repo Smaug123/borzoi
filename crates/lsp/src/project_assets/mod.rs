@@ -5,7 +5,7 @@ pub mod framework;
 pub mod raw;
 pub mod tfm;
 
-use crate::observed::Unobserved;
+use borzoi_msbuild::observed::{self as msbuild_observed, Failure, Observer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -58,8 +58,9 @@ pub struct ResolvedAssemblies {
 pub fn resolve_assemblies(
     root_assets_path: &Path,
     dotnet_root: &Path,
+    observer: &Observer,
 ) -> Result<ResolvedAssemblies, ProjectAssetsError> {
-    resolve_assemblies_impl(root_assets_path, dotnet_root, true, None)
+    resolve_assemblies_impl(root_assets_path, dotnet_root, true, None, observer)
 }
 
 /// [`resolve_assemblies`] minus the transitive `<ProjectReference>` walk.
@@ -79,8 +80,9 @@ pub fn resolve_assemblies(
 pub fn resolve_assemblies_root_only(
     root_assets_path: &Path,
     dotnet_root: &Path,
+    observer: &Observer,
 ) -> Result<ResolvedAssemblies, ProjectAssetsError> {
-    resolve_assemblies_impl(root_assets_path, dotnet_root, false, None)
+    resolve_assemblies_impl(root_assets_path, dotnet_root, false, None, observer)
 }
 
 /// [`resolve_assemblies_root_only`] for a caller-chosen TFM (fsproj 3.3c,
@@ -95,8 +97,15 @@ pub fn resolve_assemblies_for_tfm(
     root_assets_path: &Path,
     dotnet_root: &Path,
     tfm: &str,
+    observer: &Observer,
 ) -> Result<ResolvedAssemblies, ProjectAssetsError> {
-    resolve_assemblies_impl(root_assets_path, dotnet_root, false, Some(tfm))
+    resolve_assemblies_impl(root_assets_path, dotnet_root, false, Some(tfm), observer)
+}
+
+/// The `std::io::Error` a failed observation stands for: its kind, and its
+/// message.
+pub(crate) fn io_error(failure: Failure) -> std::io::Error {
+    std::io::Error::new(failure.kind(), failure)
 }
 
 fn resolve_assemblies_impl(
@@ -104,6 +113,7 @@ fn resolve_assemblies_impl(
     dotnet_root: &Path,
     recurse: bool,
     root_tfm: Option<&str>,
+    observer: &Observer,
 ) -> Result<ResolvedAssemblies, ProjectAssetsError> {
     // A chosen TFM applies to the *root* assets file only; since the two
     // callers that pass one never recurse, "every visited file is the root"
@@ -119,21 +129,21 @@ fn resolve_assemblies_impl(
     let mut worklist: Vec<PathBuf> = vec![root_assets_path.to_path_buf()];
 
     while let Some(assets_path) = worklist.pop() {
-        let canon = Unobserved::EnvResolution
-            .canonicalize(&assets_path)
-            .map_err(|e| ProjectAssetsError::Io {
+        let canon = msbuild_observed::canonicalize(observer, &assets_path).map_err(|e| {
+            ProjectAssetsError::Io {
                 path: assets_path.clone(),
-                source: e,
-            })?;
+                source: io_error(e),
+            }
+        })?;
         if !visited.insert(canon.clone()) {
             continue;
         }
-        let text = Unobserved::EnvResolution
-            .read_to_string(&canon)
-            .map_err(|e| ProjectAssetsError::Io {
+        let text = msbuild_observed::read_to_string(observer, &canon).map_err(|e| {
+            ProjectAssetsError::Io {
                 path: canon.clone(),
-                source: e,
-            })?;
+                source: io_error(e),
+            }
+        })?;
         let assets: RawAssets =
             serde_json::from_str(&text).map_err(|e| ProjectAssetsError::Json {
                 path: canon.clone(),
@@ -151,7 +161,7 @@ fn resolve_assemblies_impl(
         for r in refs {
             match r {
                 Reference::PackageDll { candidates } => {
-                    package_dlls.insert(pick_existing(&candidates));
+                    package_dlls.insert(pick_existing(&candidates, observer));
                 }
                 Reference::ProjectRef {
                     project_path,
@@ -165,7 +175,7 @@ fn resolve_assemblies_impl(
                     // depend on the transitive closure.
                     if !recurse {
                         if let Ok(canon_proj) =
-                            Unobserved::EnvResolution.canonicalize(&project_path)
+                            msbuild_observed::canonicalize(observer, &project_path)
                         {
                             if let Some(name) = assembly_name {
                                 project_ref_assembly_names.insert(canon_proj.clone(), name);
@@ -174,17 +184,16 @@ fn resolve_assemblies_impl(
                         }
                         continue;
                     }
-                    let canon_proj = Unobserved::EnvResolution
-                        .canonicalize(&project_path)
+                    let canon_proj = msbuild_observed::canonicalize(observer, &project_path)
                         .map_err(|e| {
-                            if e.kind() == std::io::ErrorKind::NotFound {
+                            if e.is_absent() {
                                 ProjectAssetsError::MissingTransitiveAssets {
                                     project_path: project_path.clone(),
                                 }
                             } else {
                                 ProjectAssetsError::Io {
                                     path: project_path.clone(),
-                                    source: e,
+                                    source: io_error(e),
                                 }
                             }
                         })?;
@@ -197,7 +206,7 @@ fn resolve_assemblies_impl(
                         project_ref_assembly_names.insert(canon_proj.clone(), name);
                     }
                     project_ref_tfms.insert(canon_proj.clone(), tfm);
-                    if !Unobserved::EnvResolution.exists(&next_assets) {
+                    if !msbuild_observed::exists(observer, &next_assets) {
                         return Err(ProjectAssetsError::MissingTransitiveAssets {
                             project_path: canon_proj,
                         });
@@ -234,6 +243,7 @@ fn resolve_assemblies_impl(
                         &name,
                         &tfm,
                         package_ref_dir.as_deref(),
+                        observer,
                     ) {
                         Ok(dlls) => {
                             frameworks_resolved.insert((name, tfm));
@@ -296,8 +306,9 @@ fn resolve_assemblies_impl(
 pub fn resolve_transitive_project_tfms(
     top_csproj_path: &Path,
     consumer_tfm: &str,
+    observer: &Observer,
 ) -> Result<BTreeMap<PathBuf, String>, ProjectAssetsError> {
-    let top_assets = read_raw_assets(&assets_path_for(top_csproj_path))?;
+    let top_assets = read_raw_assets(&assets_path_for(top_csproj_path), observer)?;
     let target = lookup_target_for_tfm(&top_assets, consumer_tfm)?;
     let top_dir = top_csproj_path
         .parent()
@@ -331,7 +342,7 @@ pub fn resolve_transitive_project_tfms(
         if declared.contains_key(&producer_csproj) {
             continue;
         }
-        let producer_assets = read_raw_assets(&assets_path_for(&producer_csproj))?;
+        let producer_assets = read_raw_assets(&assets_path_for(&producer_csproj), observer)?;
         let tfms: Vec<String> = producer_assets.project.frameworks.keys().cloned().collect();
         declared.insert(producer_csproj, tfms);
     }
@@ -346,12 +357,11 @@ fn assets_path_for(csproj_path: &Path) -> PathBuf {
         .join("project.assets.json")
 }
 
-fn read_raw_assets(path: &Path) -> Result<RawAssets, ProjectAssetsError> {
-    let text = Unobserved::EnvResolution
-        .read_to_string(path)
-        .map_err(|e| ProjectAssetsError::Io {
+fn read_raw_assets(path: &Path, observer: &Observer) -> Result<RawAssets, ProjectAssetsError> {
+    let text =
+        msbuild_observed::read_to_string(observer, path).map_err(|e| ProjectAssetsError::Io {
             path: path.to_path_buf(),
-            source: e,
+            source: io_error(e),
         })?;
     serde_json::from_str(&text).map_err(|e| ProjectAssetsError::Json {
         path: path.to_path_buf(),
@@ -367,9 +377,9 @@ fn read_raw_assets(path: &Path) -> Result<RawAssets, ProjectAssetsError> {
 /// `candidates` is invariantly non-empty: `enumerate_one` errors with
 /// `PackageFolderMissing` when the assets file has zero packageFolders,
 /// and otherwise emits one candidate per folder.
-fn pick_existing(candidates: &[PathBuf]) -> PathBuf {
+fn pick_existing(candidates: &[PathBuf], observer: &Observer) -> PathBuf {
     for c in candidates {
-        if Unobserved::EnvResolution.exists(c) {
+        if msbuild_observed::exists(observer, c) {
             return c.clone();
         }
     }
@@ -535,16 +545,32 @@ mod tests {
 
         // Regression pin: the TFM-less path still refuses multi-target restores.
         assert!(matches!(
-            resolve_assemblies_root_only(&assets, &dotnet),
+            resolve_assemblies_root_only(
+                &assets,
+                &dotnet,
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             Err(ProjectAssetsError::MultipleOrNoTargets { .. })
         ));
 
-        let r8 = resolve_assemblies_for_tfm(&assets, &dotnet, "net8.0").expect("net8.0 target");
+        let r8 = resolve_assemblies_for_tfm(
+            &assets,
+            &dotnet,
+            "net8.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("net8.0 target");
         assert_eq!(
             r8.package_dlls,
             vec![pkgs.join("p8/1.0.0/lib/net8.0/P8.dll")]
         );
-        let r10 = resolve_assemblies_for_tfm(&assets, &dotnet, "net10.0").expect("net10.0 target");
+        let r10 = resolve_assemblies_for_tfm(
+            &assets,
+            &dotnet,
+            "net10.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("net10.0 target");
         assert_eq!(
             r10.package_dlls,
             vec![pkgs.join("p10/1.0.0/lib/net10.0/P10.dll")]
@@ -570,7 +596,12 @@ mod tests {
             None,
         );
         assert!(matches!(
-            resolve_assemblies_for_tfm(&assets, &root.join("dotnet"), "net9.0"),
+            resolve_assemblies_for_tfm(
+                &assets,
+                &root.join("dotnet"),
+                "net9.0",
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             Err(ProjectAssetsError::TargetForTfmMissing { .. })
         ));
     }
@@ -597,8 +628,19 @@ mod tests {
         let pack = dotnet.join("packs/Microsoft.NETCore.App.Ref/8.0.0/ref/net8.0");
         touch(&pack.join("System.dll"));
 
-        let via_tfm = resolve_assemblies_for_tfm(&assets, &dotnet, "net8.0").expect("for_tfm");
-        let via_single = resolve_assemblies_root_only(&assets, &dotnet).expect("root_only");
+        let via_tfm = resolve_assemblies_for_tfm(
+            &assets,
+            &dotnet,
+            "net8.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("for_tfm");
+        let via_single = resolve_assemblies_root_only(
+            &assets,
+            &dotnet,
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("root_only");
         assert_eq!(via_tfm, via_single);
     }
 
@@ -639,8 +681,12 @@ mod tests {
         let pack = dotnet_root.join("packs/Microsoft.NETCore.App.Ref/9.0.0/ref/net8.0");
         touch(&pack.join("System.dll"));
 
-        let result = resolve_assemblies(&root.join("A/obj/project.assets.json"), &dotnet_root)
-            .expect("resolve_assemblies");
+        let result = resolve_assemblies(
+            &root.join("A/obj/project.assets.json"),
+            &dotnet_root,
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("resolve_assemblies");
 
         let canon_proj_b = crate::observed::host_fs::canonicalize(&proj_b).unwrap();
         assert_eq!(
@@ -694,6 +740,7 @@ mod tests {
         let result = resolve_assemblies_root_only(
             &root.join("A/obj/project.assets.json"),
             &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
         )
         .expect("framework miss must not fail the whole resolution");
         assert!(
@@ -730,6 +777,7 @@ mod tests {
         let result = resolve_assemblies_root_only(
             &root.join("A/obj/project.assets.json"),
             &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
         )
         .expect("resolve_assemblies_root_only");
         let canon_b = crate::observed::host_fs::canonicalize(&proj_b).unwrap();
@@ -765,6 +813,7 @@ mod tests {
         let result = resolve_assemblies_root_only(
             &root.join("A/obj/project.assets.json"),
             &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
         )
         .expect("resolve_assemblies_root_only");
         assert!(
@@ -810,6 +859,7 @@ mod tests {
         let result = resolve_assemblies(
             &root.join("A/obj/project.assets.json"),
             &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
         )
         .expect("resolve_assemblies");
         assert!(
@@ -857,6 +907,7 @@ mod tests {
         let result = resolve_assemblies(
             &root.join("A/obj/project.assets.json"),
             &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
         )
         .expect("resolve_assemblies");
 
@@ -917,7 +968,12 @@ mod tests {
         );
         fs::write(&assets_path, json).unwrap();
 
-        let result = resolve_assemblies(&assets_path, &root.join("dotnet")).unwrap();
+        let result = resolve_assemblies(
+            &assets_path,
+            &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .unwrap();
         assert_eq!(
             result.package_dlls,
             vec![fallback.join("p/1.0.0/lib/net8.0/P.dll")]
@@ -947,6 +1003,7 @@ mod tests {
         match resolve_assemblies(
             &root.join("A/obj/project.assets.json"),
             &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
         ) {
             Err(ProjectAssetsError::MissingTransitiveAssets { project_path }) => {
                 assert_eq!(
@@ -992,15 +1049,23 @@ mod tests {
 
         // Sanity: the eager walker still errors here, matching the test above.
         assert!(matches!(
-            resolve_assemblies(&assets, &root.join("dotnet")),
+            resolve_assemblies(
+                &assets,
+                &root.join("dotnet"),
+                &borzoi_msbuild::observed::Observer::new()
+            ),
             Err(ProjectAssetsError::MissingTransitiveAssets { .. })
         ));
 
         // The root-only walker succeeds and returns the root's package DLL.
         // Project-ref targets are recorded (when they exist on disk) but never
         // descended into.
-        let resolved = resolve_assemblies_root_only(&assets, &root.join("dotnet"))
-            .expect("root-only succeeds despite missing transitive assets");
+        let resolved = resolve_assemblies_root_only(
+            &assets,
+            &root.join("dotnet"),
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("root-only succeeds despite missing transitive assets");
         assert!(
             resolved
                 .package_dlls
@@ -1032,8 +1097,12 @@ mod tests {
             None,
         );
 
-        let map =
-            resolve_transitive_project_tfms(&proj_a, "net10.0").expect("resolve singleton closure");
+        let map = resolve_transitive_project_tfms(
+            &proj_a,
+            "net10.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("resolve singleton closure");
         assert_eq!(
             map,
             BTreeMap::from([(proj_a.clone(), "net10.0".to_string())]),
@@ -1073,7 +1142,12 @@ mod tests {
             None,
         );
 
-        let map = resolve_transitive_project_tfms(&proj_a, "net10.0").expect("resolve A→B closure");
+        let map = resolve_transitive_project_tfms(
+            &proj_a,
+            "net10.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("resolve A→B closure");
         // Path keys mirror `transitive_project_tfms`: top is the exact
         // path the caller passed in (no canonicalisation), producer is
         // `<top_dir>/<rel>`.
@@ -1134,8 +1208,12 @@ mod tests {
             None,
         );
 
-        let map =
-            resolve_transitive_project_tfms(&proj_a, "net10.0").expect("resolve A→B→C closure");
+        let map = resolve_transitive_project_tfms(
+            &proj_a,
+            "net10.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("resolve A→B→C closure");
         let expected_b = proj_a.parent().unwrap().join("../B/B.fsproj");
         let expected_c = proj_a.parent().unwrap().join("../C/C.fsproj");
         assert_eq!(
@@ -1185,8 +1263,12 @@ mod tests {
             &pkgs,
         );
 
-        let map = resolve_transitive_project_tfms(&proj_a, "net10.0")
-            .expect("resolve A→B (multi-TFM B) closure");
+        let map = resolve_transitive_project_tfms(
+            &proj_a,
+            "net10.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("resolve A→B (multi-TFM B) closure");
         let expected_b = proj_a.parent().unwrap().join("../B/B.fsproj");
         assert_eq!(
             map,
@@ -1223,7 +1305,11 @@ mod tests {
             None,
         );
 
-        match resolve_transitive_project_tfms(&proj_a, "net10.0") {
+        match resolve_transitive_project_tfms(
+            &proj_a,
+            "net10.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        ) {
             Err(ProjectAssetsError::Io { path, source }) => {
                 let expected = root.join("A/../B/obj/project.assets.json");
                 assert_eq!(
@@ -1246,7 +1332,11 @@ mod tests {
         touch(&proj_a);
         // No A/obj/project.assets.json.
 
-        match resolve_transitive_project_tfms(&proj_a, "net10.0") {
+        match resolve_transitive_project_tfms(
+            &proj_a,
+            "net10.0",
+            &borzoi_msbuild::observed::Observer::new(),
+        ) {
             Err(ProjectAssetsError::Io { path, source }) => {
                 assert_eq!(path, root.join("A/obj/project.assets.json"));
                 assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
@@ -1339,8 +1429,12 @@ mod tests {
             &pkgs,
         );
 
-        let map = resolve_transitive_project_tfms(&proj_a, "net8.0-windows")
-            .expect("resolve A→B→C closure with platform-suffix mix");
+        let map = resolve_transitive_project_tfms(
+            &proj_a,
+            "net8.0-windows",
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("resolve A→B→C closure with platform-suffix mix");
         let expected_b = proj_a.parent().unwrap().join("../B/B.fsproj");
         let expected_c = proj_a.parent().unwrap().join("../C/C.fsproj");
         assert_eq!(

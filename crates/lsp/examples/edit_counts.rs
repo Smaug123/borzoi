@@ -52,6 +52,12 @@
 //! - **p.new** and **p.reuse**: the sources the parse memo parsed, and the
 //!   lookups it answered with a parse it held
 //!   (`borzoi::parses::ParseMemo`), from each [`GENERATION_EVENT`].
+//! - **a.open**, **a.stat**, **a.list**, **a.canon**, **a.reads** and
+//!   **a.unrec**: what the assembly envs' reference resolutions the message
+//!   ran observed beyond the evaluations they ran (files opened, paths
+//!   `stat`ed, directories listed, paths canonicalised), the size of their
+//!   read sets, evaluations included, and the readers they could not record,
+//!   from each [`ENV_RESOLUTION_EVENT`].
 //! - **o.list** and **o.stat**: what finding the projects that own files
 //!   observed (`borzoi::workspace::Workspace::owning_project`): directories
 //!   listed and paths `stat`ed, from each [`GENERATION_EVENT`].
@@ -99,7 +105,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
 
-use borzoi::observed::{EVALUATION_EVENT, GENERATION_EVENT};
+use borzoi::observed::{ENV_RESOLUTION_EVENT, EVALUATION_EVENT, GENERATION_EVENT};
 use borzoi::semantic::ProjectId;
 use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
 use borzoi::uri::UriExt as _;
@@ -244,6 +250,19 @@ static STATS: AtomicU64 = AtomicU64::new(0);
 static EVALUATION: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 const EVALUATION_FIELDS: [&str; 5] = ["opens", "stats", "listings", "canonicalizations", "reads"];
 
+/// What every assembly env's reference resolution observed, from each
+/// [`ENV_RESOLUTION_EVENT`]: opens, stats, listings, canonicalisations, the
+/// read-set size, and the readers it could not record.
+static ENV_RESOLUTION: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+const ENV_RESOLUTION_FIELDS: [&str; 6] = [
+    "opens",
+    "stats",
+    "listings",
+    "canonicalizations",
+    "reads",
+    "unrecorded",
+];
+
 /// What confirming cached evaluations cost every generation that has ended,
 /// from each [`GENERATION_EVENT`] (opens, stats, listings and
 /// canonicalisations), what finding the projects that own files cost it
@@ -325,17 +344,25 @@ impl tracing::field::Visit for ReadFields {
     fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
 }
 
-/// An evaluation event's fields, in [`EVALUATION_FIELDS`] order.
-#[derive(Default)]
-struct EvaluationFields([Option<u64>; 5]);
+/// An event's `u64` fields, in the order of the names it is made with.
+struct EventFields<const N: usize> {
+    names: [&'static str; N],
+    values: [Option<u64>; N],
+}
 
-impl tracing::field::Visit for EvaluationFields {
+impl<const N: usize> EventFields<N> {
+    fn new(names: [&'static str; N]) -> Self {
+        EventFields {
+            names,
+            values: [None; N],
+        }
+    }
+}
+
+impl<const N: usize> tracing::field::Visit for EventFields<N> {
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        if let Some(i) = EVALUATION_FIELDS
-            .iter()
-            .position(|name| *name == field.name())
-        {
-            self.0[i] = Some(value);
+        if let Some(i) = self.names.iter().position(|name| *name == field.name()) {
+            self.values[i] = Some(value);
         }
     }
     fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
@@ -372,7 +399,10 @@ impl tracing::Subscriber for FoldObserver {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         (metadata.is_span() && matches!(metadata.name(), PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN))
             || (metadata.is_event()
-                && matches!(metadata.name(), GENERATION_EVENT | EVALUATION_EVENT))
+                && matches!(
+                    metadata.name(),
+                    GENERATION_EVENT | EVALUATION_EVENT | ENV_RESOLUTION_EVENT
+                ))
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         if counted() && span.metadata().name() == ENV_BUILD_SPAN {
@@ -398,11 +428,20 @@ impl tracing::Subscriber for FoldObserver {
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
         if counted() && event.metadata().name() == EVALUATION_EVENT {
-            let mut fields = EvaluationFields::default();
+            let mut fields = EventFields::new(EVALUATION_FIELDS);
             event.record(&mut fields);
-            for (counter, value) in EVALUATION.iter().zip(fields.0) {
+            for (counter, value) in EVALUATION.iter().zip(fields.values) {
                 counter.fetch_add(
                     value.expect("an evaluation event carries every field"),
+                    Relaxed,
+                );
+            }
+        } else if counted() && event.metadata().name() == ENV_RESOLUTION_EVENT {
+            let mut fields = EventFields::new(ENV_RESOLUTION_FIELDS);
+            event.record(&mut fields);
+            for (counter, value) in ENV_RESOLUTION.iter().zip(fields.values) {
+                counter.fetch_add(
+                    value.expect("an env resolution event carries every field"),
                     Relaxed,
                 );
             }
@@ -445,6 +484,8 @@ struct Cost {
     stats: u64,
     /// The MSBuild evaluations' counts, in [`EVALUATION_FIELDS`] order.
     evaluation: [u64; 5],
+    /// The env resolutions' counts, in [`ENV_RESOLUTION_FIELDS`] order.
+    env: [u64; 6],
     /// The validations' and the ownership walks' counts, in
     /// [`VALIDATION_FIELDS`] order.
     validation: [u64; 8],
@@ -466,6 +507,7 @@ impl Cost {
             opens: self.opens + other.opens,
             stats: self.stats + other.stats,
             evaluation: std::array::from_fn(|i| self.evaluation[i] + other.evaluation[i]),
+            env: std::array::from_fn(|i| self.env[i] + other.env[i]),
             validation: std::array::from_fn(|i| self.validation[i] + other.validation[i]),
         }
     }
@@ -480,6 +522,7 @@ struct Reading {
     opens: u64,
     stats: u64,
     evaluation: [u64; 5],
+    env: [u64; 6],
     validation: [u64; 8],
 }
 
@@ -496,6 +539,7 @@ impl Reading {
             opens: OPENS.load(Relaxed),
             stats: STATS.load(Relaxed),
             evaluation: std::array::from_fn(|i| EVALUATION[i].load(Relaxed)),
+            env: std::array::from_fn(|i| ENV_RESOLUTION[i].load(Relaxed)),
             validation: std::array::from_fn(|i| VALIDATION[i].load(Relaxed)),
         }
     }
@@ -517,6 +561,7 @@ impl Reading {
             opens: later.opens - self.opens,
             stats: later.stats - self.stats,
             evaluation: std::array::from_fn(|i| later.evaluation[i] - self.evaluation[i]),
+            env: std::array::from_fn(|i| later.env[i] - self.env[i]),
             validation: std::array::from_fn(|i| later.validation[i] - self.validation[i]),
         }
     }
@@ -888,15 +933,16 @@ fn columns(cost: &Cost) -> String {
         parsed,
         reused,
     ] = cost.validation;
+    let [a_opens, a_stats, a_listings, a_canon, a_reads, a_unrecorded] = cost.env;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7}",
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7}",
         cost.allocations, cost.allocated_bytes, cost.opens, cost.stats,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "message",
         "instructions",
         "allocs",
@@ -915,7 +961,13 @@ fn header() -> String {
         "o.list",
         "o.stat",
         "p.new",
-        "p.reuse"
+        "p.reuse",
+        "a.open",
+        "a.stat",
+        "a.list",
+        "a.canon",
+        "a.reads",
+        "a.unrec"
     )
 }
 
@@ -932,6 +984,7 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             opens: f(a.opens, b.opens),
             stats: f(a.stats, b.stats),
             evaluation: std::array::from_fn(|i| f(a.evaluation[i], b.evaluation[i])),
+            env: std::array::from_fn(|i| f(a.env[i], b.env[i])),
             validation: std::array::from_fn(|i| f(a.validation[i], b.validation[i])),
         })
     };

@@ -237,7 +237,7 @@ impl AssemblyCache {
         self.dir.as_ref()?;
         let canonical = canonical_string(dll);
         let entry = self.entry_path(&canonical)?;
-        let mut file = Unobserved::EnvResolution.open(&entry).ok()?;
+        let mut file = Unobserved::AssemblyCache.open(&entry).ok()?;
         // Every allocation is bounded by the entry's own byte length: the header
         // length is checked against it before its buffer is made, and postcard
         // decodes from a slice, checking each length prefix (the `path` string,
@@ -358,7 +358,7 @@ struct DllStat {
 /// [`DllStat`] from a single `stat` of `dll`, or `None` when it can't be
 /// `stat`ed at all (a write skips the entry; a read misses).
 fn dll_stat(dll: &Path) -> Option<DllStat> {
-    let meta = Unobserved::EnvResolution.metadata(dll).ok()?;
+    let meta = Unobserved::AssemblyCache.metadata(dll).ok()?;
     let mtime = meta
         .modified()
         .ok()
@@ -374,7 +374,7 @@ fn dll_stat(dll: &Path) -> Option<DllStat> {
 /// falling back to the lossy path if canonicalization fails (a missing file,
 /// which `enumerate_dll_type_defs` would also fail to read).
 fn canonical_string(dll: &Path) -> String {
-    Unobserved::EnvResolution
+    Unobserved::AssemblyCache
         .canonicalize(dll)
         .unwrap_or_else(|_| dll.to_path_buf())
         .to_string_lossy()
@@ -439,7 +439,7 @@ fn compute_tag() -> u64 {
     env!("CARGO_PKG_VERSION").hash(&mut h);
     if let Ok(exe) = std::env::current_exe() {
         exe.hash(&mut h);
-        if let Ok(meta) = Unobserved::EnvResolution.metadata(&exe) {
+        if let Ok(meta) = Unobserved::AssemblyCache.metadata(&exe) {
             meta.len().hash(&mut h);
             if let Ok(mtime) = meta.modified()
                 && let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH)

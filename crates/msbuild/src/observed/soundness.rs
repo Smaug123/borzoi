@@ -88,7 +88,8 @@ pub struct Tally {
     pub made: std::collections::BTreeMap<Why, usize>,
     /// Perturbations after which some answer moved.
     pub stale: std::collections::BTreeMap<Why, usize>,
-    /// Perturbations after which the evaluation itself moved.
+    /// Perturbations after which the evaluation itself moved (for
+    /// [`sweep_with`], its value, whatever its read set did).
     pub moved: std::collections::BTreeMap<Why, usize>,
     /// Perturbations that touched nothing the read set names.
     pub untouched: usize,
@@ -125,16 +126,38 @@ impl Tally {
 ///
 /// Panics, naming the perturbation, on a soundness failure.
 pub fn sweep(root: &Path, evaluate: &dyn Fn() -> ParsedProject, extra: &[Perturbation]) -> Tally {
-    let base = evaluate();
+    sweep_with(
+        root,
+        &|| {
+            let parsed = evaluate();
+            let reads = parsed.read_set.clone();
+            (parsed, reads)
+        },
+        extra,
+    )
+}
+
+/// [`sweep`] for any computation that records what it read: `compute`
+/// returns its value, compared whole, and its read set. The value must be
+/// the computation's whole output, read set and counts included where it
+/// carries them, so that "the same" means the same.
+///
+/// Panics, naming the perturbation, on a soundness failure.
+pub fn sweep_with<T: PartialEq + std::fmt::Debug>(
+    root: &Path,
+    compute: &dyn Fn() -> (T, ReadSet),
+    extra: &[Perturbation],
+) -> Tally {
+    let base = compute();
     assert_eq!(
-        base.read_set.first_stale(),
+        base.1.first_stale(),
         None,
         "a read set is stale straight after its evaluation"
     );
-    assert_eq!(evaluate(), base, "the evaluation is not deterministic");
+    assert!(compute() == base, "the evaluation is not deterministic");
     let before = snapshot(root);
     let mut tally = Tally::default();
-    for perturbation in perturbations(root, &base.read_set).iter().chain(extra) {
+    for perturbation in perturbations(root, &base.1).iter().chain(extra) {
         let undo = match apply(&perturbation.edits) {
             Ok(undo) => undo,
             Err(partial) => {
@@ -144,9 +167,9 @@ pub fn sweep(root: &Path, evaluate: &dyn Fn() -> ParsedProject, extra: &[Perturb
                 continue;
             }
         };
-        let stale = base.read_set.first_stale().cloned();
-        let after = evaluate();
-        let touched = undo.changed().any(|path| names(root, &base.read_set, path));
+        let stale = base.1.first_stale().cloned();
+        let after = compute();
+        let touched = undo.changed().any(|path| names(root, &base.1, path));
         undo.restore();
         *tally.made.entry(perturbation.why).or_default() += 1;
         if !touched {
@@ -164,7 +187,7 @@ pub fn sweep(root: &Path, evaluate: &dyn Fn() -> ParsedProject, extra: &[Perturb
             ),
             Some(_) => {
                 *tally.stale.entry(perturbation.why).or_default() += 1;
-                if after != base {
+                if after.0 != base.0 {
                     *tally.moved.entry(perturbation.why).or_default() += 1;
                 }
             }
@@ -174,7 +197,7 @@ pub fn sweep(root: &Path, evaluate: &dyn Fn() -> ParsedProject, extra: &[Perturb
             "restoring after {perturbation:?} left the tree changed"
         );
         assert_eq!(
-            base.read_set.first_stale(),
+            base.1.first_stale(),
             None,
             "restoring after {perturbation:?} left a read stale"
         );
@@ -215,7 +238,7 @@ fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, (String, Option<
 }
 
 /// The first field that differs, for a failure message.
-fn difference(base: &ParsedProject, after: &ParsedProject) -> String {
+fn difference(base: &impl std::fmt::Debug, after: &impl std::fmt::Debug) -> String {
     let base = format!("{base:#?}");
     let after = format!("{after:#?}");
     let line = base
@@ -351,7 +374,8 @@ pub fn perturbations(root: &Path, read_set: &ReadSet) -> Vec<Perturbation> {
             Observation::Text(Err(failure))
             | Observation::Kind(Err(failure))
             | Observation::LinkKind(Err(failure))
-            | Observation::Canonical(Err(failure)) => failure.is_absent(),
+            | Observation::Canonical(Err(failure))
+            | Observation::Stamp(Err(failure)) => failure.is_absent(),
             _ => false,
         };
         // A dangling symlink fails a following query as absent, but its

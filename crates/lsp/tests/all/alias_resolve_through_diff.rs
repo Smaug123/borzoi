@@ -1079,7 +1079,11 @@ fn every_alias_use_agrees_with_fcs_under_every_reference_set() {
                 }
             }
         }
-        let (env, kept) = build_env_from_dll_paths(ours_refs.iter().map(PathBuf::as_path), &cache);
+        let (env, kept) = build_env_from_dll_paths(
+            ours_refs.iter().map(PathBuf::as_path),
+            &cache,
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         // FCS reads exactly what the env was built from, plus what the chain
         // could not read, in reference order.
         let oracle_refs: Vec<PathBuf> = ours_refs
