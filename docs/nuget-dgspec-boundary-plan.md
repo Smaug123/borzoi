@@ -1977,9 +1977,13 @@ the two differ where it matters:
   touched declines, as does inner XML.
 
 A target's `Returns` shapes only what it hands a caller, and no caller is
-modelled. But MSBuild expands it once the target has run, and a property
-function there can throw and fail the build, so only text and plain
-`$(Name)`/`@(Type)` references pass.
+modelled. But MSBuild expands it once the target has run, against the
+properties the target left, and an expression there can fail the build: a
+property function that throws, a transform, an item list run together with
+text (`prefix@(I)`, `@(I)@(I)`). So it is checked once the target has run.
+Each `;`-separated piece must be a lone plain `@(Type)`, or text with plain
+`$(Name)` references and no `@`, and no value it reads may hold `@`, `%`, `$`
+or `;`. `KeepDuplicateOutputs`, a condition evaluated then too, declines.
 
 It declines everything else: another task, a built-in task a `UsingTask`
 may rebind, an empty request (the default targets), `InitialTargets` (not

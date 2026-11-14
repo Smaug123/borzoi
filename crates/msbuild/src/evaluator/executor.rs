@@ -363,6 +363,7 @@ impl<'s, 'r> Engine<'s, 'r> {
                     .or_else(|e| decline(format!("target {declared} does not parse alone: {e}")))?;
                 self.order.push(declared.clone());
                 self.body(document.root_element(), &declared)?;
+                self.check_returns(document.root_element(), &declared)?;
                 self.entries[top].state = EntryState::Completed(true);
             }
             EntryState::Completed(executed) => {
@@ -388,20 +389,13 @@ impl<'s, 'r> Engine<'s, 'r> {
             .or_else(|e| decline(format!("target {declared} does not parse alone: {e}")))?;
         let root = document.root_element();
         // `Inputs`/`Outputs` decide whether the target is up to date, from the
-        // file system.
-        for unmodelled in ["Inputs", "Outputs"] {
+        // file system; `KeepDuplicateOutputs` is a condition MSBuild evaluates
+        // once the target has run. (`Returns` is checked then too: see
+        // [`Self::check_returns`].)
+        for unmodelled in ["Inputs", "Outputs", "KeepDuplicateOutputs"] {
             if root.attribute(unmodelled).is_some() {
                 return decline(format!("target {declared} has {unmodelled}"));
             }
-        }
-        // `Returns` (and `KeepDuplicateOutputs`) shape only what the target
-        // hands a caller, and no caller is modelled. But MSBuild expands it
-        // once the target has run, and a property function or transform there
-        // can fail the build, so only plain references and text pass.
-        if let Some(returns) = attribute(root, "Returns")?
-            && !plain_returns(&returns)
-        {
-            return decline(format!("target {declared} returns {returns}"));
         }
         if !self.decide(root)? {
             self.entries[entry].state = EntryState::Completed(false);
@@ -460,6 +454,42 @@ impl<'s, 'r> Engine<'s, 'r> {
             pushing.push(self.entries.len() - 1);
         }
         self.stack.extend(pushing);
+        Ok(())
+    }
+
+    /// A target's `Returns` shapes only what it hands a caller, and no caller
+    /// is modelled. But MSBuild expands it once the target has run, against
+    /// the properties the target left, and an expression there can fail the
+    /// build: a property function, a transform, an item list run together
+    /// with text (`prefix@(I)`, `@(I)@(I)`). So each `;`-separated piece must
+    /// be a lone plain `@(Type)`, or text with plain `$(Name)` references and
+    /// no `@`, and no value it reads may hold what could assemble more.
+    fn check_returns(&self, root: Node<'_, '_>, target: &str) -> Result<(), Decline> {
+        let Some(returns) = attribute(root, "Returns")? else {
+            return Ok(());
+        };
+        let declined = || decline(format!("target {target} returns {returns}"));
+        if returns.contains("%(") {
+            return declined();
+        }
+        let Some(names) = plain_references(&returns) else {
+            return declined();
+        };
+        for name in names {
+            self.check_read(name)?;
+            if self
+                .lookup
+                .get(name)
+                .is_some_and(|value| value.as_escaped().contains(['@', '%', '$', ';']))
+            {
+                return declined();
+            }
+        }
+        for piece in returns.split(';').map(str::trim) {
+            if piece.contains('@') && !lone_item_reference(piece) {
+                return declined();
+            }
+        }
         Ok(())
     }
 
@@ -820,28 +850,16 @@ fn holds_reference(escaped: &str) -> bool {
     escaped.contains("@(") || escaped.contains("%(")
 }
 
-/// Whether a target's `Returns` is nothing but text, plain `$(Name)` and plain
-/// `@(Type)` references: what expands without a function or transform that
-/// could fail the build.
-fn plain_returns(raw: &str) -> bool {
-    if raw.contains("%(") || plain_references(raw).is_none() {
-        return false;
-    }
-    let mut rest = raw;
-    while let Some(at) = rest.find("@(") {
-        let interior = &rest[at + 2..];
-        let Some(close) = interior.find(')') else {
-            return false;
-        };
-        let name = interior[..close].trim();
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        {
-            return false;
-        }
-        rest = &interior[close + 1..];
-    }
-    true
+/// Whether `piece` is exactly one plain `@(Type)` reference.
+fn lone_item_reference(piece: &str) -> bool {
+    piece
+        .strip_prefix("@(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map(str::trim)
+        .is_some_and(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
 }
