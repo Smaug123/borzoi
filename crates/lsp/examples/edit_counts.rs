@@ -1211,8 +1211,9 @@ fn main() {
     let unrelated = std::path::absolute(&unrelated).expect("an absolute project path");
     let changes = unrelated_changes(script, &unrelated, &project);
     if script != Script::Keystroke {
+        // `own-save` touches only the measured project.
         assert!(
-            client_fs::is_file(&unrelated),
+            script == Script::OwnSave || client_fs::is_file(&unrelated),
             "{} does not exist (set EDIT_COUNTS_UNRELATED)",
             unrelated.display()
         );
