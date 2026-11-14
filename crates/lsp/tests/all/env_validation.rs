@@ -138,15 +138,18 @@ fn fixture() -> Fixture {
     }
 }
 
-/// A server state over the fixture: SDK discovery finds the stub install
-/// and the fixture's NuGet folder, and nothing of the host's. Its clock runs
+/// A server state over the fixture: SDK discovery finds the stub install,
+/// and nothing of the host's. NuGet's settings name a global packages folder
+/// other than the package folder the assets files name (as the
+/// whole-project corpus's restore does), so a package is trusted as
+/// installed because the assets file names its folder. Its clock runs
 /// ahead of the files' timestamps, so no stamp a generation takes of a
 /// project file is racy.
 fn state(fixture: &Fixture) -> State {
     let mut state = State::new();
     state.workspace = Workspace::with_env(SdkDiscoveryEnv {
         dotnet_root: Some(fixture.root.join("dotnet")),
-        nuget_packages_dir: Some(fixture.root.join("nuget")),
+        nuget_packages_dir: Some(fixture.root.join("global-packages")),
         // NuGet's settings are read from the home directory; without one
         // they cannot be said, and no package is trusted as installed.
         home_dir: Some(fixture.root.join("home")),
@@ -400,4 +403,27 @@ fn an_env_made_under_another_workspace_is_built_again() {
         ..SdkDiscoveryEnv::default()
     });
     assert!(!Arc::ptr_eq(&other, &generation(&mut state)));
+}
+
+/// What an env trusts in an installed version is its contents, not its
+/// existence: a package version deleted whole (a cleared package cache),
+/// with no watch event, is seen in the next generation that reads the env.
+#[test]
+fn a_removed_package_version_is_seen_without_an_event() {
+    let fixture = fixture();
+    let mut state = state(&fixture);
+    outwait_racy_stamps();
+    let generation = |state: &mut State| {
+        state.begin_generation();
+        let app = env_of(state, &fixture.app);
+        state.end_generation();
+        app
+    };
+    let app = generation(&mut state);
+    assert!(Arc::ptr_eq(&app, &generation(&mut state)));
+    std::fs::remove_dir_all(fixture.root.join("nuget/foo/1.0.0")).unwrap();
+    assert!(
+        !Arc::ptr_eq(&app, &generation(&mut state)),
+        "a package version deleted whole left the env standing"
+    );
 }

@@ -8477,5 +8477,16 @@ mod tests {
         count(&mut s, &missing, None);
         count(&mut s, &missing, None);
         assert_eq!(calls.get(), 7);
+
+        // A referenced-assembly watch event clears the cache: the sidecar
+        // `.pdb` a DLL names is not in the key.
+        assert!(s.pdb_image(&other, || panic!("still cached")).is_none());
+        s.invalidate_assembly_state();
+        count(&mut s, &other, None);
+        assert_eq!(
+            calls.get(),
+            8,
+            "a referenced-assembly event left a cached image"
+        );
     }
 }
