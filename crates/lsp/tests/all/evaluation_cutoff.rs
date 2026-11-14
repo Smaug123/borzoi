@@ -668,3 +668,60 @@ fn each_consumed_value_moves_only_what_reads_it() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// A change of the `LangVersion`'s provenance alone, the version staying
+/// `7.0`: the version-boundary gate runs exactly when the provenance is
+/// untrusted, and a file whose parse shape depends on the version (an
+/// EOF-anchored `match`) refuses the fold then. So the parses must not
+/// outlive the change in either direction, though the items, the symbols
+/// and the version are all as they were.
+#[test]
+fn a_change_of_language_version_provenance_alone_reaches_the_fold() {
+    let tmp = TempDir::new().unwrap();
+    let root = host_fs::canonicalize(tmp.path()).unwrap();
+    let project = root.join("P/P.fsproj");
+    let render = |gated: bool| {
+        let condition = if gated {
+            " Condition=\"'$(DefineConstants)' == ''\""
+        } else {
+            ""
+        };
+        format!(
+            "<Project>\n  <PropertyGroup{condition}>\n    <LangVersion>7.0</LangVersion>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"A.fs\" />\n  </ItemGroup>\n</Project>\n"
+        )
+    };
+    write(&root.join("P/A.fs"), b"match x with\n");
+    let mut state = State::new();
+    state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+        dotnet_root: Some(root.join("no-dotnet")),
+        ..SdkDiscoveryEnv::default()
+    });
+    state.clock = Clock::HostAhead(RACY_WINDOW * 30);
+    let folds = |state: &mut State| {
+        state.begin_generation();
+        let folds = state
+            .semantic
+            .parses_for_project(&project, &mut state.workspace, &state.docs)
+            .is_some();
+        let value = parse_value(state, &project);
+        state.end_generation();
+        (folds, value)
+    };
+    write(&project, render(false).as_bytes());
+    let (trusted, before) = folds(&mut state);
+    assert!(trusted, "a trusted LangVersion folds the straddling file");
+    for gated in [true, false, true] {
+        write(&project, render(gated).as_bytes());
+        let (folded, value) = folds(&mut state);
+        assert_eq!(
+            value, before,
+            "precondition: only the provenance moved (gated: {gated})"
+        );
+        assert_eq!(
+            folded,
+            !gated,
+            "the fold under {} provenance",
+            if gated { "untrusted" } else { "trusted" }
+        );
+    }
+}

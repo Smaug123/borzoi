@@ -7072,6 +7072,55 @@ mod tests {
         );
     }
 
+    /// An env kept across a resolution run again carries that resolution's
+    /// unrecorded readers, which decide what drops it besides its checks
+    /// ([`SemanticState::invalidate_assembly_state`]). The project has no
+    /// framework pack to resolve, so its assets file resolves to no DLL, and
+    /// so does the on-demand restore that runs, and declines, once the
+    /// assets file is deleted: the env is built from the same inputs, kept,
+    /// and must name the restore.
+    #[test]
+    fn a_kept_env_names_the_unrecorded_readers_of_the_resolution_that_kept_it() {
+        let tmp = TempDir::new().unwrap();
+        let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+        let project = root.join("App/App.fsproj");
+        write(&project, "<Project />");
+        write_app_assets(project.parent().unwrap(), false);
+        let dotnet = root.join("dotnet");
+        std::fs::create_dir_all(&dotnet).unwrap();
+        let mut ws = Workspace::with_env(crate::sdk_discovery::SdkDiscoveryEnv {
+            dotnet_root: Some(root.join("no-dotnet")),
+            ..crate::sdk_discovery::SdkDiscoveryEnv::default()
+        });
+        let mut sema = SemanticState::new();
+        sema.set_on_demand_restore_enabled(true);
+        let old = crate::vfs::Nanos(i128::MAX / 2);
+        let generation = |ws: &mut Workspace, sema: &mut SemanticState| {
+            ws.begin_generation(old);
+            sema.begin_generation();
+            let env = sema.assembly_env_for_project(
+                &project,
+                Some(&dotnet),
+                &ServedTfm::NoneDeclared,
+                ws,
+            );
+            let (reads, _) =
+                sema.env_reads_for_project(&project, Some(&dotnet), &ServedTfm::NoneDeclared, ws);
+            let counts = sema.end_generation();
+            ws.end_generation();
+            (env, reads.unrecorded.clone(), counts)
+        };
+        let (before, unrecorded, _) = generation(&mut ws, &mut sema);
+        assert!(unrecorded.is_empty(), "{unrecorded:?}");
+        std::fs::remove_file(project.parent().unwrap().join("obj/project.assets.json")).unwrap();
+        let (after, unrecorded, counts) = generation(&mut ws, &mut sema);
+        assert!(
+            Arc::ptr_eq(&before, &after) && counts.envs_resolved_again == 1,
+            "precondition: the env was kept by resolving again: {counts:?}"
+        );
+        assert_eq!(unrecorded, vec![UNRECORDED_RESTORE]);
+    }
+
     /// End-to-end: a sibling whose own `<ProjectReference>` list the evaluator
     /// cannot trust leaves the env's identity set **incomplete**, so the seal
     /// fires and no assembly reading commits.
