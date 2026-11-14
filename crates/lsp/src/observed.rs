@@ -163,6 +163,9 @@ pub struct EnvCounts {
     /// last resolution read had moved, to the inputs they were built from
     /// (each reported as [`ENV_RESOLUTION_EVENT`] too).
     pub resolved_again: u64,
+    /// Resolutions of a project's references for an env, whether the env
+    /// was then built or kept: one per env built or kept, never two.
+    pub resolutions: u64,
     /// The queries asked to confirm cached envs: files opened, paths
     /// `stat`ed, directories listed and paths canonicalised.
     pub validation: borzoi_msbuild::observed::ReadCounts,

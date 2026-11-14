@@ -278,6 +278,7 @@ impl State {
             crate::observed::EnvCounts {
                 built: semantic.envs_built,
                 resolved_again: semantic.envs_resolved_again,
+                resolutions: semantic.env_resolutions,
                 validation: counts.envs,
             },
             semantic.folds,

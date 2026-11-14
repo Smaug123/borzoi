@@ -541,6 +541,9 @@ pub struct SemanticState {
     /// references again to the inputs they were built from
     /// ([`Self::keep_if_resolved_alike`]).
     envs_resolved_again: u64,
+    /// Resolutions of a project's references for an env in the open
+    /// generation ([`Self::resolve_references`]).
+    env_resolutions: u64,
     /// Compile-order folds computed in the open generation
     /// ([`Self::end_generation`]).
     folds: u64,
@@ -562,6 +565,8 @@ pub struct SemanticCounts {
     /// Cached assembly envs kept by resolving their references again to the
     /// inputs they were built from.
     pub envs_resolved_again: u64,
+    /// Resolutions of a project's references, for an env built or kept.
+    pub env_resolutions: u64,
     /// Compile-order folds computed, cold or incremental.
     pub folds: u64,
 }
@@ -648,6 +653,7 @@ impl SemanticState {
         self.parses.begin_generation();
         self.envs_built = 0;
         self.envs_resolved_again = 0;
+        self.env_resolutions = 0;
         self.folds = 0;
     }
 
@@ -658,6 +664,7 @@ impl SemanticState {
             parses: self.parses.end_generation(),
             envs_built: std::mem::take(&mut self.envs_built),
             envs_resolved_again: std::mem::take(&mut self.envs_resolved_again),
+            env_resolutions: std::mem::take(&mut self.env_resolutions),
             folds: std::mem::take(&mut self.folds),
         }
     }
@@ -1004,6 +1011,7 @@ impl SemanticState {
         restore_env: Option<&SdkDiscoveryEnv>,
         observer: &Observer,
     ) -> ReferenceSet {
+        self.env_resolutions += 1;
         let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), observer);
         let graph =
             workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms, observer);
@@ -1247,8 +1255,36 @@ impl SemanticState {
         {
             return (kept, false);
         }
+        self.build_and_cache(
+            key,
+            dotnet_root,
+            &refs,
+            resolution_reads,
+            counts,
+            started,
+            workspace,
+        )
+    }
+
+    /// Build the env `refs` describe (resolved under `key`, reading
+    /// `resolution_reads`, from the generation time `started`), and cache
+    /// it under `key` unless a transient C# sidecar failure makes it
+    /// retryable.
+    #[allow(clippy::too_many_arguments)]
+    fn build_and_cache(
+        &mut self,
+        key: (ProjectId, Option<PathBuf>, ServedTfm),
+        dotnet_root: Option<&Path>,
+        refs: &ReferenceSet,
+        resolution_reads: ReadSet,
+        counts: msbuild_observed::ReadCounts,
+        started: Option<crate::vfs::Nanos>,
+        workspace: &Workspace,
+    ) -> (CachedAssemblyEnv, bool) {
+        let id = key.0.clone();
+        let project = id.as_path();
         let contents = Observer::new();
-        let (env, dlls) = build_assembly_env(project, &refs, &self.assembly_cache, &contents);
+        let (env, dlls) = build_assembly_env(project, refs, &self.assembly_cache, &contents);
         let (contents_reads, contents_counts) = contents.finish();
         let reads = EnvReads {
             reads: resolution_reads.clone().union(contents_reads.clone()),
@@ -1294,7 +1330,7 @@ impl SemanticState {
                 key,
                 EnvEntry {
                     cached: cached.clone(),
-                    inputs: EnvInputs::of(&refs),
+                    inputs: EnvInputs::of(refs),
                     resolution,
                     contents,
                     contents_reads,
@@ -1454,16 +1490,33 @@ impl SemanticState {
                             &resolving,
                         );
                         let (reads, counts) = resolving.finish();
-                        self.keep_if_resolved_alike(
-                            &key,
-                            dotnet_root.as_deref(),
-                            &refs,
-                            reads.union(root_reads),
-                            counts,
-                            started,
-                            workspace,
-                        )
-                        .is_some()
+                        let reads = reads.union(root_reads);
+                        let kept = self
+                            .keep_if_resolved_alike(
+                                &key,
+                                dotnet_root.as_deref(),
+                                &refs,
+                                reads.clone(),
+                                counts,
+                                started,
+                                workspace,
+                            )
+                            .is_some();
+                        if !kept {
+                            // The fold against the old env goes; the env its
+                            // refold reads is built here, from the resolution
+                            // just made, rather than resolved again.
+                            self.build_and_cache(
+                                key.clone(),
+                                dotnet_root.as_deref(),
+                                &refs,
+                                reads,
+                                counts,
+                                started,
+                                workspace,
+                            );
+                        }
+                        kept
                     }
                 }
             },
@@ -2348,7 +2401,7 @@ fn build_parses(
         }
         // The memo may already hold this parse: the syntactic diagnostics of
         // an edited buffer parse it before the fold does.
-        let source = parses.parse(Some(&include), &text, file_kind, &symbols, lang);
+        let source = parses.parse(Some(&include), &text, file_kind, symbols, lang);
         let Some(parse) = source.parse() else {
             // The wrapper returns `None` only when the CST parser panicked.
             // Logged inside the wrapper.
@@ -2383,9 +2436,9 @@ fn build_parses(
                     continue;
                 }
                 let other = if signature {
-                    parse_sig_with_symbols(&text, &symbols, other_side)
+                    parse_sig_with_symbols(&text, symbols, other_side)
                 } else {
-                    parse_with_symbols(&text, &symbols, other_side)
+                    parse_with_symbols(&text, symbols, other_side)
                 };
                 let Some(other) = other else {
                     tracing::warn!(
@@ -2420,7 +2473,7 @@ fn build_parses(
         // version-gated — the tree is identical either side of the threshold,
         // so the shape gate above never fires on it.
         let recovery = if lang_version_untrusted {
-            SyntaxRecovery::of_guessed_version(parse, &text, &symbols, file_kind)
+            SyntaxRecovery::of_guessed_version(parse, &text, symbols, file_kind)
         } else {
             SyntaxRecovery::of(parse)
         };
@@ -2555,7 +2608,7 @@ enum EnvLookup {
 }
 
 /// The span a resolution run to confirm a cached env opens
-/// ([`SemanticState::keep_if_resolved_alike`]), whether it keeps the env or
+/// (`SemanticState::keep_if_resolved_alike`), whether it keeps the env or
 /// not.
 pub const ENV_RESOLVED_AGAIN_SPAN: &str = "semantic.env_resolved_again";
 

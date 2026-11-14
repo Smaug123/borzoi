@@ -3450,7 +3450,9 @@ confirms `contents`; a moved DLL drops the env, as before. Then
 `resolution`; when it moves, the references are resolved again and the env
 is kept, with the new resolution's checks and unrecorded readers, exactly
 when the new `EnvInputs` are equal (`keep_if_resolved_alike`). Otherwise the
-env is built from the resolution just made.
+env is built from the resolution just made, on the fold's fast path as on
+the slow one, so a generation resolves an env's references at most once
+(`EnvCounts::resolutions`; Codex found the fast path resolving twice).
 
 **The key moves with the evaluation.** The env's key (the dotnet root and the
 served TFM) is chosen from the entry's evaluation. The slow path chooses it
@@ -3544,6 +3546,7 @@ Planted, each caught, then removed (each run against `cargo test -p borzoi
 | a kept env keeps its old unrecorded readers | `a_kept_env_names_the_unrecorded_readers_of_the_resolution_that_kept_it` (added for it) |
 | the DLLs an env holds not confirmed | four `env_validation` tests, two state-machine tests |
 | the env built with no incompleteness mark | the generated `evaluation_cutoff` property, three `semantic` incompleteness tests |
+| the fast path discarding a resolution that found new inputs, so the refold resolves again (Codex) | the generated `evaluation_cutoff` property (added for it: two resolutions in one generation) |
 
 Two plants first passed every test: the parse cutoff ignoring `LangVersion`
 provenance (no test changed the provenance alone) and a kept env keeping

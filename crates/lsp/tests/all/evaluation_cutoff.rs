@@ -276,12 +276,12 @@ fn fixture(world: &World, junk_package: bool) -> Fixture {
         &host_fs::read(&runtime).unwrap(),
     );
     let package = root.join("nuget/foo/1.0.0");
-    let foo = if junk_package {
+    let package_dll = if junk_package {
         b"not an assembly".to_vec()
     } else {
         host_fs::read(runtime.with_file_name("System.Collections.dll")).unwrap()
     };
-    write(&package.join("lib/net10.0/Foo.dll"), &foo);
+    write(&package.join("lib/net10.0/Foo.dll"), &package_dll);
     write(&package.join(".nupkg.metadata"), b"{}");
     write(
         &root.join("Lib/bin/Debug/net10.0/Lib.dll"),
@@ -465,6 +465,7 @@ struct Served {
     fold_succeeded: bool,
     folds: u64,
     envs_built: u64,
+    resolutions: u64,
 }
 
 fn serve(state: &mut State, app: &Path) -> Served {
@@ -498,6 +499,7 @@ fn serve(state: &mut State, app: &Path) -> Served {
         fold_succeeded,
         folds: generation.folds,
         envs_built: generation.envs.built,
+        resolutions: generation.envs.resolutions,
     }
 }
 
@@ -568,6 +570,14 @@ fn run(edits: &[Edit], census: &mut Census) -> Result<(), TestCaseError> {
         // Exact: kept exactly when what it is built from is unchanged.
         prop_assert_eq!(env_kept, env_same, "env kept\n{}", context);
         prop_assert_eq!(env_kept, after.envs_built == 0, "envs built\n{}", context);
+        // A rebuilt env is built from the resolution that found it moved,
+        // not from a second one.
+        prop_assert!(
+            after.resolutions <= 1 && (env_kept || after.resolutions == 1),
+            "{} resolutions\n{}",
+            after.resolutions,
+            context
+        );
         prop_assert_eq!(fold_kept, env_same && parses_same, "fold kept\n{}", context);
         prop_assert_eq!(fold_kept, after.folds == 0, "folds\n{}", context);
         if env_kept {
