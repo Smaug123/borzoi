@@ -146,6 +146,10 @@ pub struct ItemRead {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemRow {
     pub identity: String,
+    /// The identity as MSBuild holds it, still escaped
+    /// (`EvaluatedIncludeEscaped`: `a%2Ex` where `identity` reads `a.x`), or
+    /// `None` where the walk does not know it.
+    pub escaped_identity: Option<String>,
     pub metadata: BTreeMap<String, String>,
     /// Metadata names whose value the walk does not know, lowercase: one it
     /// could not evaluate, or one an item definition may give a default (which
@@ -284,6 +288,7 @@ impl State<'_> {
         let key = item_key(item_type);
         let row = |item: &EvaluatedItem| ItemRow {
             identity: item.identity.clone(),
+            escaped_identity: item.escaped_identity.clone(),
             metadata: item
                 .exact_metadata
                 .iter()

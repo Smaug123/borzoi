@@ -1982,11 +1982,14 @@ the two differ where it matters:
     defaults beneath and the element's own metadata on top.
 
   An item list in a value (a property, a metadatum, `Message` text) declines
-  until the tables carry escaped spellings: with `J` spelt `%34%31`, a
-  property holding `@(J)` later run into a `%` reads `%41` in MSBuild. So do
-  other item expressions (transforms, separators, `@(0)`, which MSBuild
-  leaves literal), a property value that could join into one, and a read of
-  a property starting with `-`.
+  until the executor expands from escaped spellings: with `J` spelt
+  `%34%31`, a property holding `@(J)` later run into a `%` reads `%41` in
+  MSBuild. So do other item expressions (transforms, separators, `@(0)`,
+  which MSBuild leaves literal), a property value that could join into one,
+  and a read of a property starting with `-`. The tables carry each
+  identity's spelling (`ItemRow::escaped_identity`, MSBuild's
+  `EvaluatedIncludeEscaped`, `None` where the walk does not know it), held to
+  the oracle's `itemsMeta` by `fsproj_generic_items_generative_diff` (#747).
 - **Bodies**: intrinsic `PropertyGroup`s, `ItemGroup` `Include`s without
   batching (each new item taking its type's item-definition defaults beneath
   its own metadata, `Label` not metadata), and `Message` with the parameters

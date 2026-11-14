@@ -18,7 +18,9 @@
 //! read to MSBuild's evaluation, through the oracle's `itemsMeta` op:
 //! - a list neither tainted nor untracked has MSBuild's identities, in order;
 //! - on such a list, every metadatum not marked uncertain reads as MSBuild's
-//!   value, an absent one as "".
+//!   value, an absent one as "";
+//! - on such a list, every identity whose escaped spelling the walk claims is
+//!   spelt as MSBuild holds it (`EvaluatedIncludeEscaped`: `a%2Ex`, not `a.x`).
 //!
 //! A tainted list makes no claim. `most_lists_are_clean` keeps the claim from
 //! going vacuous.
@@ -48,11 +50,16 @@ const ITEM_TYPES: [&str; 7] = [
 /// What an `Update` names.
 const UPDATES: [&str; 4] = ["a", "A", "b", "@(Helper)"];
 const METADATA: [&str; 3] = ["Version", "Pack", "Flavor"];
-const INCLUDES: [&str; 11] = [
+const INCLUDES: [&str; 14] = [
     "a",
     "a;b",
     "$(Name)",
     "x%3By",
+    // Spelt escaped where MSBuild needs no escape: the identity decodes,
+    // the spelling MSBuild keeps does not.
+    "a%2Ex",
+    "%34%31",
+    "%61;b",
     "@(Helper)",
     "$(Undefined)c",
     "  b  ",
@@ -287,6 +294,12 @@ struct Tally {
     clean: usize,
     clean_with_gated: usize,
     clean_by_type: BTreeMap<&'static str, usize>,
+    /// Rows of clean lists; of those, rows whose escaped spelling the walk
+    /// claims; and of those, rows whose spelling differs from the decoded
+    /// identity.
+    rows: usize,
+    spelled: usize,
+    spelled_apart: usize,
 }
 
 /// Evaluate `xml` both ways and hold every clean list to MSBuild's.
@@ -325,7 +338,7 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
         names.sort();
         names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let Some(theirs) = oracle.items_meta(xml, &path, item_type, &names) else {
+        let Some(theirs) = oracle.items_meta_spelled(xml, &path, item_type, &names) else {
             // MSBuild rejects the project: there is nothing to agree with.
             tally.rejected += 1;
             return;
@@ -339,13 +352,24 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
         *tally.clean_by_type.entry(item_type).or_default() += 1;
         let rows = read.items.as_deref().unwrap_or_default();
         let ours: Vec<&str> = rows.iter().map(|r| r.identity.as_str()).collect();
-        let msbuild: Vec<&str> = theirs.iter().map(|(id, _)| id.as_str()).collect();
+        let msbuild: Vec<&str> = theirs.iter().map(|item| item.identity.as_str()).collect();
         assert_eq!(
             ours, msbuild,
             "a clean {item_type} list differs from MSBuild's in\n{xml}"
         );
-        for (row, (_, values)) in rows.iter().zip(&theirs) {
-            let values: BTreeMap<String, &str> = values
+        for (row, item) in rows.iter().zip(&theirs) {
+            tally.rows += 1;
+            if let Some(escaped) = &row.escaped_identity {
+                tally.spelled += 1;
+                tally.spelled_apart += usize::from(*escaped != row.identity);
+                assert_eq!(
+                    escaped, &item.escaped,
+                    "{item_type} item {:?} is spelt {escaped:?}, by MSBuild {:?}, in\n{xml}",
+                    row.identity, item.escaped
+                );
+            }
+            let values: BTreeMap<String, &str> = item
+                .metadata
                 .iter()
                 .map(|(k, v)| (k.to_ascii_lowercase(), v.as_str()))
                 .collect();
@@ -415,6 +439,13 @@ fn most_lists_are_clean() {
     assert!(
         tally.clean_with_gated > 0,
         "no clean list was checked in a project writing the untrusted property"
+    );
+    assert!(
+        tally.spelled * 2 > tally.rows && tally.spelled_apart > 0,
+        "the escaped spelling went unclaimed: {} of {} clean rows, {} apart",
+        tally.spelled,
+        tally.rows,
+        tally.spelled_apart
     );
 }
 

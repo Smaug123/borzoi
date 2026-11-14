@@ -1853,6 +1853,12 @@ struct State<'r> {
 #[derive(Debug, Clone)]
 struct EvaluatedItem {
     identity: String,
+    /// The identity as MSBuild holds it, still escaped (`EvaluatedIncludeEscaped`):
+    /// `a%2Ex` where `identity` reads `a.x`. Every expansion of the list and
+    /// every metadata derivation (`%(Extension)`) starts from it, and decoding
+    /// loses it. `None` where the walk does not know it.
+    #[cfg(any(test, feature = "test-support"))]
+    escaped_identity: Option<String>,
     /// NuGet's package metadata names only, each value trimmed as the
     /// dependency capture reads it.
     metadata: HashMap<String, String>,
