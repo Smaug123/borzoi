@@ -56,11 +56,31 @@
 //! generation until it is old, as [`crate::vfs`] does for files. The
 //! generated-clock model in this module's tests holds the witnesses to that,
 //! at timestamp granularities the host does not have.
+//!
+//! **A witness belongs to a read, not to the reader that recorded it.** It
+//! says that while its directories keep their stamps, the query gets the
+//! answer it got when the witness was taken, and the witness is kept only if
+//! that answer was the recorded one. Nothing in that names the evaluation or
+//! the env that recorded the read: any read with the same path, spelt the
+//! same, and the same recorded answer is confirmed by it exactly as far as
+//! the read it was taken for. So a checker hands out one [`Check`] per
+//! distinct read ([`ReadChecks::check`]), shared by every holder of that
+//! read while any holds it: a project evaluated again, whose reads are
+//! mostly those of the evaluation it replaces, starts with that
+//! evaluation's witnesses, and an env whose resolution read the project's
+//! evaluation shares the evaluation's. A shared witness is the same value
+//! a fresh check would take, carried with its stamps, the time of the
+//! generation that took them and the watch events it had seen, so the racy
+//! rule and the hints judge it as they would have judged it for the read
+//! it was taken for; and it names its checker, so no other checker's
+//! directories can confirm it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::hash::{Hash as _, Hasher as _};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
 
 #[cfg(test)]
 use borzoi_msbuild::observed::EntryKind;
@@ -131,29 +151,54 @@ pub trait Probe: Disk {
     }
 }
 
-/// One recorded read, and the witness that confirmed it last.
-#[derive(Debug)]
+/// One recorded read, and the witness that confirmed it last: a handle to
+/// what its checker holds for that read ([`ReadChecks::check`]), shared with
+/// every other holder of an equal read.
+#[derive(Clone, Debug)]
 pub struct Check {
+    shared: Rc<Shared>,
+}
+
+/// What a checker knows about one distinct read.
+#[derive(Debug)]
+struct Shared {
     read: Read,
     witness: RefCell<Option<Witness>>,
     /// For a racy stamp a whole-file read took: a stamp of the file, not
     /// racy, taken before a read that found the bytes the racy one saw.
     /// While the file keeps it, the read holds with no read of the file
     /// ([`ReadChecks::racy_stamp_holds`]).
-    confirmed: std::cell::Cell<Option<FileStamp>>,
+    confirmed: Cell<Option<FileStamp>>,
+}
+
+impl Shared {
+    fn new(read: Read) -> Shared {
+        Shared {
+            read,
+            witness: RefCell::new(None),
+            confirmed: Cell::new(None),
+        }
+    }
 }
 
 impl Check {
+    /// A check of `read` that shares nothing: its first confirmation asks
+    /// the query again.
+    #[cfg(test)]
     pub fn new(read: Read) -> Check {
         Check {
-            read,
-            witness: RefCell::new(None),
-            confirmed: std::cell::Cell::new(None),
+            shared: Rc::new(Shared::new(read)),
         }
     }
 
     pub fn read(&self) -> &Read {
-        &self.read
+        &self.shared.read
+    }
+
+    /// Whether `self` and `other` are one shared check.
+    #[cfg(test)]
+    pub fn shares(&self, other: &Check) -> bool {
+        Rc::ptr_eq(&self.shared, &other.shared)
     }
 }
 
@@ -161,6 +206,9 @@ impl Check {
 /// of the generation that took them, before the query was asked.
 #[derive(Clone, Debug)]
 struct Witness {
+    /// The checker that took it ([`ReadChecks::id`]), whose directories
+    /// `dirs` indexes.
+    checker: u64,
     /// Each directory as its index in [`ReadChecks::dirs`], and its stamp.
     dirs: Vec<(usize, Stamp)>,
     taken: Nanos,
@@ -204,6 +252,15 @@ pub struct ReadChecks<D: Probe = HostDisk> {
     counts: Cell<ReadCounts>,
     /// How many watch events have hinted the checker ([`Self::hint`]).
     hints: Cell<u64>,
+    /// The checks this checker has handed out ([`Self::check`]), by a hash
+    /// of their reads, while something holds them.
+    shared: RefCell<HashMap<u64, Vec<Weak<Shared>>>>,
+    /// How many entries `shared` holds, released ones included, and how
+    /// many were held when it was last swept: it is swept once it holds
+    /// twice that, so the released entries it keeps stay bounded by the
+    /// held ones.
+    shared_entries: Cell<usize>,
+    shared_held: Cell<usize>,
 }
 
 impl<D: Probe + Default> Default for ReadChecks<D> {
@@ -221,7 +278,51 @@ impl<D: Probe> ReadChecks<D> {
             dir_ids: RefCell::new(HashMap::new()),
             counts: Cell::new(ReadCounts::default()),
             hints: Cell::new(0),
+            shared: RefCell::new(HashMap::new()),
+            shared_entries: Cell::new(0),
+            shared_held: Cell::new(0),
         }
+    }
+
+    /// The check of `read`: the one this checker already handed out for an
+    /// equal read (the same path, spelt the same, and the same answer), if
+    /// something still holds it, and otherwise a new one. A held check
+    /// carries the witness its last confirmation took, which confirms
+    /// `read` exactly as far as it confirms the read it was taken for (see
+    /// the module docs), so a read set recorded again starts with the
+    /// witnesses of the reads it shares with any read set still held.
+    pub fn check(&self, read: &Read) -> Check {
+        let mut hasher = std::hash::DefaultHasher::new();
+        read.hash(&mut hasher);
+        let hash = hasher.finish();
+        let mut shared = self.shared.borrow_mut();
+        let bucket = shared.entry(hash).or_default();
+        let before = bucket.len();
+        bucket.retain(|entry| entry.strong_count() > 0);
+        let mut entries = self.shared_entries.get() - (before - bucket.len());
+        if let Some(held) = bucket
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|held| held.read == *read)
+        {
+            self.shared_entries.set(entries);
+            return Check { shared: held };
+        }
+        let check = Check {
+            shared: Rc::new(Shared::new(read.clone())),
+        };
+        bucket.push(Rc::downgrade(&check.shared));
+        entries += 1;
+        if entries > 2 * self.shared_held.get().max(64) {
+            shared.retain(|_, bucket| {
+                bucket.retain(|entry| entry.strong_count() > 0);
+                !bucket.is_empty()
+            });
+            entries = shared.values().map(Vec::len).sum();
+            self.shared_held.set(entries);
+        }
+        self.shared_entries.set(entries);
+        check
     }
 
     /// Start a generation at `now` ([`DiskCache::begin_generation`]).
@@ -337,7 +438,7 @@ impl<D: Probe> ReadChecks<D> {
     /// Whether `check`'s read gets the answer recorded, now. Outside a
     /// generation, the query is asked.
     pub fn holds(&self, check: &Check) -> bool {
-        let read = &check.read;
+        let read = &check.shared.read;
         // A racy stamp speaks for the file only when it was taken; what it
         // saw is confirmed by the file's contents, when it says what they were.
         // The stamp of a file a whole-file read could not read is asked
@@ -380,13 +481,14 @@ impl<D: Probe> ReadChecks<D> {
                 })
                 .collect::<Option<Vec<_>>>()
                 .map(|dirs| Witness {
+                    checker: self.id,
                     dirs,
                     taken: now,
                     hints: self.hints.get(),
                 })
         });
         let holds = self.ask(read) == read.observation;
-        *check.witness.borrow_mut() = witness.filter(|_| holds);
+        *check.shared.witness.borrow_mut() = witness.filter(|_| holds);
         holds
     }
 
@@ -401,16 +503,19 @@ impl<D: Probe> ReadChecks<D> {
         let Some(digest) = recorded.digest else {
             return false;
         };
-        let path = &check.read.path;
+        let path = &check.shared.read.path;
         let mut counts = self.counts.get();
-        if let Some(confirmed) = check.confirmed.get() {
+        if let Some(confirmed) = check.shared.confirmed.get() {
             counts.stats += 1;
             self.counts.set(counts);
-            let now = self.files.disk().answer(path, &check.read.observation);
+            let now = self
+                .files
+                .disk()
+                .answer(path, &check.shared.read.observation);
             if now == Observation::Stamp(Ok(confirmed)) {
                 return true;
             }
-            check.confirmed.set(None);
+            check.shared.confirmed.set(None);
         }
         let mut counts = self.counts.get();
         counts.opens += 1;
@@ -418,7 +523,7 @@ impl<D: Probe> ReadChecks<D> {
         match self.files.disk().racy_content(path, digest) {
             Some(now) => {
                 if !now.racy {
-                    check.confirmed.set(Some(now));
+                    check.shared.confirmed.set(Some(now));
                 }
                 true
             }
@@ -454,26 +559,32 @@ impl<D: Probe> ReadChecks<D> {
             .filter(|_| matches!(read.observation, Observation::Listing(Ok(_))))
             .filter(|_| a_fact(&read.observation))
             .map(|(id, stamp, taken)| Witness {
+                checker: self.id,
                 dirs: vec![(id, stamp)],
                 taken,
                 hints: self.hints.get(),
             });
-        Check {
-            read,
-            witness: RefCell::new(witness),
-            confirmed: std::cell::Cell::new(None),
+        let check = self.check(&read);
+        // A witness the check already carries confirms this read as well
+        // as the one just taken would, so only a new one replaces it.
+        if witness.is_some() {
+            *check.shared.witness.borrow_mut() = witness;
         }
+        check
     }
 
     /// Whether `check`'s witness, taken in an earlier generation, still holds:
-    /// none of its stamps is racy, no watch event has named one of its
-    /// directories or an entry of one since it was taken ([`Self::hint`]),
-    /// and every directory's stamp is unchanged.
+    /// this checker took it, none of its stamps is racy, no watch event has
+    /// named one of its directories or an entry of one since it was taken
+    /// ([`Self::hint`]), and every directory's stamp is unchanged.
     fn witnessed(&self, check: &Check, generation: u64) -> bool {
-        let witness = check.witness.borrow();
+        let witness = check.shared.witness.borrow();
         let Some(witness) = &*witness else {
             return false;
         };
+        if witness.checker != self.id {
+            return false;
+        }
         let hinted = {
             let dirs = self.dirs.borrow();
             witness

@@ -142,6 +142,13 @@ pub struct Workspace {
     env_counts: Cell<ReadCounts>,
     /// MSBuild evaluations run in the open generation.
     evaluated: Cell<u64>,
+    /// The checks of each evaluation dropped and not yet evaluated again,
+    /// held until it is: its reads are mostly the new evaluation's, and a
+    /// check the checker still holds hands its witness to the equal read
+    /// of the new one ([`ReadChecks::check`]), so the new evaluation's first
+    /// confirmation asks again only what moved. At most one entry per
+    /// project, released when the project is evaluated again.
+    retired: HashMap<ProjectId, Vec<Check>>,
     /// Each file's owner ([`Self::owning_project`]) as a walk inside a
     /// generation found it, keyed by the file's spelling, with what the walk
     /// read. Confirmed once per generation that asks for it.
@@ -412,8 +419,8 @@ struct Evaluation {
 impl Evaluation {
     /// The confirming half of [`Self::checks_and_exempt`].
     #[cfg(test)]
-    fn checks(&self, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
-        self.checks_and_exempt(committed).0
+    fn checks(&self, checker: &ReadChecks, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
+        self.checks_and_exempt(checker, committed).0
     }
 
     /// The reads a cached copy must confirm: every read, except those
@@ -430,56 +437,103 @@ impl Evaluation {
     /// complete before the evaluation began ([`nuget_committed_before`]).
     ///
     /// Beside them, the reads it trusts instead, which a structural watch
-    /// event makes the next confirmation cover too.
-    fn checks_and_exempt(&self, committed: impl Fn(&Path) -> bool) -> (Vec<Check>, Vec<Check>) {
-        let reads = self.reads.reads();
-        let confirming = confirming_reads(reads, &self.immutable, committed);
-        let confirmed: HashSet<&Read> = confirming.iter().collect();
-        let exempt = reads
-            .iter()
-            .filter(|read| !confirmed.contains(read))
-            .cloned()
-            .map(Check::new)
-            .collect();
-        (confirming.into_iter().map(Check::new).collect(), exempt)
+    /// event makes the next confirmation cover too. Each is `checker`'s
+    /// check of the read ([`ReadChecks::check`]), so a read some held check
+    /// shares starts with its witness.
+    fn checks_and_exempt(
+        &self,
+        checker: &ReadChecks,
+        committed: impl Fn(&Path) -> bool,
+    ) -> (Vec<Check>, Vec<Check>) {
+        partition_reads(self.reads.reads(), &self.immutable, committed).checks(checker)
     }
 }
 
-/// [`Evaluation::checks_and_exempt`]' rule over any read set: every read, except those
-/// inside a version directory under `immutable` that some read showed to
-/// exist (and, for a package version, that `committed` says was extracted
-/// before the reads began); and for each such version, that it still does.
-fn confirming_reads(
-    reads: &[Read],
+/// A read set split by [`partition_reads`].
+#[derive(Debug, PartialEq, Eq)]
+struct Partition<'r> {
+    /// The reads confirmed in every generation that reads the value.
+    confirmed: Vec<&'r Read>,
+    /// For each version directory whose contents are trusted, that it still
+    /// exists: confirmed with `confirmed`.
+    versions: Vec<Read>,
+    /// The reads of trusted contents, confirmed only after a watch event.
+    exempt: Vec<&'r Read>,
+}
+
+impl Partition<'_> {
+    /// The confirmed reads with the version directories', and the exempt
+    /// reads, each as `checker`'s check of it.
+    fn checks(&self, checker: &ReadChecks) -> (Vec<Check>, Vec<Check>) {
+        let confirmed = self
+            .confirmed
+            .iter()
+            .copied()
+            .chain(&self.versions)
+            .map(|read| checker.check(read))
+            .collect();
+        let exempt = self.exempt.iter().map(|read| checker.check(read)).collect();
+        (confirmed, exempt)
+    }
+}
+
+/// [`Evaluation::checks_and_exempt`]' rule over any read set: every read is
+/// confirmed, except those inside a version directory under `immutable`
+/// that some read showed to exist (and, for a package version, that
+/// `committed` says was extracted before the reads began), which are
+/// exempt; and for each such version, that it still exists is confirmed.
+/// `committed` is asked once per package version.
+fn partition_reads<'r>(
+    reads: &'r [Read],
     immutable: &ImmutableRoots,
     committed: impl Fn(&Path) -> bool,
-) -> Vec<Read> {
+) -> Partition<'r> {
     let versions = immutable.versions(reads);
     let is_package = |version: &Path| immutable.nuget.iter().any(|root| version.starts_with(root));
-    let shown: std::collections::BTreeSet<PathBuf> = reads
+    // The version directory each read lies strictly inside, found once.
+    let containing: Vec<Option<std::borrow::Cow<Path>>> = reads
         .iter()
-        .filter(|read| answered(&read.observation))
-        .filter_map(|read| versions.containing(&read.path))
-        .filter(|version| !is_package(version) || committed(version))
+        .map(|read| versions.containing(&read.path))
         .collect();
+    // Each version some read was answered inside, once, keyed by its
+    // spelling, which is the same for every read under one root.
+    let mut verdicts: HashMap<&std::ffi::OsStr, bool> = HashMap::new();
+    for (read, version) in reads.iter().zip(&containing) {
+        if let Some(version) = version
+            && answered(&read.observation)
+            && !verdicts.contains_key(version.as_os_str())
+        {
+            let shown = !is_package(version) || committed(version);
+            verdicts.insert(version.as_os_str(), shown);
+        }
+    }
     // What a version holds is immutable; an I/O error reading it is
     // not, so only an answer or an absence is trusted.
-    let trusted = |read: &&Read| {
-        a_fact(&read.observation)
-            && versions
-                .containing(&read.path)
-                .is_some_and(|version| shown.contains(&version))
-    };
-    reads
+    let (exempt, confirmed): (Vec<_>, Vec<_>) =
+        reads.iter().zip(&containing).partition(|(read, version)| {
+            a_fact(&read.observation)
+                && version
+                    .as_deref()
+                    .is_some_and(|version| verdicts.get(version.as_os_str()) == Some(&true))
+        });
+    let mut shown: Vec<&std::ffi::OsStr> = verdicts
         .iter()
-        .filter(|read| !trusted(read))
-        .cloned()
-        .chain(shown.iter().map(|version| Read {
-            // A read inside it succeeded, so it resolved to a directory.
-            path: version.clone(),
-            observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
-        }))
-        .collect()
+        .filter(|(_, shown)| **shown)
+        .map(|(version, _)| *version)
+        .collect();
+    shown.sort();
+    Partition {
+        confirmed: confirmed.into_iter().map(|(read, _)| read).collect(),
+        versions: shown
+            .into_iter()
+            .map(|version| Read {
+                // A read inside it succeeded, so it resolved to a directory.
+                path: PathBuf::from(version),
+                observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
+            })
+            .collect(),
+        exempt: exempt.into_iter().map(|(read, _)| read).collect(),
+    }
 }
 
 /// What a cached assembly env confirms before it is served again
@@ -582,40 +636,92 @@ impl ImmutableRoots {
     /// folder; a version starts with an ASCII digit. `path` is taken
     /// lexically normal ([`lexically_normalize`]).
     fn version_of(&self, path: &Path) -> Option<(PathBuf, usize)> {
+        // The names of `path` below `root`: the first four, and how many in
+        // all; `None` unless `path` lies under `root` and every component
+        // below it is a name.
+        let (root, names, depth, below) = self.version_layout(|root| {
+            let mut names = [std::ffi::OsStr::new(""); 4];
+            let mut count = 0;
+            for component in path.strip_prefix(root).ok()?.components() {
+                let Component::Normal(name) = component else {
+                    return None;
+                };
+                if let Some(slot) = names.get_mut(count) {
+                    *slot = name;
+                }
+                count += 1;
+            }
+            Some((names, count))
+        })?;
+        let dir = names[..depth]
+            .iter()
+            .fold(root.to_path_buf(), |dir, name| dir.join(name));
+        Some((dir, below))
+    }
+
+    /// [`Self::version_of`] for a path spelt as its components
+    /// ([`spelt_as_components`]), under roots all so spelt: the same answer,
+    /// found by comparing bytes, with no component parsed. The version
+    /// directory is then a leading part of `path`, which is returned as the
+    /// length of its spelling.
+    fn version_of_spelt(&self, path: &[u8]) -> Option<(usize, usize)> {
+        let (root, names, depth, below) = self.version_layout(|root| {
+            let rest = below_spelt(path, root.as_os_str().as_encoded_bytes())?;
+            let mut names = [std::ffi::OsStr::new(""); 4];
+            let mut count = 0;
+            for name in rest
+                .split(|byte| *byte == b'/')
+                .filter(|name| !name.is_empty())
+            {
+                if let Some(slot) = names.get_mut(count) {
+                    *slot = name_of(name);
+                }
+                count += 1;
+            }
+            Some((names, count))
+        })?;
+        let root = root.as_os_str().len();
+        // Each name with the separator before it; the root `/` ends in one.
+        let names: usize = names[..depth].iter().map(|name| name.len() + 1).sum();
+        Some((if root == 1 { names } else { root + names }, below))
+    }
+
+    /// The version directory a path lies in or names, given `below`, which
+    /// says for a root the first four names of the path below it and how
+    /// many there are ([`Self::version_of`]): the root it lies under, the
+    /// names below the root, how many of them the version directory takes,
+    /// and how many of the path's lie below it.
+    fn version_layout<'p>(
+        &self,
+        below: impl Fn(&Path) -> Option<([&'p std::ffi::OsStr; 4], usize)>,
+    ) -> Option<(&Path, [&'p std::ffi::OsStr; 4], usize, usize)> {
         let version = |name: &std::ffi::OsStr| {
             name.as_encoded_bytes()
                 .first()
                 .is_some_and(u8::is_ascii_digit)
         };
-        let below = |root: &Path| -> Option<Vec<&std::ffi::OsStr>> {
-            path.strip_prefix(root)
-                .ok()?
-                .components()
-                .map(|component| match component {
-                    Component::Normal(name) => Some(name),
-                    _ => None,
-                })
-                .collect()
-        };
         for root in &self.dotnet {
-            let Some(names) = below(root) else { continue };
-            let depth = match names.as_slice() {
-                [sdk, v, ..] if *sdk == "sdk" && version(v) => 2,
-                [packs, _, v, ..] if *packs == "packs" && version(v) => 3,
-                [manifests, _, _, v, ..] if *manifests == "sdk-manifests" && version(v) => 4,
+            let Some((names, count)) = below(root) else {
+                continue;
+            };
+            let depth = match names {
+                [sdk, v, ..] if count >= 2 && sdk == "sdk" && version(v) => 2,
+                [packs, _, v, _] if count >= 3 && packs == "packs" && version(v) => 3,
+                [manifests, _, _, v]
+                    if count >= 4 && manifests == "sdk-manifests" && version(v) =>
+                {
+                    4
+                }
                 _ => continue,
             };
-            let dir = names[..depth]
-                .iter()
-                .fold(root.clone(), |dir, name| dir.join(name));
-            return Some((dir, names.len() - depth));
+            return Some((root, names, depth, count - depth));
         }
         for root in &self.nuget {
-            let Some(names) = below(root) else { continue };
-            if let [id, v, ..] = names.as_slice()
-                && version(v)
-            {
-                return Some((root.join(id).join(v), names.len() - 2));
+            let Some((names, count)) = below(root) else {
+                continue;
+            };
+            if count >= 2 && version(names[1]) {
+                return Some((root, names, 2, count - 2));
             }
         }
         None
@@ -629,19 +735,34 @@ impl ImmutableRoots {
     /// canonicalisation names its other spelling: a symlink below a version
     /// can lead anywhere.
     fn versions<'r>(&self, reads: impl IntoIterator<Item = &'r Read>) -> VersionDirs<'_> {
-        let aliases = reads
+        let spelt = |path: &Path| spelt_as_components(path.as_os_str().as_encoded_bytes());
+        // A path is placed among the roots by its bytes only when they are
+        // all spelt as their components too.
+        let roots_spelt = self
+            .dotnet
+            .iter()
+            .chain(&self.nuget)
+            .all(|root| spelt(root));
+        let aliases: Vec<PathBuf> = reads
             .into_iter()
             .filter_map(|read| {
                 let Observation::Canonical(Ok(canonical)) = &read.observation else {
                     return None;
                 };
-                let (dir, below) = self.version_of(&lexically_normalize(&read.path))?;
+                let bytes = read.path.as_os_str().as_encoded_bytes();
+                let (dir, below) = if roots_spelt && spelt_as_components(bytes) {
+                    let (len, below) = self.version_of_spelt(bytes)?;
+                    (PathBuf::from(name_of(&bytes[..len])), below)
+                } else {
+                    self.version_of(&lexically_normalize(&read.path))?
+                };
                 let installed = self.dotnet.iter().any(|root| dir.starts_with(root));
                 (below == 0 && installed && *canonical != dir).then(|| canonical.clone())
             })
             .collect();
         VersionDirs {
             roots: self,
+            bytes: roots_spelt && aliases.iter().all(|alias| spelt(alias)),
             aliases,
         }
     }
@@ -651,6 +772,10 @@ impl ImmutableRoots {
 struct VersionDirs<'a> {
     roots: &'a ImmutableRoots,
     aliases: Vec<PathBuf>,
+    /// Every root and alias is spelt as its components
+    /// ([`spelt_as_components`]), so a path so spelt is placed among them by
+    /// its bytes.
+    bytes: bool,
 }
 
 impl VersionDirs<'_> {
@@ -669,18 +794,86 @@ impl VersionDirs<'_> {
     /// confirmed like any other read. So are the band and manifest
     /// directories of `sdk-manifests`, which a workload update writes into,
     /// and a version directory's canonical spelling, which an alias rests on.
-    fn containing(&self, path: &Path) -> Option<PathBuf> {
-        let path = lexically_normalize(path);
-        if let Some((version, below)) = self.roots.version_of(&path)
+    fn containing<'p>(&'p self, path: &'p Path) -> Option<std::borrow::Cow<'p, Path>> {
+        use std::borrow::Cow;
+        // Most reads are spelt as their components, and placing those by
+        // their bytes saves parsing every root's and alias's components for
+        // each; the version directory is then a leading part of the path.
+        let bytes = path.as_os_str().as_encoded_bytes();
+        if self.bytes && spelt_as_components(bytes) {
+            if let Some((len, below)) = self.roots.version_of_spelt(bytes)
+                && below > 0
+            {
+                return Some(Cow::Borrowed(Path::new(name_of(&bytes[..len]))));
+            }
+            return self
+                .aliases
+                .iter()
+                .find(|alias| {
+                    below_spelt(bytes, alias.as_os_str().as_encoded_bytes())
+                        .is_some_and(|rest| !rest.is_empty())
+                })
+                .map(|alias| Cow::Borrowed(alias.as_path()));
+        }
+        // Without a `..`, a path compares by its components as its lexically
+        // normal spelling does, so only a path with one is spelt again.
+        let normal;
+        let path = if path.components().any(|c| c == Component::ParentDir) {
+            normal = lexically_normalize(path);
+            normal.as_path()
+        } else {
+            path
+        };
+        if let Some((version, below)) = self.roots.version_of(path)
             && below > 0
         {
-            return Some(version);
+            return Some(Cow::Owned(version));
         }
         self.aliases
             .iter()
-            .find(|alias| path.starts_with(alias) && path != **alias)
-            .cloned()
+            .find(|alias| path.starts_with(alias) && path != alias.as_path())
+            .map(|alias| Cow::Borrowed(alias.as_path()))
     }
+}
+
+/// Whether `path` is spelt as its components: on Unix, absolute, every
+/// separator single, no `.` or `..` name and no trailing
+/// separator (the root `/` alone excepted). A path so spelt lies under
+/// another so spelt, component by component, exactly when its bytes start
+/// with the other's and a separator or nothing follows ([`below_spelt`]).
+fn spelt_as_components(path: &[u8]) -> bool {
+    cfg!(unix)
+        && path.first() == Some(&b'/')
+        && (path.len() == 1
+            || (path.last() != Some(&b'/')
+                && path[1..]
+                    .split(|byte| *byte == b'/')
+                    .all(|name| !name.is_empty() && name != b"." && name != b"..")))
+}
+
+/// A name of a path spelt as its components ([`spelt_as_components`]), as
+/// the bytes between two separators.
+#[cfg(unix)]
+fn name_of(name: &[u8]) -> &std::ffi::OsStr {
+    std::os::unix::ffi::OsStrExt::from_bytes(name)
+}
+
+/// No path is spelt as its components off Unix ([`spelt_as_components`]).
+#[cfg(not(unix))]
+fn name_of(_: &[u8]) -> &std::ffi::OsStr {
+    unreachable!("no path is spelt as its components off Unix")
+}
+
+/// What of `path` lies below `prefix`, both spelt as their components
+/// ([`spelt_as_components`]): the names after the separator that follows
+/// `prefix`, empty when the two are one path; `None` when `path` does not
+/// lie under `prefix`.
+fn below_spelt<'p>(path: &'p [u8], prefix: &[u8]) -> Option<&'p [u8]> {
+    let rest = path.strip_prefix(prefix)?;
+    if prefix == b"/" || rest.is_empty() {
+        return Some(rest);
+    }
+    rest.strip_prefix(b"/")
 }
 
 /// The workspace's served-TFM verdict for an entry project
@@ -768,6 +961,7 @@ impl Workspace {
             checker: ReadChecks::default(),
             env_counts: Cell::new(ReadCounts::default()),
             evaluated: Cell::new(0),
+            retired: HashMap::new(),
             owners: HashMap::new(),
             dir_listings: DirListings::default(),
             next_evaluation: Cell::new(0),
@@ -815,10 +1009,20 @@ impl Workspace {
     /// event naming a `nuget.config` is all that covers a change to them
     /// ([`crate::server::State::apply_watched_changes`]).
     pub fn drop_every_evaluation(&mut self) {
-        self.projects.clear();
+        for (project, dropped) in std::mem::take(&mut self.projects) {
+            self.retire(project, dropped);
+        }
         self.owners.clear();
         self.dir_listings.forget();
         self.projects_generation.0 += 1;
+    }
+
+    /// Hold the checks of `dropped`, the evaluation of `project` just
+    /// dropped, until `project` is evaluated again ([`Self::retired`]).
+    fn retire(&mut self, project: ProjectId, dropped: CachedEvaluation) {
+        let mut checks = dropped.checks;
+        checks.extend(dropped.exempt);
+        self.retired.insert(project, checks);
     }
 
     /// A structural watch event arrived (a project file, an import, a
@@ -964,24 +1168,18 @@ impl Workspace {
         // The commit markers' stamps are the env's to pay for, not the
         // evaluations'.
         let before = checker.counts_so_far();
-        let confirming = confirming_reads(reads, &immutable, |version| {
+        let partition = partition_reads(reads, &immutable, |version| {
             nuget_committed_before(checker, version, started)
         });
         if checker.generation().is_some() {
             let spent = minus(checker.counts_so_far(), before);
             self.env_counts.set(self.env_counts.get() + spent);
         }
-        let confirmed: HashSet<&Read> = confirming.iter().collect();
-        let exempt: Vec<Check> = reads
-            .iter()
-            .filter(|read| !confirmed.contains(read))
-            .cloned()
-            .map(Check::new)
-            .collect();
+        let (checks, exempt) = partition.checks(checker);
         EnvChecks {
             checker: checker.id(),
             exempt,
-            checks: confirming.into_iter().map(Check::new).collect(),
+            checks,
             stamped: reads
                 .iter()
                 .filter(|read| matches!(read.observation, Observation::Stamp(_)))
@@ -1047,7 +1245,9 @@ impl Workspace {
                 project = %project.as_path().display(),
                 "a project evaluation's inputs moved; evaluating it again"
             );
-            self.projects.remove(project);
+            if let Some(dropped) = self.projects.remove(project) {
+                self.retire(project.clone(), dropped);
+            }
             self.projects_generation.0 += 1;
         }
     }
@@ -1727,6 +1927,7 @@ impl Workspace {
         let started = self.checker.now();
         let checker = &self.checker;
         let next_evaluation = &self.next_evaluation;
+        let retired = &mut self.retired;
         self.projects
             .entry(project.clone())
             .or_insert_with(|| {
@@ -1734,8 +1935,13 @@ impl Workspace {
                     evaluate_project(project.as_path(), env, extra_build_properties, evaluated);
                 let id = EvaluationId(next_evaluation.get());
                 next_evaluation.set(id.0 + 1);
-                let (checks, exempt) = evaluation
-                    .checks_and_exempt(|version| nuget_committed_before(checker, version, started));
+                // The dropped evaluation's checks are held until the new
+                // one's are made, so that the reads the two share keep
+                // their witnesses.
+                let (checks, exempt) = evaluation.checks_and_exempt(checker, |version| {
+                    nuget_committed_before(checker, version, started)
+                });
+                retired.remove(project);
                 CachedEvaluation {
                     id,
                     checks,
@@ -7105,7 +7311,7 @@ mod tests {
                     let evaluation =
                         evaluate_project(&project, &env, &HashMap::new(), &Cell::new(0));
                     let read_set: ReadSet = evaluation
-                        .checks(|_| false)
+                        .checks(&ReadChecks::default(), |_| false)
                         .into_iter()
                         .map(|check| check.read().clone())
                         .collect();
@@ -7142,7 +7348,9 @@ mod tests {
             let itself = [canonical("/d/sdk/1.0.0", "/real/sdk/1.0.0")];
             let versions = roots.versions(itself.iter());
             assert_eq!(
-                versions.containing(Path::new("/real/sdk/1.0.0/x.props")),
+                versions
+                    .containing(Path::new("/real/sdk/1.0.0/x.props"))
+                    .map(std::borrow::Cow::into_owned),
                 Some(PathBuf::from("/real/sdk/1.0.0"))
             );
         }
@@ -7181,7 +7389,8 @@ mod tests {
             let mut checks_at = |at: Nanos| {
                 checker.begin_generation(at);
                 let started = checker.now();
-                let checks = evaluation.checks(|v| nuget_committed_before(&checker, v, started));
+                let checks =
+                    evaluation.checks(&checker, |v| nuget_committed_before(&checker, v, started));
                 checker.end_generation();
                 inside(&checks)
             };
@@ -7198,7 +7407,7 @@ mod tests {
             let expected = if cfg!(unix) {
                 vec![version.clone()]
             } else {
-                inside(&evaluation.checks(|_| false))
+                inside(&evaluation.checks(&ReadChecks::default(), |_| false))
             };
             assert_eq!(checks_at(Nanos(i128::MAX / 2)), expected);
         }
@@ -7244,7 +7453,7 @@ mod tests {
                 },
             };
             let mut checked: Vec<PathBuf> = evaluation
-                .checks(|_| true)
+                .checks(&ReadChecks::default(), |_| true)
                 .iter()
                 .map(|check| check.read().path.clone())
                 .collect();
@@ -7377,6 +7586,325 @@ mod tests {
             let moved = ws.end_generation().evaluations;
             assert!(moved.evaluated > 0, "{moved:?}");
             assert_ne!(ws.projects_generation(), generation);
+        }
+
+        /// [`ImmutableRoots::version_of`] as it was first written: `path`
+        /// spelt lexically normal, its names below each root collected.
+        fn version_of_reference(roots: &ImmutableRoots, path: &Path) -> Option<(PathBuf, usize)> {
+            let path = lexically_normalize(path);
+            let version = |name: &std::ffi::OsStr| {
+                name.as_encoded_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_digit)
+            };
+            let below = |root: &Path| -> Option<Vec<&std::ffi::OsStr>> {
+                path.strip_prefix(root)
+                    .ok()?
+                    .components()
+                    .map(|component| match component {
+                        Component::Normal(name) => Some(name),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            roots
+                .dotnet
+                .iter()
+                .find_map(|root| {
+                    let names = below(root)?;
+                    let depth = match names.as_slice() {
+                        [sdk, v, ..] if *sdk == "sdk" && version(v) => 2,
+                        [packs, _, v, ..] if *packs == "packs" && version(v) => 3,
+                        [m, _, _, v, ..] if *m == "sdk-manifests" && version(v) => 4,
+                        _ => return None,
+                    };
+                    let dir = names[..depth]
+                        .iter()
+                        .fold(root.clone(), |dir, name| dir.join(name));
+                    Some((dir, names.len() - depth))
+                })
+                .or_else(|| {
+                    roots
+                        .nuget
+                        .iter()
+                        .find_map(|root| match below(root)?.as_slice() {
+                            [id, v, rest @ ..] if version(v) => {
+                                Some((root.join(id).join(v), rest.len()))
+                            }
+                            _ => None,
+                        })
+                })
+        }
+
+        /// [`ImmutableRoots::versions`]' aliases as they were first found.
+        fn aliases_reference(roots: &ImmutableRoots, reads: &[Read]) -> Vec<PathBuf> {
+            reads
+                .iter()
+                .filter_map(|read| {
+                    let Observation::Canonical(Ok(canonical)) = &read.observation else {
+                        return None;
+                    };
+                    let (dir, below) = version_of_reference(roots, &read.path)?;
+                    let installed = roots.dotnet.iter().any(|root| dir.starts_with(root));
+                    (below == 0 && installed && *canonical != dir).then(|| canonical.clone())
+                })
+                .collect()
+        }
+
+        /// [`VersionDirs::containing`] as it was first written, among
+        /// `roots` and the reference's `aliases`. The references
+        /// [`a_version_is_found_as_the_reference_finds_it`] and
+        /// [`reads_are_partitioned_as_the_reference_partitions_them`] hold
+        /// the allocation-free ones to.
+        fn containing_reference(
+            roots: &ImmutableRoots,
+            aliases: &[PathBuf],
+            path: &Path,
+        ) -> Option<PathBuf> {
+            if let Some((version, below)) = version_of_reference(roots, path)
+                && below > 0
+            {
+                return Some(version);
+            }
+            let path = lexically_normalize(path);
+            aliases
+                .iter()
+                .find(|alias| path.starts_with(alias) && path != **alias)
+                .cloned()
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 2048, ..ProptestConfig::default() })]
+
+            /// The version directory a read lies in, found without spelling
+            /// the path again or collecting its names (by its bytes, where
+            /// it and every root are spelt as their components), is the one
+            /// the reference finds, for every spelling: `.` and `..`,
+            /// doubled and trailing separators, a version alias, names that
+            /// are almost a version layout, and a root spelt otherwise.
+            #[test]
+            fn a_version_is_found_as_the_reference_finds_it(
+                prefix in prop::sample::select(vec![
+                    "", "/d", "/n/d", "/n", "/real", "/d/sdk", "/d/packs/p", "/n/d/packs/p",
+                    "/d/sdk-manifests/b/m", "/n/pkg", "/n/d/sdk", "/real/sdk", "/d/sdk/1.0",
+                    // Spellings that start with a root's bytes and are not under it.
+                    "/dd/sdk", "/n/dx/sdk", "/nn/pkg", "/real/sdk/1.00",
+                ]),
+                names in prop::collection::vec(
+                    prop::sample::select(vec![
+                        "d", "n", "sdk", "packs", "sdk-manifests", "1.0", "2", "x", "pkg", ".",
+                        "..", "", "real",
+                    ]),
+                    0..8,
+                ),
+                trailing in any::<bool>(),
+                root_spelt_otherwise in 0..3usize,
+            ) {
+                // A root not spelt as its components places every path by
+                // its components.
+                let (first, second) = match root_spelt_otherwise {
+                    0 => ("/d", "/n/d"),
+                    1 => ("/d", "/n/./d/"),
+                    _ => ("/d/", "/n/d"),
+                };
+                let roots = ImmutableRoots {
+                    dotnet: vec![PathBuf::from(first), PathBuf::from(second)],
+                    nuget: vec![PathBuf::from("/n")],
+                };
+                let alias = Read {
+                    path: PathBuf::from("/d/sdk/1.0"),
+                    observation: Observation::Canonical(Ok(PathBuf::from("/real/sdk/1.0"))),
+                };
+                let versions = roots.versions(std::slice::from_ref(&alias));
+                let aliases = aliases_reference(&roots, std::slice::from_ref(&alias));
+                prop_assert_eq!(&versions.aliases, &aliases);
+                let path = PathBuf::from(format!(
+                    "{prefix}/{}{}",
+                    names.join("/"),
+                    if trailing { "/" } else { "" }
+                ));
+                prop_assert_eq!(
+                    versions.containing(&path).map(std::borrow::Cow::into_owned),
+                    containing_reference(&roots, &aliases, &path),
+                    "{:?}",
+                    path
+                );
+            }
+        }
+
+        /// [`partition_reads`] as it was first written: every read's version
+        /// found twice, the versions shown kept as a set of paths, and the
+        /// exempt reads found by hashing the confirmed ones.
+        fn partition_reference(
+            reads: &[Read],
+            immutable: &ImmutableRoots,
+            committed: impl Fn(&Path) -> bool,
+        ) -> (Vec<Read>, Vec<Read>) {
+            let aliases = aliases_reference(immutable, reads);
+            let containing = |path: &Path| containing_reference(immutable, &aliases, path);
+            let is_package =
+                |version: &Path| immutable.nuget.iter().any(|root| version.starts_with(root));
+            let shown: std::collections::BTreeSet<PathBuf> = reads
+                .iter()
+                .filter(|read| answered(&read.observation))
+                .filter_map(|read| containing(&read.path))
+                .filter(|version| !is_package(version) || committed(version))
+                .collect();
+            let trusted = |read: &&Read| {
+                a_fact(&read.observation)
+                    && containing(&read.path).is_some_and(|version| shown.contains(&version))
+            };
+            let confirming: Vec<Read> = reads
+                .iter()
+                .filter(|read| !trusted(read))
+                .cloned()
+                .chain(shown.iter().map(|version| Read {
+                    path: version.clone(),
+                    observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
+                }))
+                .collect();
+            let confirmed: HashSet<&Read> = confirming.iter().collect();
+            let exempt = reads
+                .iter()
+                .filter(|read| !confirmed.contains(read))
+                .cloned()
+                .collect();
+            (confirming, exempt)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 1024, ..ProptestConfig::default() })]
+
+            /// The read partition a cached evaluation and an env confirm by
+            /// is the reference's for every read set: reads inside and
+            /// outside versions, under every spelling, answered, absent and
+            /// failed, under package versions committed or not, and through
+            /// a version alias, with an install root spelt as its components
+            /// or otherwise.
+            #[test]
+            fn reads_are_partitioned_as_the_reference_partitions_them(
+                reads in prop::collection::vec(
+                    (
+                        prop::sample::select(vec![
+                            "/d/sdk/1.0/x", "/d/sdk/1.0", "/d/sdk/1.0/./y", "/d//sdk/1.0/z",
+                            "/d/sdk/2/x/", "/d/sdk/x/y", "/d/packs/p/1.0/a", "/d/packs/p",
+                            "/d/sdk-manifests/b/m/3/w", "/n/pkg/1.0/lib", "/n/pkg/2.0/lib",
+                            "/n/other/1.5/x", "/n/pkg", "/real/sdk/1.0/x", "/real/sdk/1.0",
+                            "/repo/App.fsproj", "/d/sdk/1.0/../2/x", "/dd/sdk/1.0/x",
+                            "/nn/pkg/1.0/x", "/real/sdk/1.00/x",
+                        ]),
+                        0usize..7,
+                    ),
+                    0..12,
+                ),
+                uncommitted in prop::sample::subsequence(vec!["/n/pkg/1.0", "/n/pkg/2.0", "/n/other/1.5"], 0..=3),
+                aliased in any::<bool>(),
+                dotnet_root in prop::sample::select(vec!["/d", "/d/", "/./d"]),
+            ) {
+                let failure = |kind: std::io::ErrorKind| {
+                    msbuild_observed::Failure::of(&std::io::Error::from(kind))
+                };
+                let mut reads: Vec<Read> = reads
+                    .into_iter()
+                    .map(|(path, observation)| Read {
+                        path: PathBuf::from(path),
+                        observation: match observation {
+                            0 => Observation::Text(Ok(msbuild_observed::TextDigest::of(""))),
+                            1 => Observation::Text(Err(failure(std::io::ErrorKind::NotFound))),
+                            2 => Observation::Text(Err(failure(std::io::ErrorKind::PermissionDenied))),
+                            3 => Observation::Kind(Ok(msbuild_observed::EntryKind::File)),
+                            4 => Observation::Kind(Err(failure(std::io::ErrorKind::NotFound))),
+                            5 => Observation::Listing(Ok(vec![msbuild_observed::Listed::Unreadable(
+                                failure(std::io::ErrorKind::Other),
+                            )])),
+                            _ => Observation::Listing(Ok(Vec::new())),
+                        },
+                    })
+                    .collect();
+                if aliased {
+                    reads.push(Read {
+                        path: PathBuf::from("/d/sdk/1.0"),
+                        observation: Observation::Canonical(Ok(PathBuf::from("/real/sdk/1.0"))),
+                    });
+                }
+                let reads: ReadSet = reads.into_iter().collect();
+                let immutable = ImmutableRoots {
+                    dotnet: vec![PathBuf::from(dotnet_root)],
+                    nuget: vec![PathBuf::from("/n")],
+                };
+                let committed = |version: &Path| !uncommitted.iter().any(|u| Path::new(u) == version);
+                let partition = partition_reads(reads.reads(), &immutable, committed);
+                let (mut confirming, exempt) =
+                    partition_reference(reads.reads(), &immutable, committed);
+                let mut confirmed: Vec<Read> = partition
+                    .confirmed
+                    .iter()
+                    .copied()
+                    .chain(&partition.versions)
+                    .cloned()
+                    .collect();
+                confirmed.sort();
+                confirming.sort();
+                prop_assert_eq!(confirmed, confirming);
+                let partitioned: Vec<Read> = partition.exempt.into_iter().cloned().collect();
+                prop_assert_eq!(partitioned, exempt);
+            }
+        }
+
+        /// A project evaluated again after an edit that moves none of its
+        /// other reads (a comment) starts with the dropped evaluation's
+        /// witnesses: its first confirmation costs what a confirmation of an
+        /// unchanged evaluation does, the directories' `stat`s and nothing
+        /// asked again (#733). Without them it would ask every read again,
+        /// walking each one's path. The project file is rewritten in place,
+        /// so no directory's stamp moves.
+        ///
+        /// The evaluation's absence probes reach the temporary directory's
+        /// ancestors, where concurrent tests make and remove directories,
+        /// and a witness that sees one moved asks again, as it must; so the
+        /// scenario is run until a run sees nothing else move. Without the
+        /// dropped evaluation's witnesses no run can.
+        #[test]
+        fn a_project_evaluated_again_starts_with_the_dropped_ones_witnesses() {
+            let attempt = || {
+                let tmp = TempDir::new().unwrap();
+                let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+                let (project, env) = world(&root, false);
+                let file = root.join("repo/App/A.fs");
+                let mut ws = Workspace::with_env(env);
+                let mut at = 0;
+                let mut generation = |ws: &mut Workspace| {
+                    // Old enough that no stamp is racy, so witnesses are used.
+                    ws.begin_generation(Nanos(i128::MAX / 2 + at));
+                    at += 1;
+                    assert!(ws.symbols_for(&file).contains("COMMON"));
+                    ws.end_generation().evaluations
+                };
+                assert_eq!(generation(&mut ws).evaluated, 1);
+                // The first confirmation takes the witnesses; the second is
+                // what confirming an unchanged evaluation costs.
+                generation(&mut ws);
+                let steady = generation(&mut ws);
+                assert_eq!(steady.evaluated, 0, "{steady:?}");
+                assert!(steady.validation.stats > 0, "{steady:?}");
+
+                let text = crate::observed::host_fs::read_to_string(&project).unwrap();
+                fs::write(
+                    &project,
+                    text.replace("<ItemGroup>", "<!-- c --><ItemGroup>"),
+                )
+                .unwrap();
+                assert_eq!(generation(&mut ws).evaluated, 1);
+                (generation(&mut ws), steady)
+            };
+            let mut runs = Vec::new();
+            while runs.len() < 5 && !runs.last().is_some_and(|(first, steady)| first == steady) {
+                runs.push(attempt());
+            }
+            assert!(
+                runs.iter().any(|(first, steady)| first == steady),
+                "the new evaluation's first confirmation, against a steady one: {runs:?}"
+            );
         }
 
         /// A file only the second, seeded pass reads (an import gated on the

@@ -627,6 +627,261 @@ proptest! {
     }
 }
 
+/// One step of a run whose reads are recorded again
+/// ([`run_recording_again`]).
+#[derive(Clone, Debug)]
+enum Step {
+    /// A change to the disk, or the clock (no [`Op::Generation`]).
+    Op(Op),
+    /// Record the reads of holder `holder` again, as the disk answers now,
+    /// through [`ReadChecks::check`], as a value evaluated again does. With
+    /// `retain`, its old checks are released only once the new ones are made,
+    /// as the workspace holds a dropped evaluation's
+    /// (`crate::workspace::Workspace::retire`); otherwise first. With
+    /// `inside`, the record is made inside a generation of its own, as the
+    /// server evaluates; otherwise between generations.
+    Record {
+        holder: usize,
+        retain: bool,
+        inside: bool,
+    },
+    /// Release every check holder `holder` holds.
+    Release { holder: usize },
+    /// Begin a generation and confirm every holder's checks.
+    Generation,
+}
+
+/// How many holders a run keeps. Holders 0 and 1 are confirmed by the
+/// checker that made their checks, as an evaluation and an env sharing reads
+/// are; holder 2's checks are made by that checker and confirmed by another,
+/// which must not take the first's witnesses for its own. No holder of the
+/// server's does that (`crate::workspace::Workspace::owns`), and the two
+/// checkers then take turns replacing each other's witness on the checks
+/// they share, so holder 2 starts empty.
+const HOLDERS: usize = 3;
+
+fn step() -> impl Strategy<Value = Step> {
+    prop_oneof![
+        10 => op()
+            .prop_filter("a generation is its own step", |op| !matches!(op, Op::Generation))
+            .prop_map(Step::Op),
+        4 => (0..HOLDERS, any::<bool>(), any::<bool>())
+            .prop_map(|(holder, retain, inside)| Step::Record { holder, retain, inside }),
+        1 => (0..HOLDERS).prop_map(|holder| Step::Release { holder }),
+        4 => Just(Step::Generation),
+    ]
+}
+
+/// What a run whose reads are recorded again saw, for the non-vacuity check.
+#[derive(Default, Debug)]
+struct Recorded {
+    /// Checks a record made that shared a check another holder, or the
+    /// holder's own retained read set, held.
+    shared: usize,
+    /// Listings and canonicalisations that held in the first generation
+    /// after their record without being asked: confirmed by a witness the
+    /// record shared.
+    reused: usize,
+    /// Checks that came into a generation with a witness, shared or taken
+    /// for themselves, and found the disk moved.
+    shared_moved: usize,
+}
+
+/// Every non-text query at every path, recorded against the model as it is,
+/// each as `checker`'s check of it, which must be a check of that read: a
+/// check shared with another read would confirm the other's answer.
+fn recorded(model: &Model, checker: &ReadChecks<Rc<RefCell<Model>>>) -> Vec<Check> {
+    let queries = [
+        Observation::Kind(Ok(EntryKind::File)),
+        Observation::LinkKind(Ok(EntryKind::File)),
+        Observation::Listing(Ok(Vec::new())),
+        Observation::Canonical(Ok(PathBuf::new())),
+    ];
+    PATHS
+        .iter()
+        .flat_map(|p| {
+            queries.iter().map(move |query| {
+                let path = PathBuf::from(p);
+                let observation = model.answer(&path, query);
+                let read = Read { path, observation };
+                let check = checker.check(&read);
+                assert_eq!(check.read(), &read, "a check of another read");
+                check
+            })
+        })
+        .collect()
+}
+
+/// The property behind [`ReadChecks::check`]: for all generated changes, and
+/// records of the reads again at any point, a check confirmed with the
+/// witnesses its record shared accepts exactly when a fresh confirmation
+/// (the query asked of the disk now) gets the answer recorded, in every
+/// generation no change lands inside of; in one that a change does land
+/// inside of, as [`run`] holds unshared checks, it accepts only if the
+/// answer was right as the generation began or is right now.
+fn run_recording_again(
+    granularity: i128,
+    setup: &[Op],
+    steps: &[Step],
+    seen: &mut Recorded,
+) -> Result<(), TestCaseError> {
+    let model = Rc::new(RefCell::new(Model::new(granularity)));
+    for op in setup {
+        model.borrow_mut().apply(op);
+    }
+    let mut checker = ReadChecks::with_disk(Rc::clone(&model));
+    let mut other = ReadChecks::with_disk(Rc::clone(&model));
+    let mut holders: Vec<Vec<Check>> = (0..HOLDERS)
+        .map(|holder| match holder {
+            2 => Vec::new(),
+            _ => recorded(&model.borrow(), &checker),
+        })
+        .collect();
+    // Which holders were recorded since the last generation.
+    let mut fresh = [false; HOLDERS];
+    for step in steps {
+        match step {
+            Step::Op(Op::Stealth(change)) => {
+                model.borrow_mut().apply(&Op::Stealth(change.clone()));
+                let named = change.named();
+                checker.hint(named.iter().map(PathBuf::as_path));
+                other.hint(named.iter().map(PathBuf::as_path));
+            }
+            Step::Op(op) => model.borrow_mut().apply(op),
+            Step::Record {
+                holder,
+                retain,
+                inside,
+            } => {
+                if *inside {
+                    checker.begin_generation(Nanos(model.borrow().clock));
+                }
+                let old = if *retain {
+                    std::mem::take(&mut holders[*holder])
+                } else {
+                    holders[*holder].clear();
+                    Vec::new()
+                };
+                let new = recorded(&model.borrow(), &checker);
+                let held: Vec<&Check> = holders.iter().flatten().chain(&old).collect();
+                seen.shared += new
+                    .iter()
+                    .filter(|check| held.iter().any(|held| held.shares(check)))
+                    .count();
+                holders[*holder] = new;
+                drop(old);
+                fresh[*holder] = true;
+                if *inside {
+                    checker.end_generation();
+                }
+            }
+            Step::Release { holder } => holders[*holder].clear(),
+            Step::Generation => {
+                let now = model.borrow().clock;
+                let inside = {
+                    let model = model.borrow();
+                    model.interleaved.is_some() || model.interleaved_at_stat.is_some()
+                };
+                let truth = |check: &Check| {
+                    model
+                        .borrow()
+                        .answer(&check.read().path, &check.read().observation)
+                };
+                let before: Vec<Vec<Observation>> = holders
+                    .iter()
+                    .map(|checks| checks.iter().map(truth).collect())
+                    .collect();
+                checker.begin_generation(Nanos(now));
+                other.begin_generation(Nanos(now));
+                for (holder, checks) in holders.iter().enumerate() {
+                    let confirming = if holder == 2 { &other } else { &checker };
+                    for (check, before) in checks.iter().zip(&before[holder]) {
+                        let shared = check.shared.witness.borrow().is_some();
+                        let asked = |counts: ReadCounts| counts.listings + counts.canonicalizations;
+                        let asked_before = asked(confirming.counts_so_far());
+                        let holds = confirming.holds(check);
+                        if fresh[holder]
+                            && holds
+                            && asked(confirming.counts_so_far()) == asked_before
+                            && matches!(
+                                check.read().observation,
+                                Observation::Listing(_) | Observation::Canonical(_)
+                            )
+                        {
+                            seen.reused += 1;
+                        }
+                        let now = truth(check);
+                        let recorded = &check.read().observation;
+                        if inside {
+                            prop_assert!(
+                                !holds || now == *recorded || before == recorded,
+                                "{:?} held, but the disk moved: {:?}",
+                                check.read().path,
+                                now
+                            );
+                        } else {
+                            prop_assert_eq!(
+                                holds,
+                                now == *recorded,
+                                "holder {} at {:?}: recorded {:?}, the disk answers {:?}",
+                                holder,
+                                check.read().path,
+                                recorded,
+                                now
+                            );
+                        }
+                        if shared && !holds {
+                            seen.shared_moved += 1;
+                        }
+                    }
+                }
+                checker.end_generation();
+                other.end_generation();
+                fresh = [false; HOLDERS];
+            }
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// For all generated changes and records again, a shared witness
+    /// accepts exactly when a fresh confirmation would
+    /// ([`run_recording_again`]).
+    #[test]
+    fn a_shared_witness_accepts_exactly_when_a_fresh_confirmation_would(
+        granularity in granularity(),
+        setup in setup(),
+        steps in prop::collection::vec(step(), 1..48),
+    ) {
+        run_recording_again(granularity, &setup, &steps, &mut Recorded::default())?;
+    }
+}
+
+/// The generator reaches what [`run_recording_again`] is about: records that
+/// share checks, generations after a record confirmed by shared witnesses
+/// alone, and shared witnesses that found the disk moved.
+#[test]
+fn the_record_generator_reaches_shared_and_moved_witnesses() {
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let mut seen = Recorded::default();
+    for _ in 0..256 {
+        let granularity = granularity().new_tree(&mut runner).unwrap().current();
+        let setup = setup().new_tree(&mut runner).unwrap().current();
+        let steps = prop::collection::vec(step(), 1..48)
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        run_recording_again(granularity, &setup, &steps, &mut seen).unwrap();
+    }
+    assert!(
+        seen.shared > 500 && seen.reused > 200 && seen.shared_moved > 50,
+        "{seen:?}"
+    );
+}
+
 /// The generator reaches what the property is about: checks held on their
 /// witness alone, and checks that found the disk moved.
 #[test]

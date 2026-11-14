@@ -4144,6 +4144,202 @@ times.
   open buffer's sync already announced the change: one refresh more than
   the finished request would owe.
 
+### Follow-up: a new read set starts with the witnesses it shares
+
+**Dependencies**: Stage 9. **Closes**:
+[#733](https://github.com/WoofWare/borzoi/issues/733) and
+[#742](https://github.com/WoofWare/borzoi/issues/742).
+
+After a re-evaluation or a re-resolution, the new read set's checks were
+made without witnesses, so its first confirmation walked every read's path
+again (an `lstat` per component) and asked it again: 2,239 `stat`s, 32
+listings and 31 canonicalisations for the evaluation on
+WoofWare.Incremental, 2,158 `stat`s for the env's resolution, about 50 M
+instructions each. And building the evaluation's checks
+(`Evaluation::checks_and_exempt`) cost 31 M, the cancellation latency
+Stage 9's `blocked-edit` meets.
+
+**A witness belongs to a read.** A witness says that while its
+directories keep their stamps, the query gets the answer it got when the
+witness was taken, and it is kept only if that answer was the recorded one.
+Nothing in that names the evaluation or env that recorded the read. So a
+witness carries over to another read exactly when the two reads are equal:
+the same path, spelt the same (`Read`'s equality is on the raw spelling),
+and the same recorded answer, under the same checker. It carries its
+stamps, the time of the generation that took them and the watch events it
+had seen, so the racy rule and the hints judge it as they judged it for the
+read it was taken for. Its stamps are compared with the ones the
+directories have in the generation that confirms it, as a fresh witness's
+are; a moved stamp sends the read back to be asked, as for any check.
+
+`ReadChecks::check` makes that structural: a checker hands out one `Check`
+per distinct read, shared (an `Rc`) by every holder while any holds it, from
+an index of weak handles keyed by a hash of the read and confirmed by
+equality, swept once released entries outnumber held ones. A witness names
+the checker that took it, so a check confirmed through another checker asks
+again. The workspace holds a dropped evaluation's checks until the project
+is evaluated again (`Workspace::retired`, at most one entry per project), so
+the new evaluation's equal reads take them over; the env's re-resolution
+runs while its old checks are held, and its reads of the project's
+evaluation are the evaluation's own, so it shares both.
+
+**Building checks cheaply.** Profiled with markers on the build box,
+`checks_and_exempt` spent its 31 M mostly placing reads among the installed
+versions: each read's version was found twice, each time spelling the path
+again and comparing it with every root and alias component by component,
+and the versions shown were kept in a set ordered by components. It now
+finds each read's version once, places a path spelt as its components by
+its bytes (with the version directory a leading part of it, so nothing is
+allocated), keys the versions by spelling, asks for a package's commit
+marker once per version, and partitions by index rather than by hashing
+every read. A reference implementation of the old placement and the old
+partition is kept in the tests, and the new ones are held to it.
+
+Building a fresh evaluation's checks, measured between markers either
+side of `checks_and_exempt` in `blocked-edit` on WoofWare.Incremental
+(minimum over two runs of two rounds): **30.3 M on `main`, 5.7 M here**.
+
+**The guarantee.** Unchanged, and stated per check: a check holds in a
+generation only if its read's query gets the recorded answer as of that
+generation, whether the witness it holds was taken for it or for an equal
+read. Stage 3b's racy rule, Stage 6b's digest rule for racy stamps (the
+settled stamp a racy whole-file read confirms by is shared the same way),
+the immutable-install exemption and the directory-witness rules are
+untouched; only who holds a witness changed.
+
+Oracle:
+
+- `read_checks::tests::a_shared_witness_accepts_exactly_when_a_fresh_confirmation_would`:
+  over the model file system, generated changes (stealthy ones with their
+  hints, interleaved ones, clocks of every granularity) and records of the
+  read sets again (inside a generation or between, with the old checks held
+  or released first), by three holders, one confirmed through a second
+  checker: in every generation no change lands inside, each check accepts
+  exactly when the query, asked of the disk now, gets the answer recorded;
+  in one a change lands inside, only when the answer was right as it began
+  or is now. Every record asserts that the check it is handed is a check of
+  its own read. Its generator check asks for shared checks, listings and
+  canonicalisations confirmed by a shared witness in their first generation,
+  and witnesses that found the disk moved.
+- `workspace::tests::validation::a_project_evaluated_again_starts_with_the_dropped_ones_witnesses`
+  and `semantic::tests::an_env_resolved_again_starts_with_the_witnesses_it_shares`:
+  after an edit that moves nothing else (a comment, written in place), the
+  new evaluation's and the new resolution's first confirmations cost exactly
+  what a steady confirmation does. Both fail on Stage 9's head. Their
+  absence probes reach the temporary directory's ancestors, which
+  concurrent tests change, so each runs until a run sees nothing else move.
+- `a_version_is_found_as_the_reference_finds_it` and
+  `reads_are_partitioned_as_the_reference_partitions_them`: the placement
+  and the partition against their first versions, over `.` and `..`,
+  doubled and trailing separators, a root not spelt as its components,
+  aliases, failed and absent reads and uncommitted packages.
+
+Planted, each caught, then removed (each run against the `read_checks`,
+`workspace` and `semantic` unit tests):
+
+| plant | caught by |
+|---|---|
+| a check found by hashing the path alone and matching it, so a read is handed another read's check | the model property (its record's own-read assertion) and its generator check, both count tests, `outside_a_generation_every_ask_walks`, `the_generator_reaches_witnessed_and_moved_checks` |
+| a witness confirmed through a checker that did not take it (no checker guard) | the model property (holder 2) and its generator check |
+| the index sweeping entries still held | both count tests, the generator check |
+| a dropped evaluation's checks not held (no retirement) | the evaluation count test |
+| the held checks released before the new ones are made | the evaluation count test |
+| the env's checks made outside the checker's index | the env count test |
+| a root matched as a byte prefix without its separator | both reference properties, once their generators had near-miss spellings (`/dd`, `/nn`); before, only an unrelated test, by chance |
+| a `.` name taken as spelt as components | the placement reference property |
+| a package version trusted without its commit marker | `a_package_is_trusted_only_once_committed_before_the_evaluation` |
+| a version shown by a read that failed | `a_version_installed_after_the_evaluation_is_seen` |
+| a failed read inside a version exempt | `a_failed_read_inside_a_version_is_confirmed` |
+| an alias found by bytes under a root not spelt as its components (Codex) | both reference properties, once the references found their own aliases and a root could end in a separator |
+
+Codex found that an install root ending in a separator lost every alias of
+its versions (so their contents were confirmed in every generation rather
+than trusted): the alias search placed a canonicalisation by its bytes
+without asking whether the roots were spelt as their components. The
+reference properties had passed it because the placement reference took
+its aliases from the code under test, and no generated root of the alias
+was spelt otherwise; now the references find their own aliases, and the
+roots vary.
+
+The first version of the path-only plant changed only the match, inside
+buckets keyed by the whole read, and so changed nothing; it was replanted to
+hash the path alone, and then caught. Two plants pass every test, and are
+not defects: refreshing a shared witness's time to the generation that
+shares it, or its hint count to the checker's. Both stand on the record
+itself, which observed the same answer at that moment: a change after it
+either lands in a later tick than the witness's stamps (which the refreshed
+racy test then demands) or is hinted after the refreshed count. Neither is
+adopted, since neither is needed for the carry-over the issues ask for.
+
+**Measured** on the build box under `nix develop`, each row the minimum
+over the runs of each binary: `main` at e853ad8b (Stage 9 squash-merged)
+and this follow-up. The keystroke script ran 20 keystrokes per run, three
+runs; `own-comment` and `unrelated-save` five rounds per run, three runs
+(on a private copy of the project); `blocked-edit` five rounds per run,
+five runs, on both projects.
+
+`own-comment` on WoofWare.Incremental, per round:
+
+| message | instructions `main` | this | `stat`s `main` | this | what it does now |
+|---|---:|---:|---:|---:|---|
+| `didChangeWatchedFiles` | 336.3 M | **305.9 M** | 60 | 60 | evaluates the project and builds its checks |
+| `diagnostic E` | 52.7 M | **4.2 M** | 2,239 (32 listings, 31 canon.) | 197 (4 canon.) | the new evaluation's first confirmation |
+| `diagnostic L` | 3.0 M | 2.8 M | 135 | 135 | |
+| `semanticTokens E` | 53.3 M | **24.5 M** | 135 + 218 | 135 + 172 | resolves the env's references again and keeps it |
+| `semanticTokens L` | 58.1 M | **7.2 M** | 135 + 2,158 (33 listings, 28 canon.) | 135 + 24 (1 canon.) | the new resolution's first confirmation |
+| `hover L` | 6.9 M | 6.7 M | 135 + 10 | 135 + 10 | |
+| **round** | **516.4 M** | **351.5 M** | 2,839 + 2,386 | 797 + 206 | |
+
+(`stat`s are the evaluation's confirmation, then the env's.) What the
+first confirmations still ask is what the event made them ask: the watch
+event names the project file, which hints its directory, so every witness
+through it is asked again, as a hint requires.
+
+| per round of | instructions `main` | this | allocs `main` | this |
+|---|---:|---:|---:|---:|
+| a keystroke | 36.45 M | 35.69 M | 20,598 | 20,598 |
+| a save of an unrelated project's `.fsproj` | 47.89 M | 47.55 M | 7,296 | 7,282 |
+
+Every keystroke and save row's `stat`s are unchanged (136 per message that
+reads the evaluation, 10 for the env). The first `unrelated-save` runs of
+this follow-up were taken while another job's `nix develop` copied a dirty
+tree into the store: `/nix/store`'s stamp moved under every witness through
+it, and every message asked those reads again (682 M a round). The runs in
+the table were taken on a quiet box, interleaved with `main`'s.
+
+`blocked-edit` (Stage 9's gate):
+
+| project | window `main` | this | the edit waited `main` | **this** | `v.stat` in the window, `main` | this | budget |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| WoofWare.Incremental | 399.1 M | 329.0 M | 369.1 M | **285.7 M** | 2,397 | 293 | 50 M |
+| WoofWare.PawPrint.Domain | 403.3 M | 327.2 M | 366.3 M | **275.3 M** | 2,448 | 308 | 50 M |
+
+Of the window, about 305 M comes before the edit is sent (the
+re-evaluation), as before. What the edit meets after it is the rest of the
+evaluation's unit (the checks) and the first confirmation (now about
+3.5 M). The gate still fails: what is left is the re-evaluation
+itself, which the edit cannot have waited for and which the plan's window
+counts all the same.
+
+Some rounds still pay a full first confirmation (the maximum of the edit's
+wait stays near 380 M): `/nix/store` is one of the directories every
+witness of the SDK's reads names, and a witness whose stamp of it is
+within the racy window of the generation that took it, or that the store
+has moved since, asks again. On the box that happens whenever any job adds
+a store path. It is the directory-witness rule working as it must, and not
+something carrying a witness over can save.
+
+**Open gaps.**
+
+- An env built afresh (a moved DLL, a new key, references that resolve to
+  other inputs) starts with only the witnesses its reads share with checks
+  still held: the evaluation's, never the dropped env's.
+- A watch event naming the project file hints its directory, so the reads
+  through it are asked again in full however little moved.
+- On a Nix install, any store write moves `/nix/store`, under every
+  witness of a read through it.
+- Stage 9's gate fails, on the re-evaluation before the edit.
+
 ## Non-goals
 
 - **Semantic diagnostics.** The server publishes syntactic diagnostics only.

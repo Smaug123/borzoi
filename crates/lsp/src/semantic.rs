@@ -7381,6 +7381,74 @@ mod tests {
         assert_eq!(unrecorded, vec![UNRECORDED_RESTORE]);
     }
 
+    /// An env whose references are resolved again after an edit to its
+    /// project that moves nothing else it read (a comment), and kept, starts
+    /// with the witnesses of the resolution it replaces and of the project's
+    /// evaluation: the next confirmation of its resolution costs what
+    /// confirming an unchanged env does, and asks nothing again (#733). The
+    /// project file is rewritten in place, so no directory's stamp moves.
+    ///
+    /// The resolution's absence probes reach the temporary directory's
+    /// ancestors, where concurrent tests make and remove directories, and a
+    /// witness that sees one moved asks again, as it must; so the scenario
+    /// is run until a run sees nothing else move. Without the shared
+    /// witnesses no run can.
+    #[test]
+    fn an_env_resolved_again_starts_with_the_witnesses_it_shares() {
+        let attempt = || {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let project = root.join("App/App.fsproj");
+            write(&project, "<Project />");
+            write_app_assets(project.parent().unwrap(), false);
+            let dotnet = root.join("dotnet");
+            std::fs::create_dir_all(&dotnet).unwrap();
+            let mut ws = Workspace::with_env(crate::sdk_discovery::SdkDiscoveryEnv {
+                dotnet_root: Some(root.join("no-dotnet")),
+                ..crate::sdk_discovery::SdkDiscoveryEnv::default()
+            });
+            let mut sema = SemanticState::new();
+            let mut at = 0;
+            let mut generation = |ws: &mut Workspace, sema: &mut SemanticState| {
+                // Old enough that no stamp is racy, so witnesses are used.
+                ws.begin_generation(crate::vfs::Nanos(i128::MAX / 2 + at));
+                at += 1;
+                sema.begin_generation();
+                let env = sema.assembly_env_for_project(
+                    &project,
+                    Some(&dotnet),
+                    &ServedTfm::NoneDeclared,
+                    ws,
+                );
+                let counts = sema.end_generation();
+                (env, counts, ws.end_generation())
+            };
+            let (built, _, _) = generation(&mut ws, &mut sema);
+            // The first confirmation takes the witnesses; the second is what
+            // confirming an unchanged env costs.
+            generation(&mut ws, &mut sema);
+            let (_, _, steady) = generation(&mut ws, &mut sema);
+            assert!(steady.envs.stats > 0, "{steady:?}");
+
+            write(&project, "<Project><!-- c --></Project>");
+            let (kept, counts, _) = generation(&mut ws, &mut sema);
+            assert!(
+                Arc::ptr_eq(&built, &kept) && counts.envs_resolved_again == 1,
+                "precondition: the env was kept by resolving again: {counts:?}"
+            );
+            let (_, _, first) = generation(&mut ws, &mut sema);
+            (first.envs, steady.envs)
+        };
+        let mut runs = Vec::new();
+        while runs.len() < 5 && !runs.last().is_some_and(|(first, steady)| first == steady) {
+            runs.push(attempt());
+        }
+        assert!(
+            runs.iter().any(|(first, steady)| first == steady),
+            "the new resolution's first confirmation, against a steady one: {runs:?}"
+        );
+    }
+
     /// End-to-end: a sibling whose own `<ProjectReference>` list the evaluator
     /// cannot trust leaves the env's identity set **incomplete**, so the seal
     /// fires and no assembly reading commits.
