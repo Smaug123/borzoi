@@ -125,8 +125,14 @@ pub struct Workspace {
     /// the cache — see [`Self::projects_generation`].
     projects_generation: ProjectsGeneration,
     /// Confirms the evaluations' reads once per generation, by stamps, so
-    /// confirming an unchanged file or directory costs one `stat`.
+    /// confirming an unchanged file or directory costs one `stat`. The
+    /// assembly envs' reads are confirmed through it too
+    /// ([`Self::confirm_env`]), so a directory or file both read is `stat`ed
+    /// once per generation.
     checker: ReadChecks,
+    /// What confirming assembly envs has cost the open generation: the part
+    /// of `checker`'s counts that [`Self::confirm_env`] spent.
+    env_counts: Cell<ReadCounts>,
     /// MSBuild evaluations run in the open generation.
     evaluated: Cell<u64>,
     /// Each file's owner ([`Self::owning_project`]) as a walk inside a
@@ -238,6 +244,8 @@ pub struct WorkspaceCounts {
     pub evaluations: EvaluationCounts,
     /// Finding the projects that own files ([`Workspace::owning_project`]).
     pub ownership: ReadCounts,
+    /// Confirming cached assembly envs ([`Workspace::confirm_env`]).
+    pub envs: ReadCounts,
 }
 
 /// One cached project evaluation and what it depends on.
@@ -252,6 +260,10 @@ struct CachedEvaluation {
     /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
     /// less the immutable contents (`Evaluation::checks`).
     checks: Vec<Check>,
+    /// Where the immutable contents its reads may include live, which an env
+    /// built from this project's references exempts too
+    /// ([`Workspace::env_checks`]).
+    immutable: ImmutableRoots,
     /// The generation that last confirmed `checks` (or that evaluated it);
     /// `None` when it was evaluated outside a generation.
     validated_in: Option<u64>,
@@ -388,29 +400,51 @@ impl Evaluation {
     /// version is trusted only where `committed` says its extraction was
     /// complete before the evaluation began ([`nuget_committed_before`]).
     fn checks(&self, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
-        let reads = self.reads.reads();
-        let versions = self.immutable.versions(reads);
-        let is_package = |version: &Path| {
-            self.immutable
-                .nuget
-                .iter()
-                .any(|root| version.starts_with(root))
-        };
-        let shown: std::collections::BTreeSet<PathBuf> = reads
-            .iter()
-            .filter(|read| answered(&read.observation))
-            .filter_map(|read| versions.containing(&read.path))
-            .filter(|version| !is_package(version) || committed(version))
-            .collect();
-        // What a version holds is immutable; an I/O error reading it is
-        // not, so only an answer or an absence is trusted.
-        let trusted = |read: &&Read| {
-            a_fact(&read.observation)
-                && versions
-                    .containing(&read.path)
-                    .is_some_and(|version| shown.contains(&version))
-        };
-        reads
+        confirming_reads(self.reads.reads(), &self.immutable, committed)
+            .reads
+            .into_iter()
+            .map(Check::new)
+            .collect()
+    }
+}
+
+/// The reads a cached value computed from `reads` must confirm before it is
+/// served again, and the installed versions whose contents it trusts
+/// instead ([`Evaluation::checks`] states the rule).
+struct Confirming {
+    reads: Vec<Read>,
+    /// Each version directory whose contents were trusted, in every
+    /// spelling the reads reached it by.
+    trusted: Vec<PathBuf>,
+}
+
+/// [`Evaluation::checks`]' rule over any read set: every read, except those
+/// inside a version directory under `immutable` that some read showed to
+/// exist (and, for a package version, that `committed` says was extracted
+/// before the reads began); and for each such version, that it still does.
+fn confirming_reads(
+    reads: &[Read],
+    immutable: &ImmutableRoots,
+    committed: impl Fn(&Path) -> bool,
+) -> Confirming {
+    let versions = immutable.versions(reads);
+    let is_package = |version: &Path| immutable.nuget.iter().any(|root| version.starts_with(root));
+    let shown: std::collections::BTreeSet<PathBuf> = reads
+        .iter()
+        .filter(|read| answered(&read.observation))
+        .filter_map(|read| versions.containing(&read.path))
+        .filter(|version| !is_package(version) || committed(version))
+        .collect();
+    // What a version holds is immutable; an I/O error reading it is
+    // not, so only an answer or an absence is trusted.
+    let trusted = |read: &&Read| {
+        a_fact(&read.observation)
+            && versions
+                .containing(&read.path)
+                .is_some_and(|version| shown.contains(&version))
+    };
+    Confirming {
+        reads: reads
             .iter()
             .filter(|read| !trusted(read))
             .cloned()
@@ -419,9 +453,59 @@ impl Evaluation {
                 path: version.clone(),
                 observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
             }))
-            .map(Check::new)
-            .collect()
+            .collect(),
+        trusted: shown.into_iter().collect(),
     }
+}
+
+/// What a cached assembly env confirms before it is served again
+/// ([`Workspace::env_checks`], [`Workspace::confirm_env`]), and what a
+/// watch event must name to drop it ([`EnvChecks::named_by`]).
+#[derive(Debug)]
+pub struct EnvChecks {
+    /// The [`ReadChecks`] the checks' witnesses belong to.
+    checker: u64,
+    checks: Vec<Check>,
+    /// Every path the resolution read, as [`path_key`] spells it.
+    read: HashSet<String>,
+    /// Every directory the resolution listed, as [`path_key`] spells it.
+    listed: HashSet<String>,
+    /// The installed version directories whose contents the env trusts
+    /// rather than confirms, lexically normal, in every spelling the reads
+    /// reached them by: those whose contents its own reads exempt, and
+    /// those whose existence a confirmed evaluation it consulted checks.
+    trusted: Vec<PathBuf>,
+}
+
+impl EnvChecks {
+    /// The reads confirmed before the env is served again.
+    pub fn reads(&self) -> impl Iterator<Item = &Read> {
+        self.checks.iter().map(Check::read)
+    }
+
+    /// Whether a watch event naming `path` names something the env depends
+    /// on: a path it read, an entry of a directory it listed, or anything
+    /// strictly inside an installed version whose contents it trusts. A
+    /// watch event is what covers an in-place change to an installed version
+    /// (`docs/incremental-lsp-plan.md`, D3), and a file system whose stamps
+    /// do not move (D1's "not covered").
+    pub fn named_by(&self, path: &Path) -> bool {
+        let path = lexically_normalize(path);
+        self.read.contains(&path_key(&path))
+            || path
+                .parent()
+                .is_some_and(|dir| self.listed.contains(&path_key(dir)))
+            || self
+                .trusted
+                .iter()
+                .any(|version| path.starts_with(version) && path != *version)
+    }
+}
+
+/// `path` as [`EnvChecks`] compares paths: lexically normal, and folded
+/// where the platform folds case ([`crate::vfs`]'s buffer key).
+fn path_key(path: &Path) -> String {
+    crate::paths::path_dedup_key(&lexically_normalize(path))
 }
 
 /// Whether the package version at `version` under the NuGet folder was
@@ -434,6 +518,16 @@ fn nuget_committed_before(checker: &ReadChecks, version: &Path, started: Option<
             .stamp(&version.join(".nupkg.metadata"))
             .is_some_and(|stamp| !stamp.is_racy(started))
     })
+}
+
+/// `total` less `part`, field by field.
+fn minus(total: ReadCounts, part: ReadCounts) -> ReadCounts {
+    ReadCounts {
+        opens: total.opens - part.opens,
+        stats: total.stats - part.stats,
+        listings: total.listings - part.listings,
+        canonicalizations: total.canonicalizations - part.canonicalizations,
+    }
 }
 
 /// Whether a query got an answer, rather than failing.
@@ -451,7 +545,7 @@ fn answered(observation: &Observation) -> bool {
 /// (`docs/incremental-lsp-plan.md`, D3): every .NET install root the
 /// evaluation's SDK discovery consulted or its SDK resolved from, and the
 /// NuGet global packages folder it resolves SDK references from.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ImmutableRoots {
     dotnet: Vec<PathBuf>,
     nuget: Vec<PathBuf>,
@@ -650,6 +744,7 @@ impl Workspace {
             projects: HashMap::new(),
             projects_generation: ProjectsGeneration(0),
             checker: ReadChecks::default(),
+            env_counts: Cell::new(ReadCounts::default()),
             evaluated: Cell::new(0),
             owners: HashMap::new(),
             dir_listings: DirListings::default(),
@@ -733,18 +828,104 @@ impl Workspace {
         self.checker.begin_generation(now);
         self.dir_listings.checks.begin_generation(now);
         self.evaluated.set(0);
+        self.env_counts.set(ReadCounts::default());
     }
 
-    /// End the generation, returning what reading evaluations and finding
-    /// the projects that own files cost it.
+    /// End the generation, returning what reading evaluations, finding the
+    /// projects that own files and confirming assembly envs cost it.
     pub fn end_generation(&mut self) -> WorkspaceCounts {
+        let envs = self.env_counts.take();
         WorkspaceCounts {
             evaluations: EvaluationCounts {
                 evaluated: self.evaluated.get(),
-                validation: self.checker.end_generation(),
+                validation: minus(self.checker.end_generation(), envs),
             },
             ownership: self.dir_listings.checks.end_generation(),
+            envs,
         }
+    }
+
+    /// The open generation's number, or `None` between generations: a
+    /// value confirmed in it ([`Self::confirm_env`]) need not be confirmed
+    /// again until the next.
+    pub fn generation(&self) -> Option<u64> {
+        self.checker.generation()
+    }
+
+    /// The open generation's time, or `None` between generations. Read
+    /// before a computation whose reads [`Self::env_checks`] will turn into
+    /// checks: a package it read is trusted only if it was complete before
+    /// then.
+    pub fn generation_time(&self) -> Option<Nanos> {
+        self.checker.now()
+    }
+
+    /// What an assembly env resolved for `project` must confirm before it is
+    /// served again, given what resolving it read (`reads`) from the
+    /// generation time `started` ([`Self::generation_time`]): every read
+    /// except the contents of the installed versions it trusts, by the rule
+    /// a cached evaluation follows (`Evaluation::checks`). The installed
+    /// versions are those under the dotnet root the env was resolved
+    /// against, and under every root and the NuGet folder `project`'s cached
+    /// evaluation names, if there is one.
+    pub fn env_checks(
+        &self,
+        project: &ProjectId,
+        dotnet_root: Option<&Path>,
+        reads: &ReadSet,
+        started: Option<Nanos>,
+    ) -> EnvChecks {
+        let mut immutable = self
+            .projects
+            .get(project)
+            .map(|cached| cached.immutable.clone())
+            .unwrap_or_default();
+        immutable.dotnet.extend(dotnet_root.map(lexically_normalize));
+        let checker = &self.checker;
+        let reads = reads.reads();
+        let confirming = confirming_reads(reads, &immutable, |version| {
+            nuget_committed_before(checker, version, started)
+        });
+        // A confirmed evaluation the resolution consulted contributes the
+        // existence of each version it trusts, rather than its contents.
+        let consulted = reads.iter().filter_map(|read| {
+            let path = lexically_normalize(&read.path);
+            let (version, below) = immutable.version_of(&path)?;
+            (below == 0 && matches!(read.observation, Observation::Kind(Ok(_)))).then_some(version)
+        });
+        let mut trusted: Vec<PathBuf> = confirming.trusted.into_iter().chain(consulted).collect();
+        trusted.sort();
+        trusted.dedup();
+        EnvChecks {
+            checker: checker.id(),
+            checks: confirming.reads.into_iter().map(Check::new).collect(),
+            read: reads.iter().map(|read| path_key(&read.path)).collect(),
+            listed: reads
+                .iter()
+                .filter(|read| matches!(read.observation, Observation::Listing(_)))
+                .map(|read| path_key(&read.path))
+                .collect(),
+            trusted,
+        }
+    }
+
+    /// Whether every read `checks` names still gets its recorded answer, as
+    /// of the open generation: confirmed through the checker the
+    /// evaluations' reads are, so what both read is asked once. Outside a
+    /// generation nothing is confirmed, and an env is served as it is, as a
+    /// cached evaluation is. Checks this workspace did not make never hold.
+    pub fn confirm_env(&self, checks: &EnvChecks) -> bool {
+        if checks.checker != self.checker.id() {
+            return false;
+        }
+        if self.checker.generation().is_none() {
+            return true;
+        }
+        let before = self.checker.counts_so_far();
+        let holds = checks.checks.iter().all(|check| self.checker.holds(check));
+        let spent = minus(self.checker.counts_so_far(), before);
+        self.env_counts.set(self.env_counts.get() + spent);
+        holds
     }
 
     /// Confirm the cached evaluation of `project` for the open generation:
@@ -1394,6 +1575,7 @@ impl Workspace {
                     id,
                     checks: evaluation
                         .checks(|version| nuget_committed_before(checker, version, started)),
+                    immutable: evaluation.immutable,
                     evaluated: evaluation.evaluated,
                     // Read in this generation, so confirmed for it.
                     validated_in: generation,

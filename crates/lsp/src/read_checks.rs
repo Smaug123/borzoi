@@ -153,9 +153,16 @@ struct Dir {
     checked: u64,
 }
 
+/// The identity the next [`ReadChecks`] gets.
+static NEXT_READ_CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Confirms [`Check`]s for the open generation.
 #[derive(Debug)]
 pub struct ReadChecks<D: Probe = HostDisk> {
+    /// No two checkers share one: a [`Check`]'s witness names directories
+    /// by their index in the checker that took it, so a holder of checks
+    /// confirms them only through that checker ([`Self::id`]).
+    id: u64,
     /// Whole-file reads, confirmed by the file's stamp.
     files: DiskCache<D>,
     /// Every directory a witness has named, `stat`ed at most once per
@@ -177,6 +184,7 @@ impl<D: Probe + Default> Default for ReadChecks<D> {
 impl<D: Probe> ReadChecks<D> {
     pub fn with_disk(disk: D) -> Self {
         ReadChecks {
+            id: NEXT_READ_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             files: DiskCache::with_disk(disk),
             dirs: RefCell::new(Vec::new()),
             dir_ids: RefCell::new(HashMap::new()),
@@ -204,6 +212,24 @@ impl<D: Probe> ReadChecks<D> {
     /// The open generation's number, or `None` between generations.
     pub fn generation(&self) -> Option<u64> {
         self.files.generation()
+    }
+
+    /// Which checker this is: the witnesses of the checks it confirms name
+    /// its directories, and only its.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// What confirming reads has cost the open generation so far, as
+    /// [`Self::end_generation`] will report it.
+    pub fn counts_so_far(&self) -> ReadCounts {
+        let files = self.files.generation_counts();
+        let counts = self.counts.get();
+        ReadCounts {
+            opens: files.opens,
+            stats: files.stats + counts.stats,
+            ..counts
+        }
     }
 
     /// The open generation's time, or `None` between generations.

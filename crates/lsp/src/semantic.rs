@@ -42,7 +42,7 @@ use crate::project_graph::{NodeTfm, ProjectGraph, ProjectKind};
 use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::sidecar_manager::SidecarManager;
-use crate::workspace::{ProjectsGeneration, ServedTfm, Workspace};
+use crate::workspace::{EnvChecks, ProjectsGeneration, ServedTfm, Workspace};
 use crate::xml_doc::inherit::{Expansion, expand};
 use crate::xml_doc::key::DocTarget;
 use crate::xml_doc::lookup::{DocLookup, DocSources};
@@ -338,19 +338,29 @@ pub struct SemanticState {
     /// that stale empty env to every later lookup with the real root —
     /// silently disabling assembly resolution for the rest of the run.
     ///
-    /// **Never invalidated by text-sync**: the env reads only disk state (the
-    /// `.fsproj` closure's `<ProjectReference>` edges, `project.assets.json`,
-    /// package/framework DLLs, and — since 3.3b — the sidecar's C#-metadata
-    /// DLLs) that editor edits can't change. Disk-side
-    /// changes arrive via `workspace/didChangeWatchedFiles` instead: a
-    /// structural change (`.fsproj` / assets / `global.json`) clears it through
-    /// [`Self::invalidate_all`], and a referenced-assembly input change (a
-    /// `.dll` rewritten by a sibling rebuild or restore, a `.cs`/`.csproj`
-    /// edit feeding the sidecar) through [`Self::invalidate_assembly_state`]
-    /// (the sidecar cache is content-addressed, so the rebuild after
-    /// invalidation is cheap). The one exception is a *transient* sidecar
-    /// transport failure, which [`Self::assembly_env_for_project`]
-    /// deliberately does not cache so the next request retries.
+    /// **Validated, not invalidated** (`docs/incremental-lsp-plan.md`, Stage
+    /// 6b): each entry carries the read set of the resolution that built it,
+    /// less the contents of the installed versions it trusts
+    /// ([`EnvEntry::checks`]), and the first lookup of it in a generation
+    /// confirms every one of those reads ([`Workspace::confirm_env`]). An
+    /// entry any of whose answers moved is dropped, with every fold against
+    /// its env, and built afresh. Editor edits never reach it: the env reads
+    /// only disk state. A watch event drops exactly the entries whose reads
+    /// it names ([`Self::hint_assembly_paths`]), which covers an in-place
+    /// rewrite inside an installed version and a file system whose stamps do
+    /// not move.
+    ///
+    /// An entry whose resolution consulted a reader that records nothing (an
+    /// on-demand restore, the C# sidecar: [`EnvReads::unrecorded`]) is never
+    /// trusted on its recorded reads alone. It is confirmed as any other is,
+    /// and dropped besides by everything that dropped every env before reads
+    /// were recorded: a structural watch event or a dropped evaluation
+    /// ([`Self::invalidate_all`]), and a referenced-assembly watch event (a
+    /// `.dll`, `.cs` or `.csproj`: [`Self::invalidate_assembly_state`]). The
+    /// sidecar's cache is content-addressed, so that rebuild is cheap. The
+    /// one exception is a *transient* sidecar transport failure, which
+    /// [`Self::assembly_env_for_project`] deliberately does not cache so the
+    /// next request retries.
     ///
     /// Keyed by `(project, dotnet_root, served-TFM verdict)`. The verdict
     /// selects which assets target the env was built from (fsproj 3.3c plan
@@ -360,7 +370,7 @@ pub struct SemanticState {
     /// (first-declared — [`Workspace::served_tfm_for_project`]), so the
     /// extra key component is structural preparation for a TFM-override
     /// policy and makes "different TFM ⇒ different env" machine-checkable.
-    assembly_envs: HashMap<(ProjectId, Option<PathBuf>, ServedTfm), CachedAssemblyEnv>,
+    assembly_envs: HashMap<(ProjectId, Option<PathBuf>, ServedTfm), EnvEntry>,
     /// Per-project resolved sema output: the Compile-order fold of
     /// [`borzoi_sema::resolve_project`] over the project's [`ProjectParses`] against its
     /// [`AssemblyEnv`]. Wrapped in [`Arc`] so handlers can return it without
@@ -443,17 +453,20 @@ pub struct SemanticState {
     evaluations_seen: Option<ProjectsGeneration>,
     /// The portable-PDB *metadata image* (embedded, or a validated sidecar) for
     /// each referenced DLL go-to-definition has navigated into, keyed by DLL
-    /// path. `None` caches the negative result (a DLL with no usable PDB) so a
-    /// repeat lookup doesn't re-read it. Wrapped in [`Arc`] so a cache hit is a
-    /// refcount bump, not a copy of the (multi-hundred-KB) image.
+    /// path, beside the DLL's stamp when the image was read. `None` caches the
+    /// negative result (a DLL with no usable PDB) so a repeat lookup doesn't
+    /// re-read it. Wrapped in [`Arc`] so a cache hit is a refcount bump, not a
+    /// copy of the (multi-hundred-KB) image.
     ///
     /// Without this, every go-to-definition into a referenced member re-reads
     /// the whole owning DLL (FSharp.Core is ~2.4 MB) and re-extracts its PDB.
-    /// Like `assembly_envs`, the image is a function of on-disk artifacts the
-    /// editor can't change, so it is never invalidated by text-sync — only by
-    /// [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`] on a
-    /// watched structural or referenced-assembly change.
-    pdb_images: HashMap<PathBuf, Option<Arc<[u8]>>>,
+    /// An entry answers only while the DLL's stamp is the one recorded, and
+    /// one recorded within the racy window of the DLL's last change is never
+    /// served ([`Self::pdb_image`]); a sidecar `.pdb` is used only when it
+    /// matches the DLL's debug directory, so it moves with the DLL. So no
+    /// invalidation is needed for correctness, and [`Self::invalidate_all`]
+    /// clears the map only to bound memory.
+    pdb_images: HashMap<PathBuf, (msbuild_observed::FileStamp, Option<Arc<[u8]>>)>,
     /// What XML-documentation lookup caches: the parsed sidecar `.xml` files
     /// hover has read, each validated against the file's `(size, mtime)` on
     /// every use (see [`DocFileCache`](crate::xml_doc::lookup::DocFileCache)),
@@ -505,6 +518,8 @@ pub struct SemanticState {
     /// How many entries an env's name table may hold before the env is
     /// dropped ([`Self::drop_env_past_name_cap`]).
     name_table_cap: NameTableCap,
+    /// Envs built in the open generation ([`Self::end_generation`]).
+    envs_built: u64,
 }
 
 /// The most entries, names, paths and types together, an env's tables hold
@@ -573,8 +588,30 @@ impl SemanticState {
     /// `enableOnDemandRestore` initialization option). Off by [`Self::new`], so
     /// tests, library embeddings, and un-opted hosts never execute a project's
     /// restore targets; the assets-absent path then degrades to an empty env.
+    ///
+    /// The assembly envs are not keyed on this flag, so changing it drops
+    /// them, as [`Self::set_csharp_project_references_enabled`] does.
     pub fn set_on_demand_restore_enabled(&mut self, enabled: bool) {
-        self.on_demand_restore_enabled = enabled;
+        if self.on_demand_restore_enabled != enabled {
+            self.on_demand_restore_enabled = enabled;
+            self.drop_every_env();
+        }
+    }
+
+    /// Start a dispatch-loop generation: the parse memo's counts, and the
+    /// envs built, start again from zero.
+    pub fn begin_generation(&mut self) {
+        self.parses.begin_generation();
+        self.envs_built = 0;
+    }
+
+    /// End the generation, returning what the parse memo did and how many
+    /// envs were built in it.
+    pub fn end_generation(&mut self) -> (crate::parses::ParseCounts, u64) {
+        (
+            self.parses.end_generation(),
+            std::mem::take(&mut self.envs_built),
+        )
     }
 
     /// Opt into reading C# `<ProjectReference>`s through the C# sidecar (the
@@ -591,7 +628,7 @@ impl SemanticState {
     pub fn set_csharp_project_references_enabled(&mut self, enabled: bool) {
         if self.csharp_project_references_enabled != enabled {
             self.csharp_project_references_enabled = enabled;
-            self.invalidate_assembly_state();
+            self.drop_every_env();
         }
     }
 
@@ -622,12 +659,16 @@ impl SemanticState {
         &mut self.parses
     }
 
-    /// Drop **all** semantic caches — parses, resolved projects, *and* assembly
-    /// envs. Used by `workspace/didChangeWatchedFiles` when a project-structure
-    /// file changes on disk. Unlike [`Self::invalidate_project`] /
-    /// [`Self::invalidate_file`] this also clears `assembly_envs`: a `.fsproj`
-    /// or `project.assets.json` edit can change the referenced-assembly set,
-    /// which editor text-sync never can.
+    /// Drop **all** semantic caches derived from project evaluations —
+    /// parses, resolved projects — and every assembly env that records less
+    /// than it read. Used by `workspace/didChangeWatchedFiles` when a
+    /// project-structure file changes on disk, and when the workspace drops
+    /// an evaluation ([`Self::sync_with_evaluations`]). An env whose reads are
+    /// all recorded is kept: it is confirmed against the disk before it is
+    /// served again, and a `.fsproj` or `project.assets.json` it depends on
+    /// is among its reads. One with an unrecorded reader
+    /// ([`EnvReads::unrecorded`]) is dropped, which is all that covers what
+    /// that reader read.
     pub fn invalidate_all(&mut self) {
         self.project_parses.clear();
         self.observed_fold_refusals.clear();
@@ -636,7 +677,8 @@ impl SemanticState {
         self.resolved_projects.clear();
         self.inferred_projects.clear();
         self.prev_resolved.clear();
-        self.assembly_envs.clear();
+        self.assembly_envs
+            .retain(|_, entry| entry.cached.reads.unrecorded.is_empty());
         self.pdb_images.clear();
         self.xml_doc.clear();
         // A structural change can stale open buffers' tokens; owe a workspace
@@ -644,46 +686,110 @@ impl SemanticState {
         self.wants_refresh = true;
     }
 
-    /// Drop every cache derived from **referenced-assembly bytes** — the
-    /// assembly envs, the resolved projects folded against them, and the
-    /// portable-PDB images — while keeping `project_parses` (defines and
-    /// Compile order are functions of project evaluation, not of binaries).
-    /// `workspace/didChangeWatchedFiles` calls this for the referenced-assembly
-    /// input class: a `.dll` rewritten by a sibling rebuild or a restore, or a
-    /// `.cs`/`.csproj` edit that changes what the C# sidecar would emit. The
-    /// next request re-resolves against the new binaries instead of serving
-    /// the stale env for the rest of the server's life. Broad, not targeted
-    /// (file-watch plan W2: broad-but-correct; everything rebuilds lazily).
-    /// The on-disk [`AssemblyCache`] needs no invalidation — its entries are
-    /// `(size, mtime)`-validated per DLL.
+    /// Drop every assembly env whose resolution consulted a reader that
+    /// records nothing ([`EnvReads::unrecorded`]: an on-demand restore, the
+    /// C# sidecar), with every fold against it, while keeping
+    /// `project_parses` (defines and Compile order are functions of project
+    /// evaluation, not of binaries). `workspace/didChangeWatchedFiles` calls
+    /// this for the referenced-assembly input class: a `.dll` rewritten by a
+    /// sibling rebuild or a restore, or a `.cs`/`.csproj` edit that changes
+    /// what the C# sidecar would emit. Nothing records what those readers
+    /// read, so the event is what covers it. An env whose reads are all
+    /// recorded is not touched: what it read is confirmed before it is served
+    /// again, and an event naming one of its reads drops it already
+    /// ([`Self::hint_assembly_paths`]). The on-disk [`AssemblyCache`] needs no
+    /// invalidation — its entries are `(size, mtime)`-validated per DLL.
     pub fn invalidate_assembly_state(&mut self) {
+        let unrecorded: Vec<Arc<AssemblyEnv>> = self
+            .assembly_envs
+            .values()
+            .filter(|entry| !entry.cached.reads.unrecorded.is_empty())
+            .map(|entry| Arc::clone(&entry.cached.env))
+            .collect();
+        for env in &unrecorded {
+            self.drop_env(env);
+        }
+    }
+
+    /// Watch events named `paths`: drop every assembly env that depends on
+    /// one of them ([`EnvChecks::named_by`]: a path its resolution read, an
+    /// entry of a directory it listed, or a file inside an installed version
+    /// whose contents it trusts), with every fold against it. Every other
+    /// env stands: a change it does not depend on cannot move it, and one it
+    /// does is confirmed against the disk anyway in the next generation that
+    /// reads it.
+    pub fn hint_assembly_paths(&mut self, paths: &[PathBuf]) {
+        let named: Vec<Arc<AssemblyEnv>> = self
+            .assembly_envs
+            .values()
+            .filter(|entry| paths.iter().any(|path| entry.checks.named_by(path)))
+            .map(|entry| Arc::clone(&entry.cached.env))
+            .collect();
+        for env in &named {
+            tracing::info!("a watch event named an input of a cached assembly env; dropping it");
+            self.drop_env(env);
+        }
+    }
+
+    /// Drop the cached env `env`, and every fold against it. The folds hold
+    /// handles into the env, and `resolved_projects` is served without
+    /// asking for the env again, so a fold must not outlive its env's entry.
+    /// A dropped env may have answered what an open buffer's tokens show, so
+    /// a workspace refresh is owed.
+    fn drop_env(&mut self, env: &Arc<AssemblyEnv>) {
+        self.assembly_envs
+            .retain(|_, entry| !Arc::ptr_eq(&entry.cached.env, env));
+        self.resolved_projects
+            .retain(|_, (_, folded)| !Arc::ptr_eq(folded, env));
+        self.inferred_projects
+            .retain(|_, cached| !Arc::ptr_eq(&cached.env, env));
+        self.prev_resolved
+            .retain(|_, prev| !Arc::ptr_eq(&prev.env, env));
+        self.wants_refresh = true;
+    }
+
+    /// Drop every assembly env and every fold against one: for a change of
+    /// a setting the envs are not keyed on.
+    fn drop_every_env(&mut self) {
         self.resolved_projects.clear();
         self.inferred_projects.clear();
         self.prev_resolved.clear();
         self.assembly_envs.clear();
-        self.pdb_images.clear();
-        self.xml_doc.clear();
-        // A referenced-assembly change can stale open buffers' cross-assembly
-        // tokens; owe a workspace refresh (sent on the next drain).
         self.wants_refresh = true;
     }
 
     /// The portable-PDB image for the referenced DLL at `dll`, cached for the
-    /// server lifetime (the `pdb_images` map). On a miss it runs `compute`
-    /// (the IO + embedded-or-sidecar selection the handler owns) and caches the
-    /// result — including a `None`, so a DLL with no usable PDB isn't re-read on
-    /// every go-to-definition. `compute` is injected so this cache stays unaware
-    /// of the PDB-sourcing logic (which lives in the definition handler).
+    /// server lifetime (the `pdb_images` map) under the DLL's stamp. On a miss
+    /// (no entry, or the DLL's stamp moved) it runs `compute` (the IO +
+    /// embedded-or-sidecar selection the handler owns) and caches the result —
+    /// including a `None`, so a DLL with no usable PDB isn't re-read on every
+    /// go-to-definition. A stamp taken within the racy window of the DLL's
+    /// last change is not cached under: a same-size rewrite in that window
+    /// would leave it unchanged. `compute` is injected so this cache stays
+    /// unaware of the PDB-sourcing logic (which lives in the definition
+    /// handler).
     pub fn pdb_image(
         &mut self,
         dll: &Path,
         compute: impl FnOnce() -> Option<Arc<[u8]>>,
     ) -> Option<Arc<[u8]>> {
-        if let Some(cached) = self.pdb_images.get(dll) {
-            return cached.clone();
+        let stamp = msbuild_observed::stamp(&Unobserved::GoToDefinition.msbuild_observer(), dll);
+        if let Ok(stamp) = &stamp
+            && let Some((cached, image)) = self.pdb_images.get(dll)
+            && cached == stamp
+        {
+            return image.clone();
         }
         let image = compute();
-        self.pdb_images.insert(dll.to_path_buf(), image.clone());
+        match stamp {
+            Ok(stamp) if !stamp.racy => {
+                self.pdb_images
+                    .insert(dll.to_path_buf(), (stamp, image.clone()));
+            }
+            _ => {
+                self.pdb_images.remove(dll);
+            }
+        }
         image
     }
 
@@ -990,6 +1096,32 @@ impl SemanticState {
         (cached.reads, retryable)
     }
 
+    /// What the env this state serves for `project` confirms before it is
+    /// served again (its resolution's reads, less the contents of the
+    /// installed versions it trusts: `Workspace::env_checks`), or `None`
+    /// when it is not cached (a transient C# sidecar failure). The read-set
+    /// soundness tests hold it to the file system.
+    pub fn env_confirmed_reads_for_project(
+        &mut self,
+        project: &Path,
+        dotnet_root: Option<&Path>,
+        target_framework: &ServedTfm,
+        workspace: &Workspace,
+    ) -> Option<Vec<msbuild_observed::Read>> {
+        let restore_env = self.restore_env(workspace);
+        let (cached, _) = self.cached_assembly_env(
+            project,
+            dotnet_root,
+            target_framework,
+            workspace,
+            restore_env,
+        );
+        self.assembly_envs
+            .values()
+            .find(|entry| Arc::ptr_eq(&entry.cached.env, &cached.env))
+            .map(|entry| entry.checks.reads().cloned().collect())
+    }
+
     /// The cache entry for `project`'s env: the env and the reference-DLL list
     /// it was built from, which are one resolution's two outputs and are cached
     /// as one value so they cannot drift apart.
@@ -1032,8 +1164,8 @@ impl SemanticState {
             }),
             target_framework.clone(),
         );
-        if let Some(cached) = self.assembly_envs.get(&key) {
-            return (cached.clone(), false);
+        if let Some(cached) = self.confirmed_env(&key, workspace) {
+            return (cached, false);
         }
         // The reference EDGES come from the parsed `<ProjectReference>` graph
         // (plan E1), evaluated fresh off-cache so they reflect current disk —
@@ -1046,7 +1178,9 @@ impl SemanticState {
         // a miss: both re-read the closure from disk, which would be wasteful
         // per lookup.
         // Every query the resolution makes is recorded here, and the env
-        // carries the read set ([`EnvReads`]).
+        // carries the read set ([`EnvReads`]). A package it reads is trusted
+        // as installed only if it was complete before the resolution began.
+        let started = workspace.generation_time();
         let observer = Observer::new();
         let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), &observer);
         let graph =
@@ -1067,8 +1201,10 @@ impl SemanticState {
             &observer,
         );
         let (reads, counts) = observer.finish();
+        let checks = workspace.env_checks(&id, dotnet_root, &reads, started);
         let reads = EnvReads { reads, unrecorded };
         crate::observed::report_env_resolution(counts, &reads);
+        self.envs_built += 1;
         let cached = CachedAssemblyEnv {
             env: Arc::new(env),
             dlls: dlls.into(),
@@ -1081,18 +1217,69 @@ impl SemanticState {
         // successful on-demand restore, or a stable degradation (no restore
         // environment, a cold-cache restore decline, a genuine build error) —
         // caches, so we don't rebuild (or re-restore) on every call. A later
-        // manual `dotnet restore` reaches this cache through
-        // [`Self::invalidate_assembly_state`] when its `project.assets.json`
-        // change is observed.
+        // manual `dotnet restore` reaches this cache through its read set,
+        // which records `project.assets.json` (as absent, before it).
         if retryable {
             tracing::info!(
                 project = %project.display(),
                 "not caching assembly env after a transient C# sidecar failure; will retry on next request"
             );
         } else {
-            self.assembly_envs.insert(key, cached.clone());
+            self.assembly_envs.insert(
+                key,
+                EnvEntry {
+                    cached: cached.clone(),
+                    checks,
+                    // Read in this generation, so confirmed for it.
+                    confirmed_in: workspace.generation(),
+                },
+            );
         }
         (cached, retryable)
+    }
+
+    /// The cached env under `key`, once confirmed for the open generation
+    /// ([`Workspace::confirm_env`]): an entry confirmed earlier in the
+    /// generation is served, and one not yet confirmed is confirmed now. An
+    /// entry whose reads no longer hold is dropped, with every fold against
+    /// its env, and `None` returned, so the caller builds it afresh.
+    fn confirmed_env(
+        &mut self,
+        key: &(ProjectId, Option<PathBuf>, ServedTfm),
+        workspace: &Workspace,
+    ) -> Option<CachedAssemblyEnv> {
+        let generation = workspace.generation();
+        let entry = self.assembly_envs.get_mut(key)?;
+        if generation.is_none() || entry.confirmed_in != generation {
+            if !workspace.confirm_env(&entry.checks) {
+                let env = Arc::clone(&entry.cached.env);
+                tracing::info!(
+                    project = %key.0.as_path().display(),
+                    "an assembly env's inputs moved; resolving it again"
+                );
+                self.drop_env(&env);
+                return None;
+            }
+            entry.confirmed_in = generation;
+        }
+        Some(entry.cached.clone())
+    }
+
+    /// Whether `env`, which a cached fold was folded against, is still the
+    /// env its entry serves, once confirmed for the open generation
+    /// ([`Self::confirmed_env`]). An env with no entry (dropped, or never
+    /// cached) is not: the fold is dropped with it.
+    fn env_still_served(&mut self, env: &Arc<AssemblyEnv>, workspace: &Workspace) -> bool {
+        let key = self
+            .assembly_envs
+            .iter()
+            .find(|(_, entry)| Arc::ptr_eq(&entry.cached.env, env))
+            .map(|(key, _)| key.clone());
+        let served = key.is_some_and(|key| self.confirmed_env(&key, workspace).is_some());
+        if !served {
+            self.drop_env(env);
+        }
+        served
     }
 
     /// The [`ResolvedProject`] for `project` **paired with the exact
@@ -1179,18 +1366,23 @@ impl SemanticState {
         // discovery against the filesystem, so a repeat request that already has
         // its answer must not pay that. Size the request against the
         // *already-cached* parses and return a cached prefix that covers it — both
-        // are plain map lookups. It was folded against the current env (a rebuilt
-        // env drops the entry via `invalidate_assembly_state`), so no env re-check
-        // is needed. If the parses aren't cached, neither is the fold (they are
-        // built and dropped together), so this correctly falls through.
+        // are plain map lookups. The env it was folded against is confirmed for
+        // the generation by its entry, found by identity, not by key: an env
+        // whose inputs moved drops its entry and every fold against it
+        // (`Self::drop_env`), and the request falls through to rebuild both.
+        // If the parses aren't cached, neither is the fold (they are built and
+        // dropped together), so this correctly falls through.
         if let Some(cached) = self.project_parses.get(&key) {
             let want_len = up_to_index.saturating_add(1).min(cached.parses.files.len());
             lookup_span.record("requested_files", want_len as i64);
             if let Some((resolved, env)) = self.resolved_projects.get(&key)
                 && resolved.len() >= want_len
             {
-                lookup_span.record("cache_hit", true);
-                return Some((Arc::clone(resolved), Arc::clone(env)));
+                let (resolved, env) = (Arc::clone(resolved), Arc::clone(env));
+                if self.env_still_served(&env, workspace) {
+                    lookup_span.record("cache_hit", true);
+                    return Some((resolved, env));
+                }
             }
         }
         lookup_span.record("cache_hit", false);
@@ -1391,7 +1583,7 @@ impl SemanticState {
             "dropping an assembly env whose tables are past their cap"
         );
         self.assembly_envs
-            .retain(|_, cached| !Arc::ptr_eq(&cached.env, env));
+            .retain(|_, entry| !Arc::ptr_eq(&entry.cached.env, env));
         self.resolved_projects.remove(key);
         self.inferred_projects.remove(key);
         self.prev_resolved.remove(key);
@@ -1973,6 +2165,19 @@ struct CachedAssemblyEnv {
     dlls: Arc<[PathBuf]>,
     /// What the resolution that built `env` read.
     reads: Arc<EnvReads>,
+}
+
+/// One cached env and what it depends on
+/// ([`SemanticState::assembly_envs`]).
+#[derive(Debug)]
+struct EnvEntry {
+    cached: CachedAssemblyEnv,
+    /// What to confirm before serving `cached` again: its resolution's
+    /// reads, less the contents of the installed versions it trusts.
+    checks: EnvChecks,
+    /// The generation that last confirmed `checks` (or that built the env);
+    /// `None` when it was built outside a generation.
+    confirmed_in: Option<u64>,
 }
 
 /// What one resolution of an assembly env read

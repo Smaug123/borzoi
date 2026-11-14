@@ -16,6 +16,12 @@
 //!
 //! The env itself carries the read set, each DLL's stamp included, whether
 //! the DLL's projection came from reading it or from the assembly cache.
+//!
+//! What a cached env confirms before it is served again (Stage 6b) is that
+//! read set less the contents of the installed versions it trusts: the
+//! framework pack's, and each committed package's in the NuGet folder. The
+//! same sweep holds that to soundness over the project tree, where the
+//! installed-version axiom says nothing.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -23,8 +29,9 @@ use std::path::{Path, PathBuf};
 use borzoi::assembly_cache::AssemblyCache;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::SemanticState;
+use borzoi::vfs::Nanos;
 use borzoi::workspace::Workspace;
-use borzoi_msbuild::observed::Observation;
+use borzoi_msbuild::observed::{Observation, ReadSet};
 use borzoi_msbuild::observed::soundness::{Edit, Perturbation, Tally, Why, sweep_with};
 use proptest::prelude::*;
 use tempfile::TempDir;
@@ -357,6 +364,78 @@ fn check(world: &World, reached: &mut Reached) {
     reached.tally.absorb(&tally);
 }
 
+/// What [`check_confirmed`] saw, summed over cases.
+#[derive(Debug, Default)]
+struct Confirmed {
+    /// Reads the env trusts as installed contents rather than confirms.
+    exempt: u64,
+    /// Of those, reads inside a package version.
+    exempt_packages: u64,
+    tally: Tally,
+}
+
+/// Lay `world` down, with every package in the NuGet folder committed (its
+/// `.nupkg.metadata` written), and sweep the project tree (`ws/`) holding
+/// the reads a cached env confirms, inside a generation whose time is far
+/// past every file's, to soundness. A DLL's stamp is left out of the
+/// compared set: it is racy for as long as the fixture is fresh, and the
+/// stamp test below holds it.
+fn check_confirmed(world: &World, confirmed: &mut Confirmed) {
+    let tmp = TempDir::new().unwrap();
+    let root = host_fs::canonicalize(tmp.path()).unwrap();
+    let entry = lay_down(&root, world);
+    let nuget = root.join("nuget");
+    for (i, folder) in world.packages.iter().enumerate() {
+        if *folder == Folder::Primary {
+            write(&nuget.join(format!("pkg{i}/1.0.0/.nupkg.metadata")), "{}");
+        }
+    }
+    let dotnet = root.join("dotnet");
+    let resolve = || {
+        let mut ws = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(root.join("no-dotnet")),
+            nuget_packages_dir: Some(nuget.clone()),
+            ..SdkDiscoveryEnv::default()
+        });
+        ws.begin_generation(Nanos(i128::MAX / 2));
+        let tfm = ws.served_tfm_for_project(&entry);
+        let mut semantic = SemanticState::new();
+        let (dlls, _) = semantic.env_reference_dlls_for_project(&entry, Some(&dotnet), &tfm, &ws);
+        let (reads, _) = semantic.env_reads_for_project(&entry, Some(&dotnet), &tfm, &ws);
+        let checks = semantic
+            .env_confirmed_reads_for_project(&entry, Some(&dotnet), &tfm, &ws)
+            .expect("an F#-only env is cached");
+        ws.end_generation();
+        (dlls, reads.reads, checks)
+    };
+    let (_, reads, checks) = resolve();
+    for read in reads.reads() {
+        if checks.contains(read) {
+            continue;
+        }
+        confirmed.exempt += 1;
+        let inside = |dir: &std::path::Path| read.path.starts_with(dir) && read.path != dir;
+        assert!(
+            inside(&dotnet.join("packs/Microsoft.NETCore.App.Ref")) || inside(&nuget),
+            "a read outside the installs is not confirmed: {read:?}"
+        );
+        if inside(&nuget) {
+            confirmed.exempt_packages += 1;
+        }
+    }
+    let compute = || {
+        let (dlls, _, checks) = resolve();
+        let checks: ReadSet = checks
+            .into_iter()
+            .filter(|read| !matches!(read.observation, Observation::Stamp(_)))
+            .collect();
+        (dlls, checks)
+    };
+    confirmed
+        .tally
+        .absorb(&sweep_with(&root.join("ws"), &compute, &[]));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 8, ..ProptestConfig::default() })]
 
@@ -364,6 +443,42 @@ proptest! {
     fn the_env_resolution_read_set_is_sound(world in world()) {
         check(&world, &mut Reached::default());
     }
+
+    #[test]
+    fn what_an_env_confirms_is_sound_outside_the_installs(world in world()) {
+        check_confirmed(&world, &mut Confirmed::default());
+    }
+}
+
+/// Over a fixed seed's worth of worlds, a cached env trusts reads inside the
+/// framework pack and inside committed packages rather than confirming
+/// them, and the sweep of the project tree moves the resolution.
+#[test]
+fn an_env_trusts_installed_contents_and_confirms_the_rest() {
+    use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 8,
+            failure_persistence: None,
+            ..Config::default()
+        },
+        TestRng::from_seed(RngAlgorithm::ChaCha, &[5; 32]),
+    );
+    let confirmed = RefCell::new(Confirmed::default());
+    runner
+        .run(&world(), |world| {
+            check_confirmed(&world, &mut confirmed.borrow_mut());
+            Ok(())
+        })
+        .unwrap();
+    let c = confirmed.into_inner();
+    eprintln!("{c:?}");
+    assert!(
+        c.exempt > c.exempt_packages
+            && c.exempt_packages > 0
+            && c.tally.moved(Why::Delete) > 0,
+        "{c:?}"
+    );
 }
 
 /// Over a fixed seed's worth of worlds, the resolution finds package,

@@ -40,8 +40,10 @@ use crate::vfs::{Disk, Nanos, Stamp};
 /// fields are the generation's number (`generation`), its source reads'
 /// [`ReadCounts`] (`opens`, `stats`), its [`EvaluationCounts`]
 /// (`evaluated`, and the validation's `v_opens`, `v_stats`, `v_listings` and
-/// `v_canonicalizations`), and its [`Generation::ownership`] (`o_listings`,
-/// `o_stats`).
+/// `v_canonicalizations`), its [`Generation::ownership`] (`o_listings`,
+/// `o_stats`), its parses (`parsed`, `parses_reused`), and its
+/// [`EnvCounts`] (`envs_built`, and the validation's `av_opens`,
+/// `av_stats`, `av_listings` and `av_canonicalizations`).
 ///
 /// A test reads [`crate::vfs::Vfs::log_generations`] instead. `tracing`
 /// caches each callsite's interest for the whole process, and while one
@@ -138,6 +140,23 @@ pub struct Generation {
     /// The sources parsed, and the parses handed back again
     /// ([`crate::parses::ParseMemo`]).
     pub parses: crate::parses::ParseCounts,
+    /// The assembly envs built, and what confirming the cached ones cost.
+    pub envs: EnvCounts,
+}
+
+/// What reading assembly envs cost one generation: the envs it built, and
+/// the queries it asked to confirm the cached envs it served
+/// (`crate::semantic::SemanticState` confirms each one's read set once per
+/// generation that reads it, through [`crate::workspace::Workspace::confirm_env`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EnvCounts {
+    /// Envs built: each a resolution of a project's references and a
+    /// projection of every DLL they name ([`ENV_RESOLUTION_EVENT`] reports
+    /// each one's reads).
+    pub built: u64,
+    /// The queries asked to confirm cached envs: files opened, paths
+    /// `stat`ed, directories listed and paths canonicalised.
+    pub validation: borzoi_msbuild::observed::ReadCounts,
 }
 
 /// The host's file system, as the [`crate::vfs::Vfs`] reads it.

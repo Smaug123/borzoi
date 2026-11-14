@@ -259,16 +259,24 @@ impl State {
         let now = self.clock.now();
         self.docs.begin_generation(now);
         self.workspace.begin_generation(now);
-        self.semantic.parses_mut().begin_generation();
+        self.semantic.begin_generation();
     }
 
     /// End the generation, logging what its source reads, its project
-    /// evaluations, its ownership walks and its parses cost.
+    /// evaluations, its ownership walks, its parses and its assembly envs
+    /// cost.
     pub fn end_generation(&mut self) -> crate::observed::Generation {
         let counts = self.workspace.end_generation();
-        let parses = self.semantic.parses_mut().end_generation();
-        self.docs
-            .end_generation_with(counts.evaluations, counts.ownership, parses)
+        let (parses, envs_built) = self.semantic.end_generation();
+        self.docs.end_generation_with(
+            counts.evaluations,
+            counts.ownership,
+            parses,
+            crate::observed::EnvCounts {
+                built: envs_built,
+                validation: counts.envs,
+            },
+        )
     }
 
     /// Record the capabilities the client advertised at `initialize`. Called
@@ -426,21 +434,29 @@ impl State {
     /// independently of this list, because workspace pulls include unopened
     /// files.
     ///
+    /// - Every change, whatever its class, drops the assembly envs that depend
+    ///   on its path
+    ///   ([`crate::semantic::SemanticState::hint_assembly_paths`]): a path an
+    ///   env's resolution read, an entry of a directory it listed, or a file
+    ///   inside an installed version it trusts. Every other env stands, and
+    ///   is confirmed against the disk before it is served again.
     /// - A `Structural` change (a `.fsproj` / `Directory.Build.*` /
     ///   `global.json` / `project.assets.json`) invalidates the *whole*
-    ///   project-evaluation cache and *all* semantic caches (broad-but-correct;
-    ///   see `docs/completed/file-watch-invalidation-plan.md` W2), and requests a
+    ///   project-evaluation cache and every semantic cache derived from it
+    ///   (broad-but-correct; see `docs/completed/file-watch-invalidation-plan.md`
+    ///   W2), with each env whose reads are not all recorded, and requests a
     ///   republish of every open buffer — its `DefineConstants` may have moved.
     /// - A `Source` change invalidates just the semantic caches that list the
     ///   file and requests a workspace diagnostic refresh (no push republish:
     ///   an unopened source edit can't change an open buffer's lexer/parser
     ///   diagnostics, but its own workspace report changed).
     /// - An `AssemblyInput` change (a `.dll` rewritten by a sibling rebuild or
-    ///   restore, a `.cs`/`.csproj` edit feeding the C# sidecar) drops the
-    ///   referenced-assembly caches
-    ///   ([`crate::semantic::SemanticState::invalidate_assembly_state`]) while
-    ///   keeping project evaluation; no republish (binaries can't change an
-    ///   open buffer's lexer/parser diagnostics either).
+    ///   restore, a `.cs`/`.csproj` edit feeding the C# sidecar) drops each env
+    ///   whose reads are not all recorded: those an on-demand restore or the
+    ///   C# sidecar answered part of
+    ///   ([`crate::semantic::SemanticState::invalidate_assembly_state`]). It
+    ///   keeps project evaluation; no republish (binaries can't change an open
+    ///   buffer's lexer/parser diagnostics either).
     ///
     /// Pure of IO beyond cache mutation, so it is testable without a
     /// [`Connection`]; the shell does the actual publishing.
@@ -455,6 +471,7 @@ impl State {
             .collect();
         self.docs.hint(hinted.iter().map(PathBuf::as_path));
         self.workspace.hint(hinted.iter().map(PathBuf::as_path));
+        self.semantic.hint_assembly_paths(&hinted);
         for change in changes {
             match classify_change(&change.uri, change.typ) {
                 ChangeClass::Structural => structural = true,
@@ -470,7 +487,7 @@ impl State {
         }
         if structural {
             // Subsumes the assembly-input invalidation: `invalidate_all`
-            // clears the assembly state too.
+            // drops every env whose reads are not all recorded too.
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
             self.semantic
