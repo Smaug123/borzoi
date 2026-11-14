@@ -14,6 +14,7 @@ mod csharp_ref_assembly_env_e2e;
 mod csharp_sidecar;
 mod csharp_sidecar_bundled_e2e;
 mod definition_availability_incomplete;
+mod env_read_set_soundness;
 mod fcs_bridge;
 mod fsharp_name_lexes_back;
 mod goto_source_fsharp_core;

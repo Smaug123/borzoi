@@ -58,6 +58,15 @@ pub const GENERATION_EVENT: &str = "observed.generation";
 /// [`GENERATION_EVENT`], it is for `edit_counts`, not for tests.
 pub const EVALUATION_EVENT: &str = "observed.evaluation";
 
+/// The name of the event [`report_env_resolution`] emits for every assembly
+/// env the server resolves, whose fields are what the resolution observed
+/// beyond the evaluations it ran ([`borzoi_msbuild::observed::ReadCounts`]:
+/// `opens`, `stats`, `listings`, `canonicalizations`), the size of its read
+/// set, the evaluations' reads included (`reads`), and how many readers it
+/// could not record (`unrecorded`). Like [`GENERATION_EVENT`], it is for
+/// `edit_counts`, not for tests.
+pub const ENV_RESOLUTION_EVENT: &str = "observed.env_resolution";
+
 /// Emit `parsed`'s file-system counts as [`EVALUATION_EVENT`].
 pub fn report_evaluation(parsed: &borzoi_msbuild::ParsedProject) {
     let counts = parsed.read_counts;
@@ -68,6 +77,23 @@ pub fn report_evaluation(parsed: &borzoi_msbuild::ParsedProject) {
         listings = counts.listings,
         canonicalizations = counts.canonicalizations,
         reads = parsed.read_set.len() as u64,
+    );
+}
+
+/// Emit an env resolution's file-system counts and read set's size as
+/// [`ENV_RESOLUTION_EVENT`].
+pub fn report_env_resolution(
+    counts: borzoi_msbuild::observed::ReadCounts,
+    reads: &crate::semantic::EnvReads,
+) {
+    tracing::debug!(
+        name: ENV_RESOLUTION_EVENT,
+        opens = counts.opens,
+        stats = counts.stats,
+        listings = counts.listings,
+        canonicalizations = counts.canonicalizations,
+        reads = reads.reads.len() as u64,
+        unrecorded = reads.unrecorded.len() as u64,
     );
 }
 
@@ -206,10 +232,22 @@ pub enum Unobserved {
     /// reads). No stage routes them: the diagnostics are computed afresh for
     /// every request, so nothing they read is cached.
     FsprojDiagnostics,
-    /// The assembly env's reference resolution: the assets file, the project
-    /// graph, the output-DLL search, the packs, the DLL reads, the on-disk
-    /// assembly cache and the C# sidecar's binaries. Stage 6a.
-    EnvResolution,
+    /// What the assembly env cache is keyed by, computed afresh on every
+    /// lookup: the dotnet root a project with no SDK falls back to, and the
+    /// root's canonical spelling. Stage 6b, which validates an env against
+    /// the read set of its resolution, decides what remains of the key.
+    EnvKey,
+    /// The on-disk assembly cache: its entries, the stamps it keys and
+    /// brackets them with, and the running binary's. No stage routes it: an
+    /// entry answers for the DLL stamp the env's resolution records
+    /// (`semantic::enumerate_dll_type_defs_cached`), so it is never an input
+    /// of its own.
+    AssemblyCache,
+    /// The C# sidecar's own binaries, and the `dotnet` it is launched with.
+    /// No stage routes them: they lie outside the workspace, and what the
+    /// sidecar reads is the `CSharpSources` input class, unwitnessed by
+    /// design (D1).
+    CSharpSidecar,
     /// The `workspace/diagnostic` sweep's walk of the workspace roots for
     /// `.fsproj` files. No stage routes it.
     WorkspaceSweep,

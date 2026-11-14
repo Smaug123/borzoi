@@ -2144,6 +2144,174 @@ hand-wired invalidation under another name.
 **Expected gain**: none (the stage is infrastructure). The read set's size on
 WoofWare.Incremental is reported, which bounds Stage 7's validation cost.
 
+**Implemented** (`crates/lsp/src/semantic.rs`, `crates/lsp/src/project_assets/`,
+`crates/lsp/src/workspace.rs`, `crates/msbuild/src/observed.rs`):
+
+- **One observer per resolution.** `cached_assembly_env` makes a
+  `borzoi_msbuild::observed::Observer` and threads it through the
+  resolution: the producer-TFM recovery (`env_ref_tfms`,
+  `resolve_transitive_project_tfms`), the project-graph walk
+  (`Workspace::project_graph_with_producer_tfms`), `graph_ref_targets`'
+  canonicalisations, the assets files and package probes
+  (`resolve_assemblies_*`, `pick_existing`), the framework packs
+  (`resolve_framework`, `best_version_with_tfm`), the output-DLL search
+  (`locate_fsharp_output_dll`, `child_dirs`), and the DLL reads. It is the
+  module the evaluations and the ownership walk already observe through, so
+  the env's reads are the same `Read`s, in the currency `read_checks`
+  confirms, and Stage 6b needs nothing new to validate them.
+- **The graph walk records what it consulted.** Each evaluation a node
+  makes contributes its read set (the seeded inner pass and each remaining
+  TFM of a multi-targeted project too: they all go through one recording
+  closure in `resolve_node_uncached`; Codex found the branches dropped); the
+  entry, when this
+  generation has confirmed its cached evaluation, contributes the reads that
+  confirm it (its read set less the contents of installed versions). The
+  `.fsproj` diagnostics' walk (`Workspace::project_graph`) records into an
+  observer of `Unobserved::FsprojDiagnostics`, which nothing reads.
+- **A DLL is recorded by its stamp.** `Observation` gains `Stamp`
+  (`FileStamp`: device, inode, size, modification and change times), and
+  the module gains `stamp` and `read_stamped`, which stamps the open file
+  before reading it, as the `Vfs` does. A stamp taken within
+  `STAMP_RACY_WINDOW` (2 s, the `Vfs`'s `RACY_WINDOW`) of the file's last
+  change is `racy` and never holds again (`Read::still_holds`,
+  `ReadChecks::holds`): two writes of the same size in one timestamp tick
+  leave every field the same (Codex). `enumerate_dll_type_defs_cached`
+  stamps each DLL before it asks the assembly cache, so a projection the
+  cache answers is recorded exactly as one read from the DLL. The DLLs are
+  read on worker threads, each with an observer of its own, which
+  `Observer::absorb` joins.
+- **What the env carries.** `CachedAssemblyEnv::reads` is an `EnvReads`: the
+  read set, and the readers the resolution consulted that do not record
+  (`unrecorded`): an on-demand restore, which reads a warm package cache and
+  a scratch directory that is gone when it returns, and the C# sidecar,
+  which reads the C# sources itself. Either is named when it is consulted,
+  whatever it concludes: a restore that declines for a package missing from
+  the cache, and a C# build that fails, depend on what they read as much as
+  a success does (Codex found both named only on success). `SemanticState::env_reads_for_project` reads it, and
+  `reference_resolution_for_project` returns `reference_dlls_for_project`'s
+  answer with what resolving it read.
+- **The worklist.** `Unobserved::EnvResolution` is gone. What remains of it
+  are three readers that no stage of this plan routes as env resolution:
+  `EnvKey` (the dotnet-root fallback probe and its canonical spelling,
+  computed on every lookup to key the cache, which Stage 6b decides),
+  `AssemblyCache` (the cache's entries and the stamps it brackets them
+  with, never an input of their own since the env records the DLL's stamp),
+  and `CSharpSidecar` (the sidecar's binaries and the `dotnet` that runs
+  them).
+- **Counted.** Each resolution emits `observed.env_resolution`: its own
+  opens, `stat`s, listings and canonicalisations (the evaluations it ran
+  report theirs as before), its read set's size and its unrecorded readers.
+  `edit_counts` prints them as `a.open`, `a.stat`, `a.list`, `a.canon`,
+  `a.reads` and `a.unrec`.
+- `borzoi_msbuild::observed::soundness::sweep_with` is the sweep for any
+  computation that returns a value and its read set; `sweep` is it applied
+  to an evaluation.
+
+**Departures.**
+
+- **No new `observed` module.** The plan gave the env a module of its own.
+  The evaluator's already counts every call and records `Read`s that
+  `read_checks` confirms, so the env reads through it, and the module grows
+  the one observation it lacked (`Stamp`).
+- **A DLL's observation is its stamp, not a digest of its bytes.** Hashing
+  every referenced DLL would add a read of each to every warm start that the
+  assembly cache answers, and the cache keys on the DLL's stamp already.
+  D3's observation list names `Stamp(stamp)`; this is that.
+- **The read set is not always complete, and says so.** An on-demand
+  restore and the C# sidecar answer without recording; `EnvReads::unrecorded`
+  names them rather than presenting a partial read set as whole. Stage 6b
+  has to decide what such an env is validated by.
+
+The oracle:
+
+- `reference_set_msbuild_diff`, `resolve_real_project_diff` and the
+  whole-project gate are unchanged.
+- `env_read_set_soundness::the_env_resolution_read_set_is_sound` generates
+  restored-project fixtures: packages whose DLL is in the primary package
+  folder, only in the fallback, or in neither; one or two framework-pack
+  versions that hold the project's TFM or not; up to two sibling F#
+  projects built under the project's TFM, another, both or neither,
+  recorded in the assets file or not, naming their output or not, and
+  multi-targeted with a restore of their own or not (a multi-targeted one
+  imports a file under its other TFM alone, and references a built project
+  of its own, which an extra perturbation removes through that import). `sweep_with` perturbs
+  every file (rewrites, same-size rewrites, deletions, creations under
+  every name in every directory, every recorded absence created, every
+  listing grown) and asserts that whenever every answer stands, resolving
+  again gives the same DLLs. The plan's two named perturbations are extras:
+  a newer pack version installed, and each unbuilt sibling's output built;
+  each of these must fail validation where the resolution looked for it.
+  Its non-vacuity check, over a fixed seed, finds package, framework and
+  sibling DLLs, sees deletions and the extras move the resolution, and sees
+  recorded absences created fail validation.
+- `the_env_records_each_dll_stamp_with_or_without_the_cache`: the env's read
+  set holds a stamp of every DLL it folded, whether read or answered by the
+  assembly cache (a real `System.Runtime.dll`, cached by a first build), and
+  rewriting the DLL fails validation.
+- `workspace::tests::validation::the_graph_walk_records_the_confirmed_entry_and_each_evaluated_node`.
+- `semantic::tests::a_consulted_unrecording_reader_is_named_whatever_it_concludes`:
+  a restore that declines, and an enabled sidecar's C# reference that
+  delivers nothing, are each named; a disabled sidecar is not.
+- `observed::tests::a_stamped_read_records_a_stamp_a_rewrite_moves` in
+  `borzoi-msbuild`: a stamp of a file changed within the window is racy and
+  never holds; past it, a same-size rewrite fails validation.
+- `read_checks::tests::a_racy_stamp_never_holds`, which also holds the two
+  windows equal. The stamp test checks that an env built straight after its
+  DLLs were written does not validate.
+- `cargo clippy` fails on a direct `std::fs` call on the path: the crate's
+  ban, which now has no allow there.
+
+Planted, each caught, then removed:
+
+| plant | caught by |
+|---|---|
+| `child_dirs`' listing unrecorded | both soundness tests |
+| a candidate output DLL's `stat` unrecorded | both soundness tests |
+| the framework pack's version listing unrecorded | both soundness tests |
+| a fresh node evaluation's reads dropped by the graph walk | both soundness tests |
+| the reads of a multi-targeted node's other TFM branches dropped (Codex) | both soundness tests (once a multi-targeted sibling imported a file under one TFM alone) |
+| an on-demand restore named only when it succeeds (Codex) | `a_consulted_unrecording_reader_is_named_whatever_it_concludes` |
+| the C# sidecar named only when it delivers metadata (Codex) | `a_consulted_unrecording_reader_is_named_whatever_it_concludes` |
+| the producer assets files' reads unrecorded | both soundness tests (once siblings could be multi-targeted with a restore of their own) |
+| `pick_existing`'s probes unrecorded | both soundness tests (once packages could sit in a fallback folder) |
+| the confirmed entry's reads dropped by the graph walk | `the_graph_walk_records_the_confirmed_entry_and_each_evaluated_node` (added for it) |
+| the stamp before the assembly cache dropped | the stamp test, its cached case |
+| the worker threads' reads not absorbed | the stamp test |
+| the env not keeping its read set | the stamp test |
+| a direct `std::fs::read_to_string` in `read_raw_assets` | `cargo clippy` (`disallowed_methods`) |
+| a racy stamp holding in `Read::still_holds` (Codex) | `a_stamped_read_records_a_stamp_a_rewrite_moves`, the stamp test |
+| a racy stamp holding in `ReadChecks::holds` (Codex) | `read_checks::tests::a_racy_stamp_never_holds` |
+| a stamp never marked racy | `a_stamped_read_records_a_stamp_a_rewrite_moves`, the stamp test |
+
+Codex also found `read_stamped` preallocating the file's size infallibly,
+which aborts the process on a file too large to hold where `std::fs::read`
+fails with `OutOfMemory` and the DLL is skipped. It reserves fallibly now,
+as `std::fs::read` does. No test holds it: the allocation-limit harness
+(`borzoi_oracle_harness::alloc_limit`) is a global allocator a test binary
+installs, which `borzoi-msbuild`'s do not.
+
+Four plants first passed every test, and the tests named against them were
+extended or added until each failed. Two still pass, and neither is a
+defect the generated trees can show: the canonicalisation that seeds a
+graph node's TFM, which `graph_ref_targets` records again for the same path
+(the read set is a set, so it is unchanged), and the canonicalisation of an
+assets file's path, whose answer moves only through a symlink, which the
+fixtures never hold. The second is a gap: a soundness fixture with symlinked
+project and `obj` directories would see it.
+
+**Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
+minimum over three runs of each binary: Stage 5 merged with `main`
+(34655569) and this stage. No keystroke builds an env, and no keystroke
+row moves beyond its runs' spread: 34.83 M per keystroke before, 34.67 M
+after, and 35.07 M in a second set of runs of this stage's final head taken
+while the gate ran on the same machine, every allocation count identical. The
+one env build, in the cold `semanticTokens E`, records **385 reads** (the
+graph walk's evaluations included) from 159 stamped DLL reads, 167 `stat`s,
+3 listings and 4 canonicalisations, with nothing unrecorded: the size Stage
+6b's validation starts from, before the installed-version exemption. It
+costs 1,336 allocations more (3,413,630 to 3,414,966) and its instructions
+move within the runs' spread (2,599–2,655 M before, 2,605–2,634 M after).
+
 ### Stage 6b: targeted assembly invalidation
 
 **Dependencies**: Stages 3b and 6a. **Implements**: D2's env key (item 3).

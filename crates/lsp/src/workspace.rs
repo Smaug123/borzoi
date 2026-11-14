@@ -443,6 +443,7 @@ fn answered(observation: &Observation) -> bool {
         Observation::Kind(answer) | Observation::LinkKind(answer) => answer.is_ok(),
         Observation::Listing(answer) => answer.is_ok(),
         Observation::Canonical(answer) => answer.is_ok(),
+        Observation::Stamp(answer) => answer.is_ok(),
     }
 }
 
@@ -900,7 +901,7 @@ impl Workspace {
     /// absent — when an SDK *was* resolved, [`Self::dotnet_root_for_project`]
     /// uses that instead, so the probe's multi-root ambiguity never bites.
     fn probe_dotnet_root(&self, project_path: &Path) -> Option<PathBuf> {
-        let observer = Unobserved::EnvResolution.msbuild_observer();
+        let observer = Unobserved::EnvKey.msbuild_observer();
         let disc = SdkDiscovery::for_project(project_path, &self.env, &observer).ok()?;
         if let Ok(SdkResolution::Single(paths)) = disc.resolve("Microsoft.NET.Sdk", &observer)
             && let Some(install_root) = install_root_from_sdk_path(&paths.root)
@@ -1460,7 +1461,12 @@ impl Workspace {
     /// Re-evaluating the closure on each call is acceptable: cycle diagnostics
     /// fire only on `.fsproj` open/change/pull, not per source keystroke.
     pub fn project_graph(&self, entry: &Path) -> ProjectGraph {
-        self.project_graph_impl(entry, &BTreeMap::new(), GraphWalkPurpose::DeclaredStructure)
+        self.project_graph_impl(
+            entry,
+            &BTreeMap::new(),
+            GraphWalkPurpose::DeclaredStructure,
+            &Unobserved::FsprojDiagnostics.msbuild_observer(),
+        )
     }
 
     /// [`Workspace::project_graph`] with each node's evaluation seeded by the
@@ -1483,12 +1489,23 @@ impl Workspace {
     /// `.fsproj` cycle diagnostics keep [`Workspace::project_graph`]'s
     /// first-declared walk (they predate any restore and report on declared
     /// structure).
+    ///
+    /// Every query the walk makes is recorded in `observer`: its own probes,
+    /// the read set of each node it evaluates, and, for the entry when this
+    /// generation has confirmed its cached evaluation, the reads that
+    /// confirm it (its read set less the contents of installed versions).
     pub fn project_graph_with_producer_tfms(
         &self,
         entry: &Path,
         producer_tfms: &BTreeMap<PathBuf, String>,
+        observer: &Observer,
     ) -> ProjectGraph {
-        self.project_graph_impl(entry, producer_tfms, GraphWalkPurpose::CompileClosure)
+        self.project_graph_impl(
+            entry,
+            producer_tfms,
+            GraphWalkPurpose::CompileClosure,
+            observer,
+        )
     }
 
     fn project_graph_impl(
@@ -1496,6 +1513,7 @@ impl Workspace {
         entry: &Path,
         producer_tfms: &BTreeMap<PathBuf, String>,
         purpose: GraphWalkPurpose,
+        observer: &Observer,
     ) -> ProjectGraph {
         // The entry is resolved exactly once, with its own path: the builder
         // never re-resolves a visited node, and every non-entry resolve comes
@@ -1513,13 +1531,16 @@ impl Workspace {
             .get(&entry_id)
             .filter(|cached| generation.is_some() && cached.validated_in == generation)
             .filter(|_| entry_id.as_path() == entry)
+            .inspect(|cached| {
+                let reads = cached.checks.iter().map(|check| check.read().clone());
+                observer.absorb((reads.collect(), ReadCounts::default()));
+            })
             .map(|cached| cached.evaluated.as_ref());
         build_graph(entry, |path| {
             // The map's keys are canonicalised; graph paths are only
             // lexically normalised. A path that fails to canonicalise (not
             // on disk) can't be in the map — fall through to no seed.
-            let seed_tfm = Unobserved::EnvResolution
-                .canonicalize(path)
+            let seed_tfm = msbuild_observed::canonicalize(observer, path)
                 .ok()
                 .and_then(|canon| producer_tfms.get(&canon))
                 .map(String::as_str);
@@ -1535,6 +1556,7 @@ impl Workspace {
                 purpose,
                 is_entry,
                 confirmed_entry.filter(|_| is_entry && path == entry),
+                observer,
             )
         })
     }
@@ -1690,18 +1712,27 @@ fn resolve_node_uncached(
     purpose: GraphWalkPurpose,
     is_entry: bool,
     cached: Option<Option<&EvaluatedProject>>,
+    observer: &Observer,
 ) -> NodeResult {
     let NodeContext {
         env,
         extra_build_properties,
         evaluated,
     } = context;
-    if !Unobserved::EnvResolution.exists(path) {
+    if !msbuild_observed::exists(observer, path) {
         return NodeResult::NotFound;
     }
     if classify(path) != ProjectKind::FSharp {
         return NodeResult::resolved(Vec::new());
     }
+    // Every evaluation the node makes goes through here, so each one's read
+    // set is recorded, whichever branch below it serves (the seeded inner
+    // pass, and every remaining TFM of a multi-targeted project, included).
+    let evaluate_recorded = |properties: &HashMap<String, String>| {
+        let evaluation = evaluate_project(path, env, properties, evaluated);
+        observer.absorb((evaluation.reads, ReadCounts::default()));
+        evaluation.evaluated
+    };
     // Outer (seedless) evaluation first: its first-pass view is the source of
     // truth for what the project currently declares, and its edges are the
     // first-declared inner build's (via `select_target_framework`). `cached`
@@ -1710,7 +1741,7 @@ fn resolve_node_uncached(
     let outer = match cached {
         Some(cached) => cached,
         None => {
-            fresh = evaluate_project(path, env, extra_build_properties, evaluated).evaluated;
+            fresh = evaluate_recorded(extra_build_properties);
             fresh.as_ref()
         }
     };
@@ -1825,7 +1856,7 @@ fn resolve_node_uncached(
             }
             let mut map = extra_build_properties.clone();
             seed_target_framework_global(&mut map, current);
-            return match evaluate_project(path, env, &map, evaluated).evaluated {
+            return match evaluate_recorded(&map) {
                 // The label describes the evaluation, as everywhere else: this
                 // seeded pass may itself turn out not to be an inner build,
                 // and only *it* can tell us — a `TreatAsLocalProperty` reached
@@ -1886,7 +1917,7 @@ fn resolve_node_uncached(
             for tfm in declared.iter().skip(1) {
                 let mut map = extra_build_properties.clone();
                 seed_target_framework_global(&mut map, tfm);
-                let Some(branch) = evaluate_project(path, env, &map, evaluated).evaluated else {
+                let Some(branch) = evaluate_recorded(&map) else {
                     return NodeResult::Resolved {
                         edges: Vec::new(),
                         tfm: NodeTfm::Unresolved,
@@ -3119,7 +3150,11 @@ mod tests {
         // fold's assemblies. (`project_graph`'s declared-structure walk
         // deliberately keeps reporting the elements the document declares; it
         // feeds cycle diagnostics, not assembly resolution.)
-        let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+        let graph = ws.project_graph_with_producer_tfms(
+            &proj,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         let node = graph
             .nodes
             .iter()
@@ -3215,7 +3250,11 @@ mod tests {
         let extra = HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())]);
         let ws = Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
 
-        let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+        let graph = ws.project_graph_with_producer_tfms(
+            &proj,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         let node = graph
             .nodes
             .iter()
@@ -3269,7 +3308,11 @@ mod tests {
             "net10.0".to_string(),
         )]);
 
-        let graph = ws.project_graph_with_producer_tfms(&proj, &producers);
+        let graph = ws.project_graph_with_producer_tfms(
+            &proj,
+            &producers,
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         let node = graph
             .nodes
             .iter()
@@ -3535,7 +3578,11 @@ mod tests {
                     case.ran_under,
                     "{label}"
                 );
-                let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+                let graph = ws.project_graph_with_producer_tfms(
+                    &proj,
+                    &BTreeMap::new(),
+                    &borzoi_msbuild::observed::Observer::new(),
+                );
                 let node = graph
                     .nodes
                     .iter()
@@ -4255,7 +4302,11 @@ mod tests {
             crate::observed::host_fs::canonicalize(&b).unwrap(),
             "net8.0".to_string(),
         )]);
-        let seeded = ws.project_graph_with_producer_tfms(&a, &tfms);
+        let seeded = ws.project_graph_with_producer_tfms(
+            &a,
+            &tfms,
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&seeded),
             vec![
@@ -4302,7 +4353,11 @@ mod tests {
         write_file(&d, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let seeded = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let seeded = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&seeded),
             vec![
@@ -4346,7 +4401,11 @@ mod tests {
         write_file(&b, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile),
             vec![lexically_normalize(&a)],
@@ -4392,7 +4451,11 @@ mod tests {
 
         let extra = HashMap::from([("TargetFramework".to_string(), String::new())]);
         let ws = Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
-        let seeded = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let seeded = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&seeded),
             vec![
@@ -4466,7 +4529,11 @@ mod tests {
         );
 
         let ws = Workspace::default();
-        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let graph = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         let name_of = |p: &Path| {
             graph
                 .nodes
@@ -4521,7 +4588,11 @@ mod tests {
         write_file(&c, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let graph = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         let node = |p: &Path| {
             graph
                 .nodes
@@ -4578,7 +4649,11 @@ mod tests {
         );
 
         let ws = Workspace::default();
-        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let graph = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         let b_node = graph
             .nodes
             .iter()
@@ -4624,7 +4699,11 @@ mod tests {
         write_file(&c, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let graph = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&graph),
             vec![
@@ -4688,7 +4767,11 @@ mod tests {
 
         // Unseeded: the net8.0 branch of the intersection must evaluate, so
         // the TFM-invariant edge to C survives.
-        let unseeded = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let unseeded = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&unseeded),
             vec![
@@ -4704,7 +4787,11 @@ mod tests {
             crate::observed::host_fs::canonicalize(&b).unwrap(),
             "net8.0".to_string(),
         )]);
-        let seeded = ws.project_graph_with_producer_tfms(&a, &tfms);
+        let seeded = ws.project_graph_with_producer_tfms(
+            &a,
+            &tfms,
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&seeded),
             vec![
@@ -4747,7 +4834,11 @@ mod tests {
         write_file(&d, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let seeded = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let seeded = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&seeded),
             vec![
@@ -4793,7 +4884,11 @@ mod tests {
             crate::observed::host_fs::canonicalize(&b).unwrap(),
             "net9.0".to_string(),
         )]);
-        let graph = ws.project_graph_with_producer_tfms(&a, &stale);
+        let graph = ws.project_graph_with_producer_tfms(
+            &a,
+            &stale,
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&graph),
             vec![
@@ -4836,7 +4931,11 @@ mod tests {
         write_file(&d, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&c)],
@@ -4878,7 +4977,11 @@ mod tests {
         write_file(&c, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&b)],
@@ -4910,7 +5013,11 @@ mod tests {
         write_file(&e, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![
@@ -4955,7 +5062,11 @@ mod tests {
         write_file(&e, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![
@@ -4988,7 +5099,11 @@ mod tests {
         write_file(&c, "<Project></Project>");
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(node_paths(&compile_closure), vec![lexically_normalize(&a)]);
     }
 
@@ -5018,7 +5133,11 @@ mod tests {
         write_file(&d, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&b)],
@@ -5035,7 +5154,11 @@ mod tests {
             </Project>"#,
         );
         write_file(&b, &fsproj_with_refs(&["../C/C.fsproj"]));
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![
@@ -5068,7 +5191,11 @@ mod tests {
         write_file(&c, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&b)],
@@ -5085,7 +5212,11 @@ mod tests {
               </ItemGroup>
             </Project>"#,
         );
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&b)],
@@ -5100,7 +5231,11 @@ mod tests {
               </ItemGroup>
             </Project>"#,
         );
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![
@@ -5135,7 +5270,11 @@ mod tests {
         write_file(&c, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&b)],
@@ -5153,7 +5292,11 @@ mod tests {
             </Project>"#,
         );
         write_file(&b, &fsproj_with_refs(&[]));
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(node_paths(&compile_closure), vec![lexically_normalize(&a)]);
 
         let declared = ws.project_graph(&a);
@@ -5193,7 +5336,11 @@ mod tests {
         write_file(&c, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a)],
@@ -5216,7 +5363,11 @@ mod tests {
             </Project>"#,
         );
         write_file(&b, &fsproj_with_refs(&["../C/C.fsproj"]));
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&b)],
@@ -5238,7 +5389,11 @@ mod tests {
               </ItemGroup>
             </Project>"#,
         );
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&b)],
@@ -5274,7 +5429,11 @@ mod tests {
         write_file(&d, &fsproj_with_refs(&[]));
 
         let ws = Workspace::default();
-        let compile_closure = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let compile_closure = ws.project_graph_with_producer_tfms(
+            &a,
+            &BTreeMap::new(),
+            &borzoi_msbuild::observed::Observer::new(),
+        );
         assert_eq!(
             node_paths(&compile_closure),
             vec![lexically_normalize(&a), lexically_normalize(&c)],
@@ -6924,6 +7083,44 @@ mod tests {
             ws.begin_generation(Nanos(i128::MAX / 2 + 1));
             assert_eq!(ws.project_graph(&a).nodes.len(), 2);
             ws.end_generation();
+        }
+
+        /// A compile-closure walk that reads the confirmed entry rather than
+        /// evaluating it records the reads that confirm it, so the env's
+        /// read set still names the entry's project file; and it records the
+        /// read set of every node it evaluates afresh.
+        #[test]
+        fn the_graph_walk_records_the_confirmed_entry_and_each_evaluated_node() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let a = root.join("A/A.fsproj");
+            let b = root.join("B/B.fsproj");
+            write_file(
+                &a,
+                r#"<Project><ItemGroup><ProjectReference Include="../B/B.fsproj" /></ItemGroup></Project>"#,
+            );
+            write_file(&b, "<Project />");
+            let mut ws = Workspace::default();
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert!(ws.project(&a).is_some());
+            let evaluated_before = ws.evaluated.get();
+            let observer = Observer::new();
+            let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new(), &observer);
+            assert_eq!(graph.nodes.len(), 2);
+            assert_eq!(
+                ws.evaluated.get(),
+                evaluated_before + 1,
+                "precondition: the walk evaluates B alone, reading A's confirmed entry"
+            );
+            ws.end_generation();
+            let (reads, _) = observer.finish();
+            for project in [&a, &b] {
+                assert!(
+                    reads.reads().iter().any(|read| read.path == *project
+                        && matches!(read.observation, Observation::Text(Ok(_)))),
+                    "the walk's read set does not name {project:?}: {reads:?}"
+                );
+            }
         }
 
         /// A rewrite of a file inside an SDK version is not looked for: the

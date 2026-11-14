@@ -65,8 +65,13 @@ fn obj_dll_set(project: &Path, root: &Path, tfm: &str) -> BTreeSet<PathBuf> {
         .expect("project has a parent")
         .join("obj")
         .join("project.assets.json");
-    let resolved = resolve_assemblies_for_tfm(&assets, root, tfm)
-        .expect("restored project.assets.json resolves");
+    let resolved = resolve_assemblies_for_tfm(
+        &assets,
+        root,
+        tfm,
+        &borzoi_msbuild::observed::Observer::new(),
+    )
+    .expect("restored project.assets.json resolves");
     let mut dlls = resolved.package_dlls;
     dlls.extend(resolved.framework_dlls);
     canonical_set(&dlls)

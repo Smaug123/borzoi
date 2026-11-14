@@ -470,9 +470,13 @@ fn served_outcome(
     // a chosen TFM selects its target (plan E3); `NoneDeclared` (⇒ `as_deref` is
     // `None`) falls back to requiring a single-target restore. `Untrusted` never
     // reaches here (the caller returns empty first).
+    // The scratch directory is deleted when this returns, so nothing could
+    // confirm what reading it observed: the env records that an on-demand
+    // restore answered it instead (`semantic::EnvReads::unrecorded`).
+    let observer = Unobserved::Restore.msbuild_observer();
     let resolved = match target_framework.as_deref() {
-        Some(tfm) => resolve_assemblies_for_tfm(&assets_path, dotnet_root, tfm),
-        None => resolve_assemblies_root_only(&assets_path, dotnet_root),
+        Some(tfm) => resolve_assemblies_for_tfm(&assets_path, dotnet_root, tfm, &observer),
+        None => resolve_assemblies_root_only(&assets_path, dotnet_root, &observer),
     };
     match resolved {
         Ok(resolved) => {

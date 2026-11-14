@@ -416,9 +416,12 @@ fn fcs_extra_refs(
     if retryable {
         return Err(LoadSkip::ReferenceSetUnstable);
     }
+    // A status report beside the env, which carries its own read set: what
+    // this second resolution reads is not kept.
+    let observer = borzoi_msbuild::observed::Observer::new();
     let assets_resolve = match target_framework.as_deref() {
-        Some(tfm) => resolve_assemblies_for_tfm(&assets, &dotnet_root, tfm),
-        None => resolve_assemblies_root_only(&assets, &dotnet_root),
+        Some(tfm) => resolve_assemblies_for_tfm(&assets, &dotnet_root, tfm, &observer),
+        None => resolve_assemblies_root_only(&assets, &dotnet_root, &observer),
     };
     let status = match assets_resolve {
         Ok(resolved) => ProjectAssetsStatus::Resolved {

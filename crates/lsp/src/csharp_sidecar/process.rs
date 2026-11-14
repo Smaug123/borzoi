@@ -219,7 +219,7 @@ pub(crate) fn start_sidecar_with_timeouts(
     // spawn successfully, then print its own banner to stdout and exit —
     // which the handshake would surface as a framing error that discards
     // the path that's actually wrong.
-    if !Unobserved::EnvResolution.exists(sidecar_dll) {
+    if !Unobserved::CSharpSidecar.exists(sidecar_dll) {
         return Err(SidecarError::SidecarDllMissing {
             path: PathBuf::from(sidecar_dll),
         });
@@ -357,7 +357,7 @@ fn bundled_sidecar_dll() -> Option<PathBuf> {
         override_var.as_deref(),
         exe.as_deref(),
         env!("CSHARP_SIDECAR_DLL"),
-        |p| Unobserved::EnvResolution.is_file(p),
+        |p| Unobserved::CSharpSidecar.is_file(p),
     )
 }
 

@@ -260,6 +260,7 @@ impl Model {
         let at = |follow: bool| self.resolve(path, follow).map_err(failure);
         match query {
             Observation::Text(_) => unreachable!("whole-file reads go through the DiskCache"),
+            Observation::Stamp(_) => unreachable!("an evaluation records no stamps"),
             Observation::Kind(_) => {
                 Observation::Kind(at(true).map(|p| Model::kind_of(&self.entries[&p].node)))
             }
@@ -663,4 +664,34 @@ fn a_listing_with_a_failed_entry_is_asked_every_time() {
         !generation(&mut checker),
         "a cleared failure was not noticed"
     );
+}
+
+/// A racy stamp never holds, in a generation or out of one, whatever the
+/// file now says: a same-size write within its tick leaves every field the
+/// same. The window is the `Vfs`'s.
+#[test]
+fn a_racy_stamp_never_holds() {
+    assert_eq!(
+        borzoi_msbuild::observed::STAMP_RACY_WINDOW,
+        crate::vfs::RACY_WINDOW
+    );
+    let model = Rc::new(RefCell::new(Model::new(1)));
+    let stamp = borzoi_msbuild::observed::FileStamp {
+        dev: 1,
+        ino: 1,
+        len: 3,
+        mtime_ns: 0,
+        ctime_ns: Some(0),
+        racy: true,
+    };
+    let check = Check::new(Read {
+        path: path(0),
+        observation: Observation::Stamp(Ok(stamp)),
+    });
+    let mut checker = ReadChecks::with_disk(Rc::clone(&model));
+    assert!(!checker.holds(&check));
+    checker.begin_generation(Nanos(model.borrow().clock));
+    assert!(!checker.holds(&check));
+    checker.end_generation();
+    assert!(!crate::read_checks::a_fact(&check.read().observation));
 }

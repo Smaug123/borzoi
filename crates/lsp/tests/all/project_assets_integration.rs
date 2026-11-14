@@ -28,7 +28,12 @@ fn end_to_end_against_fcs_dump_fixture() {
     touch(&pack.join("System.dll"));
     touch(&pack.join("System.Runtime.dll"));
 
-    let result = resolve_assemblies(&fixture, dotnet_root).expect("resolve_assemblies");
+    let result = resolve_assemblies(
+        &fixture,
+        dotnet_root,
+        &borzoi_msbuild::observed::Observer::new(),
+    )
+    .expect("resolve_assemblies");
 
     // No project references in the fixture.
     assert!(
