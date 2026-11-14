@@ -72,6 +72,7 @@ mod parser_diff_lists;
 mod parser_diff_literals;
 mod parser_diff_match;
 mod parser_diff_measure;
+mod parser_diff_module_recover_grid;
 mod parser_diff_module_structure;
 mod parser_diff_multiline_infix;
 mod parser_diff_new_expr;
