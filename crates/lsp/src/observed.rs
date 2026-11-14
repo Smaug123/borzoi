@@ -275,11 +275,6 @@ pub enum Unobserved {
     /// reads). No stage routes them: the diagnostics are computed afresh for
     /// every request, so nothing they read is cached.
     FsprojDiagnostics,
-    /// What the assembly env cache is keyed by, computed afresh on every
-    /// lookup: the dotnet root a project with no SDK falls back to, and the
-    /// root's canonical spelling. Stage 6b, which validates an env against
-    /// the read set of its resolution, decides what remains of the key.
-    EnvKey,
     /// The on-disk assembly cache: its entries, the stamps it keys and
     /// brackets them with, and the running binary's. No stage routes it: an
     /// entry answers for the DLL stamp the env's resolution records

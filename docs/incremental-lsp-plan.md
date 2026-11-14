@@ -2818,7 +2818,9 @@ then have to carry. It is not adopted by default.
   refresh (`SemanticState::announced`). A cached fold found stale owes no
   second refresh when every item that moved was announced after the
   generation that last confirmed the fold: the client was told of each
-  change it finds. A change announced in that generation or before it, or
+  change it finds. The rebuild decides it, comparing the stale parses'
+  texts with the ones it read (`owe_refresh_for_unannounced`), so
+  validation still stops at the first item that moved. A change announced in that generation or before it, or
   never (a write on disk with no event), owes one from the request that
   finds it. Without this, every keystroke sent the client two
   workspace-wide refreshes: one at the `didChange`, and one from the next
@@ -2902,9 +2904,19 @@ filled.
 | `XmlDoc` | the parsed doc files, censuses and ID indices | its own witness: the `.xml`'s full stamp (device, inode, size, mtime, ctime), and nothing cached under a racy one; the others by env identity | exact: a parse is served only for the file's current bytes, with no event (the `(size, mtime)` witness it had accepted a same-size, same-mtime rewrite) |
 | `WorkspaceSweep` | no: each request walks the roots afresh; a sweep in flight spans generations | the sweep restarts when the `projects_generation` moves, which a structural event now moves explicitly | a sweep's report reads one generation of the evaluations, as before |
 
-The other variants are as Stage 6b left them: `FsprojDiagnostics` and
-`EnvKey` are computed per request, `AssemblyCache` answers for a stamp the env
-records, and `CSharpSidecar` feeds envs with an unrecorded reader.
+The other variants are as Stage 6b left them (`FsprojDiagnostics` is
+computed per request, `AssemblyCache` answers for a stamp the env records,
+and `CSharpSidecar` feeds envs with an unrecorded reader), but for one.
+`EnvKey` is gone: Stage 6b kept it on the ground that the env key is
+computed afresh on every slow-path lookup, so no cached value rests on it.
+The resolved fold does, because its fast path never computes the key, and
+once a structural event stops dropping folds, an SDK installed in an
+earlier `global.json` `sdk.paths` root, which moves the root a project with
+no SDK of its own probes for, left the fold on the env of the old root
+(found by Codex). So the probe (`Workspace::dotnet_root_and_reads_for_project`)
+and the key's canonicalisation of the root record into the env's read set,
+and the env's confirmation notices the move
+(`an_env_records_what_choosing_its_dotnet_root_read`).
 
 **Decision 3: what the deletion forced** (the departures below).
 
@@ -3081,6 +3093,7 @@ Planted, each caught, then removed (each run against `cargo test -p borzoi
 | a validation owing a refresh for an announced change (Codex) | `each_change_owes_one_refresh` (added for it: `(1, 1, 0, 1)` where `(1, 0, 0, 1)` is right) |
 | every change treated as announced | `each_change_owes_one_refresh` (the unwatched write owes none), the pinned scripts |
 | announcements as a set a fold consumes (Codex) | `an_announcement_speaks_only_for_changes_after_the_last_confirmation` (added for it) |
+| the dotnet-root probe's reads left out of the env (Codex) | `an_env_records_what_choosing_its_dotnet_root_read` (added for it) |
 
 #313's mutations, re-planted where their code still exists:
 

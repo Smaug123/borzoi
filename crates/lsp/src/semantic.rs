@@ -535,11 +535,16 @@ pub struct SemanticState {
     /// client as changed: a text sync or a watch event named it and owed
     /// the refresh then ([`Self::owe_token_refresh`]). A cached fold whose
     /// moved items were all announced after the generation that last
-    /// confirmed it owes no second refresh ([`Self::validate_cached_fold`]):
+    /// confirmed it owes no second refresh (`Self::owe_refresh_for_unannounced`):
     /// the client was told of every change it finds. Keyed as the `Vfs` keys
     /// its buffers ([`crate::paths::path_dedup_key`]), one entry per source
     /// the session has announced.
     announced: HashMap<String, u64>,
+    /// A project's cached parses that validation found stale under the
+    /// evaluation they were built from, kept until the rebuild that follows
+    /// compares them with what it read, to decide whether the change owes a
+    /// refresh (`Self::owe_refresh_for_unannounced`).
+    superseded: HashMap<ProjectId, CachedParses>,
 }
 
 /// What the semantic layer did in one generation
@@ -906,9 +911,11 @@ impl SemanticState {
         // works from the project path and the environment alone, so there's no
         // asymmetry to work around; both pass the same restore environment and
         // cache the same result.
+        // The caller chose the root, so choosing it read nothing here.
         self.assembly_env_for_project_retryable(
             project,
             dotnet_root,
+            ReadSet::default(),
             target_framework,
             workspace,
             self.restore_env(workspace),
@@ -1020,6 +1027,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         dotnet_root: Option<&Path>,
+        root_reads: ReadSet,
         target_framework: &ServedTfm,
         workspace: &Workspace,
         restore_env: Option<&SdkDiscoveryEnv>,
@@ -1027,6 +1035,7 @@ impl SemanticState {
         let (cached, retryable) = self.cached_assembly_env(
             project,
             dotnet_root,
+            root_reads,
             target_framework,
             workspace,
             restore_env,
@@ -1060,6 +1069,7 @@ impl SemanticState {
         let (cached, retryable) = self.cached_assembly_env(
             project,
             dotnet_root,
+            ReadSet::default(),
             target_framework,
             workspace,
             restore_env,
@@ -1081,6 +1091,7 @@ impl SemanticState {
         let (cached, retryable) = self.cached_assembly_env(
             project,
             dotnet_root,
+            ReadSet::default(),
             target_framework,
             workspace,
             restore_env,
@@ -1104,6 +1115,7 @@ impl SemanticState {
         let (cached, _) = self.cached_assembly_env(
             project,
             dotnet_root,
+            ReadSet::default(),
             target_framework,
             workspace,
             restore_env,
@@ -1121,6 +1133,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         dotnet_root: Option<&Path>,
+        root_reads: ReadSet,
         target_framework: &ServedTfm,
         workspace: &Workspace,
         restore_env: Option<&SdkDiscoveryEnv>,
@@ -1148,11 +1161,17 @@ impl SemanticState {
         // Built, restored and reported as the key spells it, so the entry holds
         // exactly the env of the project it names.
         let project = id.as_path();
+        // Every query the resolution makes is recorded here, and the env
+        // carries the read set ([`EnvReads`]), with what choosing its key
+        // read: the canonical spelling of the root, and `root_reads`, what
+        // choosing the root read (a probe for a project that records no SDK
+        // root). A cached fold's fast path never computes the key again, so
+        // the env's confirmation is what notices it would move.
+        let observer = Observer::new();
         let key = (
             id.clone(),
             dotnet_root.map(|root| {
-                Unobserved::EnvKey
-                    .canonicalize(root)
+                msbuild_observed::canonicalize(&observer, root)
                     .unwrap_or_else(|_| root.to_path_buf())
             }),
             target_framework.clone(),
@@ -1170,11 +1189,9 @@ impl SemanticState {
         // dependency contributes the edges the real build would. Only done on
         // a miss: both re-read the closure from disk, which would be wasteful
         // per lookup.
-        // Every query the resolution makes is recorded here, and the env
-        // carries the read set ([`EnvReads`]). A package it reads is trusted
-        // as installed only if it was complete before the resolution began.
+        // A package the resolution reads is trusted as installed only if it
+        // was complete before the resolution began.
         let started = workspace.generation_time();
-        let observer = Observer::new();
         let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), &observer);
         let graph =
             workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms, &observer);
@@ -1200,6 +1217,7 @@ impl SemanticState {
             &observer,
         );
         let (reads, counts) = observer.finish();
+        let reads = reads.union(root_reads);
         let checks = workspace.env_checks(&id, dotnet_root, &package_folders, &reads, started);
         let reads = EnvReads { reads, unrecorded };
         crate::observed::report_env_resolution(counts, &reads);
@@ -1405,7 +1423,7 @@ impl SemanticState {
         // discovery — `$PATH` fallback, `global.json` `sdk.paths` overrides —
         // so a workspace with no `$DOTNET_ROOT` but `dotnet` on `$PATH` still
         // gets framework-pack DLLs into the assembly env.
-        let dotnet_root = workspace.dotnet_root_for_project(project);
+        let (dotnet_root, root_reads) = workspace.dotnet_root_and_reads_for_project(project);
         let dotnet_root = dotnet_root.as_deref();
         // The served-TFM verdict, read **once** and fed to both resolution
         // inputs (fsproj 3.3c, plan E5): the parses are already coherent by
@@ -1435,6 +1453,7 @@ impl SemanticState {
         let (env, retryable) = self.assembly_env_for_project_retryable(
             project,
             dotnet_root,
+            root_reads,
             &target_framework,
             workspace,
             restore_env,
@@ -1730,7 +1749,21 @@ impl SemanticState {
         let key = ProjectId::new(project);
         self.validate_cached_fold(&key, workspace, docs);
         if !self.project_parses.contains_key(&key) {
-            let parses = self.fold(project, workspace, docs).ok()?;
+            let stale = self.superseded.remove(&key);
+            let parses = match self.fold(project, workspace, docs) {
+                Ok(parses) => parses,
+                Err(_) => {
+                    // A fold that dropped a stale one and is now refused
+                    // changes what every open buffer shows.
+                    if stale.is_some() {
+                        self.wants_refresh = true;
+                    }
+                    return None;
+                }
+            };
+            if let Some(stale) = &stale {
+                self.owe_refresh_for_unannounced(stale, &parses);
+            }
             self.project_parses.insert(
                 key.clone(),
                 CachedParses {
@@ -1793,25 +1826,18 @@ impl SemanticState {
         };
         let generation = docs.generation();
         let same_evaluation = cached.evaluation == evaluation;
-        let checked = generation.is_some() && cached.validated_in == generation;
-        // Every item whose text moved, if the evaluation stands.
-        let moved: Vec<&PathBuf> = if same_evaluation && !checked {
-            cached
-                .parses
-                .paths
-                .iter()
-                .zip(&cached.parses.texts)
-                .filter(|(path, text)| {
-                    !docs
-                        .text_of(path)
-                        .is_some_and(|now| Arc::ptr_eq(&now, *text) || *now == ***text)
-                })
-                .map(|(path, _)| path)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        if same_evaluation && moved.is_empty() {
+        let current = same_evaluation
+            && ((generation.is_some() && cached.validated_in == generation)
+                || cached
+                    .parses
+                    .paths
+                    .iter()
+                    .zip(&cached.parses.texts)
+                    .all(|(path, text)| {
+                        docs.text_of(path)
+                            .is_some_and(|now| Arc::ptr_eq(&now, text) || *now == **text)
+                    }));
+        if current {
             cached.validated_in = generation;
             return;
         }
@@ -1819,25 +1845,45 @@ impl SemanticState {
             project = %key.as_path().display(),
             "a cached fold's evaluation or a Compile item's text moved; dropping it"
         );
-        // Another open buffer's tokens may now be stale, unless every move
-        // was announced after the generation that last confirmed the fold,
-        // which owed the refresh then: the client was told of each change
-        // found here. One announced in that generation or before it may
-        // predate the confirmation, and outside a generation nothing is
-        // known, so either owes the refresh again. A moved evaluation is
-        // announced by the moved projects generation, but the refresh is
-        // owed again here rather than reasoned about.
-        let confirmed_in = cached.validated_in;
-        let announced = &self.announced;
-        let unannounced = !same_evaluation
-            || moved.iter().any(|path| {
-                !announced
-                    .get(&path_dedup_key(&lexically_normalize(path)))
-                    .is_some_and(|&at| confirmed_in.is_some_and(|confirmed| at > confirmed))
-            });
-        self.project_parses.remove(key);
+        let stale = self.project_parses.remove(key);
         self.resolved_projects.remove(key);
         self.observed_fold_refusals.remove(key);
+        if same_evaluation {
+            // Whether a refresh is owed is decided by the rebuild, which
+            // reads every item's text anyway (`Self::parses_for_project`).
+            self.superseded
+                .extend(stale.map(|stale| (key.clone(), stale)));
+        } else {
+            // A moved evaluation is announced by the moved projects
+            // generation, but the refresh is owed again here rather than
+            // reasoned about.
+            self.wants_refresh = true;
+        }
+    }
+
+    /// Owe a semantic-token refresh unless every Compile item whose text
+    /// moved between `stale` and `fresh` (folded under one evaluation, so
+    /// over one Compile list) was announced after the generation that last
+    /// confirmed `stale`, which owed the refresh then: the client was told
+    /// of each change. One announced in that generation or before it may
+    /// predate the confirmation, and outside a generation nothing is known,
+    /// so either owes the refresh again.
+    fn owe_refresh_for_unannounced(&mut self, stale: &CachedParses, fresh: &ProjectParses) {
+        let confirmed_in = stale.validated_in;
+        let announced = &self.announced;
+        let same_list = stale.parses.paths == fresh.paths;
+        let unannounced = !same_list
+            || stale
+                .parses
+                .paths
+                .iter()
+                .zip(stale.parses.texts.iter().zip(&fresh.texts))
+                .filter(|(_, (before, now))| !(Arc::ptr_eq(before, now) || ***before == ***now))
+                .any(|(path, _)| {
+                    !announced
+                        .get(&path_dedup_key(&lexically_normalize(path)))
+                        .is_some_and(|&at| confirmed_in.is_some_and(|confirmed| at > confirmed))
+                });
         if unannounced {
             self.wants_refresh = true;
         }
@@ -5491,6 +5537,62 @@ mod tests {
                 &borzoi_msbuild::observed::Observer::new()
             )
             .is_empty()
+        );
+    }
+
+    /// A project that records no SDK root takes the env's dotnet root from a
+    /// probe of a bare `Microsoft.NET.Sdk` (`Workspace::dotnet_root_for_project`),
+    /// which the cached fold's fast path never runs again. So the env records
+    /// what the probe read, and an SDK installed in an earlier `global.json`
+    /// `sdk.paths` root, which moves the probe's answer, drops the env and
+    /// the fold with it: the next lookup resolves against the new root
+    /// (found by Codex, where a structural watch event had dropped the fold).
+    #[test]
+    fn an_env_records_what_choosing_its_dotnet_root_read() {
+        let tmp = TempDir::new().unwrap();
+        let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        let install = |dotnet: &Path| {
+            let sdk = dotnet.join("sdk/9.0.100/Sdks/Microsoft.NET.Sdk/Sdk");
+            std::fs::create_dir_all(&sdk).unwrap();
+            std::fs::write(sdk.join("Sdk.props"), "<Project/>").unwrap();
+            std::fs::write(sdk.join("Sdk.targets"), "<Project/>").unwrap();
+        };
+        std::fs::create_dir_all(&first).unwrap();
+        install(&second);
+        write(
+            &root.join("global.json"),
+            r#"{ "sdk": { "paths": ["first", "second"] } }"#,
+        );
+        let proj = root.join("app/P.fsproj");
+        write(&proj, &fsproj(&["A.fs"]));
+        write(&root.join("app/A.fs"), "module A\nlet x = 1\n");
+
+        let mut ws = Workspace::with_env(crate::sdk_discovery::SdkDiscoveryEnv::default());
+        let mut sema = SemanticState::new();
+        let docs = Vfs::new();
+        let old = crate::vfs::Nanos(i128::MAX / 2);
+        let fold = |ws: &mut Workspace, sema: &mut SemanticState| {
+            ws.begin_generation(old);
+            let (_, env) = sema
+                .resolved_project_and_env_for(&proj, ws, &docs)
+                .expect("the project folds");
+            ws.end_generation();
+            env
+        };
+        assert_eq!(ws.dotnet_root_for_project(&proj), Some(second.clone()));
+        let before = fold(&mut ws, &mut sema);
+        assert!(
+            Arc::ptr_eq(&before, &fold(&mut ws, &mut sema)),
+            "a cached fold"
+        );
+        install(&first);
+        assert_eq!(ws.dotnet_root_for_project(&proj), Some(first.clone()));
+        let after = fold(&mut ws, &mut sema);
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "the env chosen by the old probe answer was served"
         );
     }
 

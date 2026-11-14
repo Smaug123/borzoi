@@ -1154,13 +1154,28 @@ impl Workspace {
     /// disabled / failed (offline, no `$DOTNET_ROOT`). `None` when even the
     /// fallback can't name a root.
     pub fn dotnet_root_for_project(&mut self, project_path: &Path) -> Option<PathBuf> {
+        self.dotnet_root_and_reads_for_project(project_path).0
+    }
+
+    /// [`Self::dotnet_root_for_project`], with what choosing it read beyond
+    /// the project's evaluation (whose reads its consumers record already):
+    /// the probe's queries, for a project that records no SDK root. An env
+    /// keyed on the root records them (`SemanticState`'s
+    /// `cached_assembly_env`), so a cached fold whose fast path never asks
+    /// for the root again still notices when it would move.
+    pub fn dotnet_root_and_reads_for_project(
+        &mut self,
+        project_path: &Path,
+    ) -> (Option<PathBuf>, ReadSet) {
         if let Some(root) = self
             .evaluated(project_path)
             .and_then(|e| e.sdk_install_root.clone())
         {
-            return Some(root);
+            return (Some(root), ReadSet::default());
         }
-        self.probe_dotnet_root(project_path)
+        let observer = Observer::new();
+        let root = self.probe_dotnet_root(project_path, &observer);
+        (root, observer.finish().0)
     }
 
     /// Best-effort install-root guess for a project that recorded no SDK
@@ -1174,10 +1189,9 @@ impl Workspace {
     /// This is a guess, used only when the authoritative recorded root is
     /// absent — when an SDK *was* resolved, [`Self::dotnet_root_for_project`]
     /// uses that instead, so the probe's multi-root ambiguity never bites.
-    fn probe_dotnet_root(&self, project_path: &Path) -> Option<PathBuf> {
-        let observer = Unobserved::EnvKey.msbuild_observer();
-        let disc = SdkDiscovery::for_project(project_path, &self.env, &observer).ok()?;
-        if let Ok(SdkResolution::Single(paths)) = disc.resolve("Microsoft.NET.Sdk", &observer)
+    fn probe_dotnet_root(&self, project_path: &Path, observer: &Observer) -> Option<PathBuf> {
+        let disc = SdkDiscovery::for_project(project_path, &self.env, observer).ok()?;
+        if let Ok(SdkResolution::Single(paths)) = disc.resolve("Microsoft.NET.Sdk", observer)
             && let Some(install_root) = install_root_from_sdk_path(&paths.root)
         {
             return Some(install_root.to_path_buf());
