@@ -510,7 +510,13 @@ impl<'s, 'r> Engine<'s, 'r> {
                 "PropertyGroup" => self.property_group(child)?,
                 "ItemGroup" => self.item_group(child)?,
                 "Message" => self.message(child)?,
-                other => return decline(format!("target {target} runs {other}")),
+                // A task whose condition is false does not run: MSBuild neither
+                // binds it nor reads its parameters.
+                other => {
+                    if self.decide(child)? {
+                        return decline(format!("target {target} runs {other}"));
+                    }
+                }
             }
         }
         Ok(())
@@ -732,7 +738,7 @@ impl<'s, 'r> Engine<'s, 'r> {
 
     /// Decide `node`'s `Condition` (true when it has none).
     fn decide(&mut self, node: Node<'_, '_>) -> Result<bool, Decline> {
-        let Some(raw) = attribute(node, "Condition")? else {
+        let Some(raw) = condition_text(node)? else {
             return Ok(true);
         };
         let raw = self.with_items(&raw, true)?;
@@ -768,10 +774,7 @@ impl<'s, 'r> Engine<'s, 'r> {
         if raw.contains("%(") {
             return decline(format!("{raw} reads metadata"));
         }
-        let Some(names) = plain_references(raw) else {
-            return decline(format!("{raw} calls a property function"));
-        };
-        for name in names {
+        for name in crate::properties::property_references(raw) {
             self.check_read(name)?;
             if self
                 .lookup
@@ -877,15 +880,15 @@ impl<'s, 'r> Engine<'s, 'r> {
         Ok(out)
     }
 
-    /// Every reference in `raw` is a plain `$(Name)` the run may read.
+    /// Every property `raw` reads, a function's receiver or one in its
+    /// arguments, is one the run may read. Which functions run is the walk's
+    /// expression evaluator's business: what it does not model it reports,
+    /// and the run declines ([`Self::substitute`], [`Self::decide`]).
     fn check_references(&self, raw: &str) -> Result<(), Decline> {
         if raw.contains("@(") || raw.contains("%(") {
             return decline(format!("{raw} reads metadata or an item expression"));
         }
-        let Some(names) = plain_references(raw) else {
-            return decline(format!("{raw} calls a property function"));
-        };
-        for name in names {
+        for name in crate::properties::property_references(raw) {
             self.check_read(name)?;
         }
         Ok(())
@@ -1039,4 +1042,35 @@ fn may_assemble(escaped: &str) -> bool {
 /// escaped (raw, it would have split), as re-escaping spells it.
 fn respellable(identity: &str) -> bool {
     identity.trim() == identity && !identity.contains(['%', '*', '?', '@', '$', '(', ')', '\''])
+}
+
+/// `node`'s `Condition`, as a condition reads it. Entities decode alike in
+/// MSBuild and the XML reader, and outside a quoted string a tab or line break
+/// is whitespace between tokens either way; only inside one would the XML
+/// reader's normalisation (to a space) and MSBuild's literal character differ,
+/// so that declines. The walk reads conditions the same way.
+fn condition_text(node: Node<'_, '_>) -> Result<Option<String>, Decline> {
+    let Some(attr) = node.attributes().find(|a| a.name() == "Condition") else {
+        return Ok(None);
+    };
+    let raw = node
+        .document()
+        .input_text()
+        .get(attr.range_value())
+        .unwrap_or_default();
+    let mut quoted = false;
+    for c in raw.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            '\t' | '\n' | '\r' if quoted => {
+                return decline(format!("the condition {raw} breaks a line inside a quote"));
+            }
+            _ => {}
+        }
+    }
+    // A character reference may spell a quote or a line break.
+    if raw.contains("&#") {
+        return decline(format!("the condition {raw} holds a character reference"));
+    }
+    Ok(Some(attr.value().to_owned()))
 }

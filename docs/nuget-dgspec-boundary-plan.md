@@ -1987,6 +1987,16 @@ the two differ where it matters:
   other item expressions (transforms, separators, `@(0)`, which MSBuild
   leaves literal), a property value that could join into one, and a read of
   a property starting with `-`.
+- **Property functions** run as the walk's expression evaluator runs them
+  (graded by `property_expr_diff`): every property an expression reads, a
+  receiver or an argument, must be one the run may read, and what the
+  evaluator does not model, or reports as failing, declines.
+- **Conditions** read as the walk reads them. Entities decode alike in
+  MSBuild and the XML reader, and outside a quoted string a line break is
+  whitespace either way; a tab or line break inside a quoted string, which
+  MSBuild keeps and the XML reader normalises, declines.
+- **A task whose condition is false** does not run, in MSBuild or here: only
+  one that would run declines.
 - **Bodies**: intrinsic `PropertyGroup`s, `ItemGroup` `Include`s without
   batching (each new item taking its type's item-definition defaults beneath
   its own metadata, `Label` not metadata), and `Message` with the parameters
@@ -2024,8 +2034,8 @@ every committed run to it. The scheduling rules above came out of its
 failures. Its soak fails when any of the three push rules is changed.
 
 The census runs `GenerateRestoreGraphFile` on every cone and pins where the
-executor stops. Every single-target cone stops at a property function in a
-condition, `$(MSBuildProjectFullPath.EndsWith('.metaproj'))`. The two
+executor stops. Every single-target cone stops at item batching, a
+condition reading `%(RestoreGraphProjectInputItems.Extension)`. The two
 multi-targeting outer builds stop at opacity.
 
 **`MSBuildProjectDefaultTargets`.** The hook

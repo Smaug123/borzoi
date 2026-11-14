@@ -34,7 +34,7 @@ const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// reference as `$(A)$(B)`, which MSBuild expands as such.
 /// `@(I)` and `@(J)` read item lists (an `Include` copies them), and a
 /// transform is an item expression the executor declines.
-const VALUES: [&str; 18] = [
+const VALUES: [&str; 21] = [
     "x",
     "y",
     "$(A)z",
@@ -56,8 +56,13 @@ const VALUES: [&str; 18] = [
     "$(-ItemList-J)",
     // A list run into text: with `J` holding a lone `%`, MSBuild reads `A`.
     "@(J)41",
+    // Property functions: one the walk models, a static one, and one MSBuild
+    // throws on.
+    "$(A.ToUpper())",
+    "$([System.String]::Concat('p', $(A)))",
+    "$(A.Substring(9))",
 ];
-const CONDITIONS: [&str; 8] = [
+const CONDITIONS: [&str; 13] = [
     "'$(A)' == 'x'",
     "'$(A)' != 'x'",
     "'$(B)' == ''",
@@ -65,6 +70,15 @@ const CONDITIONS: [&str; 8] = [
     "'$(Gated)' == 'g'",
     "'@(I)' == ''",
     "@(J) != ''",
+    // Property functions, which the walk's expression evaluator decides.
+    "'$(A.ToUpper())' == 'X'",
+    "$(A.EndsWith('x'))",
+    // An entity, and line breaks outside and inside a quoted string.
+    "'$(A)' != '&lt;'",
+    "'$(A)' == 'x'\n   and '$(B)' == ''",
+    // False in MSBuild, which keeps the line break; true once an XML reader
+    // normalises it to a space.
+    "'x\ny' == 'x y'",
     "Exists('nowhere')",
 ];
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
@@ -262,7 +276,12 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
                     "    <Message Text=\"$(A)\" Importance=\"{}\" />\n",
                     rng.pick(&["low", "high", " Normal ", "invalid"])
                 )),
-                _ => out.push_str("    <Error Condition=\"false\" Text=\"no\" />\n"),
+                // A task the executor does not run, behind a condition that is
+                // false (it does not run in MSBuild either) or true.
+                _ => out.push_str(&format!(
+                    "    <Error Condition=\"{}\" Text=\"no\" />\n",
+                    rng.pick(&["false", "'$(A)' == 'nope'", "true"])
+                )),
             }
         }
         out.push_str("  </Target>\n");
