@@ -1969,19 +1969,24 @@ the two differ where it matters:
   expanded against the evaluation and dropped where the named target does
   not exist (`Evaluator.ReadTargetElement`,
   `AddBeforeAndAfterTargetMappings`).
-- **Item references.** A plain `@(Type)` in a condition or value reads as
-  MSBuild expands it, each identity escaped and joined by `;`: the executor
-  reads it through a property no project can write (`-ItemList-Type`), so
-  conditions and values take it as they take `$(…)`. In an `Include`, a
-  piece that is a lone plain `@(Type)` copies those items, metadata and all:
-  the destination's item-definition defaults beneath, the element's own
-  metadata on top. Any other item expression (a transform, a separator, a
-  list run together with text, a name MSBuild leaves literal such as
-  `@(0)`) declines, as does a property value that could join into one, a
-  read of a property starting with `-`, and a list holding an identity whose
-  escaped spelling the decoded tables cannot recover: one with padding, or
-  with a `%`, `@`, `$`, `(`, `)`, `*`, `?` or `'`, any of which joins
-  differently raw and escaped (a lone `%` run into `41` reads `A`).
+- **Item references.** The walk's item tables hold identities decoded, and
+  MSBuild expands a list from their escaped spellings, which decoding loses.
+  So item lists are read only where spelling cannot tell:
+  - in a condition, a plain `@(Type)` bounded by quotes, parentheses,
+    whitespace or its ends reads as MSBuild compares it, through a property
+    no project can write (`-ItemList-Type`). A list holding an identity
+    whose spelling is ambiguous (padded, or with `%`, `@`, `$`, `(`, `)`,
+    `*`, `?` or `'`) declines;
+  - in an `Include`, a piece that is a lone plain `@(Type)` copies those
+    items, metadata and all, with the destination's item-definition
+    defaults beneath and the element's own metadata on top.
+
+  An item list in a value (a property, a metadatum, `Message` text) declines
+  until the tables carry escaped spellings: with `J` spelt `%34%31`, a
+  property holding `@(J)` later run into a `%` reads `%41` in MSBuild. So do
+  other item expressions (transforms, separators, `@(0)`, which MSBuild
+  leaves literal), a property value that could join into one, and a read of
+  a property starting with `-`.
 - **Bodies**: intrinsic `PropertyGroup`s, `ItemGroup` `Include`s without
   batching (each new item taking its type's item-definition defaults beneath
   its own metadata, `Label` not metadata), and `Message` with the parameters

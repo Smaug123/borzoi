@@ -735,7 +735,7 @@ impl<'s, 'r> Engine<'s, 'r> {
         let Some(raw) = attribute(node, "Condition")? else {
             return Ok(true);
         };
-        let raw = self.with_items(&raw)?;
+        let raw = self.with_items(&raw, true)?;
         self.check_references(&raw)?;
         if holds_reference(properties::substitute(&raw, &self.lookup).0.as_escaped()) {
             return decline(format!(
@@ -754,7 +754,7 @@ impl<'s, 'r> Engine<'s, 'r> {
     /// Expand the `$(…)` and plain `@(Type)` in `raw` against the run's
     /// tables.
     fn expand(&mut self, raw: &str) -> Result<escaping::Escaped, Decline> {
-        let raw = self.with_items(raw)?;
+        let raw = self.with_items(raw, false)?;
         self.substitute(&raw)
     }
 
@@ -812,18 +812,41 @@ impl<'s, 'r> Engine<'s, 'r> {
     /// `raw` with each plain `@(Type)` read as a property holding the list as
     /// MSBuild expands it: each identity escaped, joined by `;`. An item
     /// expression that is more (a transform, a separator) declines.
-    fn with_items(&mut self, raw: &str) -> Result<String, Decline> {
+    fn with_items(&mut self, raw: &str, condition: bool) -> Result<String, Decline> {
         if references_private(raw) {
             return decline(format!("{raw} reads a property no project can write"));
+        }
+        // The tables hold identities decoded, and MSBuild expands a list from
+        // their escaped spellings, which decoding loses. In a value that
+        // spelling is what the value holds, and a later read may run it into a
+        // `%` (with `J` spelt `%34%31`, `%@(J)` reads `%41`, not `A`); a
+        // condition compares decoded text, where only what the reference runs
+        // into can tell spellings apart. So a value declines any item list,
+        // and a condition one not bounded by quotes, parentheses, whitespace
+        // or its ends.
+        if !condition && raw.contains("@(") {
+            return decline(format!(
+                "{raw} reads an item list into a value, whose escaped spelling the tables do not keep"
+            ));
         }
         let mut out = String::new();
         let mut rest = raw;
         while let Some(at) = rest.find("@(") {
+            let before = rest[..at].chars().next_back();
             out.push_str(&rest[..at]);
             let interior = &rest[at + 2..];
             let Some(close) = interior.find(')') else {
                 return decline(format!("{raw} has an unclosed item reference"));
             };
+            let after = interior[close + 1..].chars().next();
+            let bounded = |c: Option<char>, opening: bool| {
+                c.is_none_or(|c| {
+                    c.is_whitespace() || c == '\'' || c == if opening { '(' } else { ')' }
+                })
+            };
+            if !bounded(before, true) || !bounded(after, false) {
+                return decline(format!("{raw} runs an item list into other text"));
+            }
             let item_type = interior[..close].trim();
             if !item_name(item_type) {
                 return decline(format!("{raw} has an item expression"));
@@ -1015,6 +1038,5 @@ fn may_assemble(escaped: &str) -> bool {
 /// quote. A `;` is not among them: an identity holding one was spelt with it
 /// escaped (raw, it would have split), as re-escaping spells it.
 fn respellable(identity: &str) -> bool {
-    identity.trim() == identity
-        && !identity.contains(['%', '*', '?', '@', '$', '(', ')', '\''])
+    identity.trim() == identity && !identity.contains(['%', '*', '?', '@', '$', '(', ')', '\''])
 }

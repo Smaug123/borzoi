@@ -74,7 +74,7 @@ const UNDECIDABLE: &str = "$([System.String]::IsNullOrWhiteSpace(''))";
 /// A value: mostly one of the first seven, which the executor runs, and now
 /// and then any, many of which it declines.
 fn value(rng: &mut SplitMix64) -> &'static str {
-    if rng.below(3) == 0 {
+    if rng.below(5) == 0 {
         rng.pick(&VALUES)
     } else {
         rng.pick(&VALUES[..7])
@@ -534,9 +534,7 @@ fn returns_that_fail_the_build_decline() {
 
 /// Item references whose effect the generator rarely shows: a copy takes its
 /// type's item-definition defaults beneath the metadata it carries, and a
-/// list read through a property keeps each identity escaped, so an escaped
-/// `;` stays inside its item when that property is included again. Each run
-/// must be MSBuild's.
+/// condition reads a list as MSBuild does. Each must run, as MSBuild runs it.
 #[test]
 fn item_references_keep_definitions_and_escapes() {
     const CASES: [&str; 2] = [
@@ -547,9 +545,8 @@ fn item_references_keep_definitions_and_escapes() {
            </Project>"#,
         r#"<Project>
              <ItemGroup><J Include="x%3By;z" /></ItemGroup>
-             <Target Name="T0">
-               <PropertyGroup><C>@(J)</C></PropertyGroup>
-               <ItemGroup><I Include="$(C)" /></ItemGroup>
+             <Target Name="T0" Condition="'@(J)' != ''">
+               <PropertyGroup><C>ran</C></PropertyGroup>
              </Target>
            </Project>"#,
     ];
@@ -567,7 +564,28 @@ fn item_references_keep_definitions_and_escapes() {
 /// decoded. Each run may decline; if it runs, it must be MSBuild's.
 #[test]
 fn identities_decoding_loses_the_spelling_of() {
-    const CASES: [&str; 2] = [
+    const CASES: [&str; 6] = [
+        r#"<Project>
+             <ItemGroup><J Include="%34%31" /></ItemGroup>
+             <Target Name="T0"><PropertyGroup><B>@(J)</B><C>%$(B)</C></PropertyGroup></Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="%34%31" /></ItemGroup>
+             <Target Name="T0"><PropertyGroup><C>%@(J)</C></PropertyGroup></Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="%34%31" /></ItemGroup>
+             <Target Name="T0" Condition="'%@(J)' == 'A'">
+               <PropertyGroup><C>ran</C></PropertyGroup>
+             </Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="x%3By;z" /></ItemGroup>
+             <Target Name="T0">
+               <PropertyGroup><C>@(J)</C></PropertyGroup>
+               <ItemGroup><I Include="$(C)" /></ItemGroup>
+             </Target>
+           </Project>"#,
         r#"<Project>
          <ItemGroup><J Include="%20j%20" /></ItemGroup>
          <Target Name="T0">
