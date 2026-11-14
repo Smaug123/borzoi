@@ -121,6 +121,9 @@
 //! **av.open**, **av.stat**, **av.list** and **av.canon** what confirming the
 //! cached envs cost (`borzoi::workspace::Workspace::confirm_env`), from each
 //! [`GENERATION_EVENT`].
+//!
+//! The **f.new** column counts the Compile-order folds the message computed
+//! (cold or incremental): a request the cached fold answers computes none.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -292,9 +295,10 @@ const ENV_RESOLUTION_FIELDS: [&str; 6] = [
 /// canonicalisations), what finding the projects that own files cost it
 /// (listings and stats), what the parse memo did (sources parsed, and
 /// parses reused), and what confirming cached envs cost it (opens, stats,
-/// listings and canonicalisations).
-static VALIDATION: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
-const VALIDATION_FIELDS: [&str; 12] = [
+/// listings and canonicalisations), and how many Compile-order folds it
+/// computed.
+static VALIDATION: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
+const VALIDATION_FIELDS: [&str; 13] = [
     "v_opens",
     "v_stats",
     "v_listings",
@@ -307,6 +311,7 @@ const VALIDATION_FIELDS: [&str; 12] = [
     "av_stats",
     "av_listings",
     "av_canonicalizations",
+    "folded",
 ];
 
 /// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
@@ -355,7 +360,7 @@ impl tracing::field::Visit for ProjectField {
 struct ReadFields {
     opens: Option<u64>,
     stats: Option<u64>,
-    validation: [Option<u64>; 12],
+    validation: [Option<u64>; 13],
 }
 
 impl tracing::field::Visit for ReadFields {
@@ -517,7 +522,7 @@ struct Cost {
     env: [u64; 6],
     /// The validations' and the ownership walks' counts, in
     /// [`VALIDATION_FIELDS`] order.
-    validation: [u64; 12],
+    validation: [u64; 13],
     /// Envs built ([`ENV_BUILD_SPAN`]).
     env_builds: u64,
 }
@@ -555,7 +560,7 @@ struct Reading {
     stats: u64,
     evaluation: [u64; 5],
     env: [u64; 6],
-    validation: [u64; 12],
+    validation: [u64; 13],
     env_builds: u64,
 }
 
@@ -1044,17 +1049,18 @@ fn columns(cost: &Cost) -> String {
         av_stats,
         av_listings,
         av_canon,
+        folded,
     ] = cost.validation;
     let [a_opens, a_stats, a_listings, a_canon, a_reads, a_unrecorded] = cost.env;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7} {:>7} {av_opens:>7} {av_stats:>7} {av_listings:>7} {av_canon:>7}",
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7} {:>7} {av_opens:>7} {av_stats:>7} {av_listings:>7} {av_canon:>7} {folded:>7}",
         cost.allocations, cost.allocated_bytes, cost.opens, cost.stats, cost.env_builds,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "message",
         "instructions",
         "allocs",
@@ -1084,7 +1090,8 @@ fn header() -> String {
         "av.open",
         "av.stat",
         "av.list",
-        "av.canon"
+        "av.canon",
+        "f.new"
     )
 }
 

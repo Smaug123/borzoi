@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
-use std::time::SystemTime;
+
+use borzoi_msbuild::observed::{self as msbuild_observed, FileStamp};
 
 use borzoi_sema::AssemblyEnv;
 
@@ -56,13 +57,6 @@ pub fn xml_path_for(dll: &Path) -> PathBuf {
     dll.with_extension("xml")
 }
 
-/// What identifies one version of a file on disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileStamp {
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
 /// Why [`DocFileCache::load`] has no index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
@@ -71,17 +65,20 @@ pub enum LoadError {
     Doc(DocFileError),
 }
 
-/// Parsed doc files, keyed by path and validated by `(size, mtime)` on every
-/// use.
+/// Parsed doc files, keyed by path and validated by the file's stamp on
+/// every use.
 ///
 /// Validating rather than trusting invalidation events is deliberate: a
 /// project's own build can rewrite its `.xml` while leaving the DLL
 /// byte-identical (a doc-comment edit changes no IL), and the watched-file
-/// globs do not cover `.xml`. The stamp costs one `stat` per lookup. The
-/// residual hole is a rewrite that keeps both size and mtime, the same one the
-/// on-disk assembly cache accepts. A failure to parse is cached too (against
-/// the same stamp), so a malformed file is not re-parsed — or re-logged — on
-/// every hover.
+/// globs do not cover `.xml`. The stamp ([`FileStamp`]: device, inode, size,
+/// modification and change times) costs a `stat` per lookup, and a parse
+/// is cached only under a stamp taken outside the racy window of the file's
+/// last change ([`FileStamp::racy`]), so two same-size writes within one
+/// timestamp tick cannot leave a stale parse standing. That is the
+/// [`crate::vfs`] rule, and needs no watch event. A failure to parse is
+/// cached too (against the same stamp), so a malformed file is not
+/// re-parsed — or re-logged — on every hover.
 #[derive(Debug, Default)]
 pub struct DocFileCache {
     files: HashMap<PathBuf, (FileStamp, Result<Arc<DocFile>, DocFileError>)>,
@@ -91,8 +88,8 @@ impl DocFileCache {
     /// The index of the doc file at `path`, parsing it if this version of it
     /// has not been parsed yet.
     pub fn load(&mut self, path: &Path) -> Result<Arc<DocFile>, LoadError> {
-        let meta = match Unobserved::XmlDoc.metadata(path) {
-            Ok(meta) if meta.is_file() => meta,
+        match Unobserved::XmlDoc.metadata(path) {
+            Ok(meta) if meta.is_file() => {}
             Ok(_) => {
                 self.files.remove(path);
                 return Err(LoadError::NotFound);
@@ -102,11 +99,10 @@ impl DocFileCache {
                 return Err(LoadError::NotFound);
             }
             Err(e) => return Err(LoadError::Io(e.to_string())),
-        };
-        let stamp = FileStamp {
-            len: meta.len(),
-            modified: meta.modified().ok(),
-        };
+        }
+        let observer = Unobserved::XmlDoc.msbuild_observer();
+        let stamp = msbuild_observed::stamp(&observer, path)
+            .map_err(|failure| LoadError::Io(format!("{failure:?}")))?;
         if let Some((cached, parsed)) = self.files.get(path)
             && *cached == stamp
         {
@@ -124,14 +120,15 @@ impl DocFileCache {
         if let Err(e) = &parsed {
             tracing::warn!(path = %path.display(), error = ?e, "unusable XML documentation file");
         }
-        self.files
-            .insert(path.to_path_buf(), (stamp, parsed.clone()));
+        // A racy stamp may not move with a same-size rewrite in its tick, so
+        // nothing is cached under it.
+        if stamp.racy {
+            self.files.remove(path);
+        } else {
+            self.files
+                .insert(path.to_path_buf(), (stamp, parsed.clone()));
+        }
         parsed.map_err(LoadError::Doc)
-    }
-
-    /// Drop every cached index (memory only: correctness rests on the stamps).
-    pub fn clear(&mut self) {
-        self.files.clear();
     }
 }
 
@@ -165,11 +162,6 @@ impl KeyCensusCache {
             .insert(dll.to_path_buf(), (Arc::downgrade(env), census.clone()));
         census
     }
-
-    /// Drop every census (memory only: correctness rests on env identity).
-    pub fn clear(&mut self) {
-        self.censuses.clear();
-    }
 }
 
 /// The env-wide [`DocIdIndex`] of each env asked about, validated by env
@@ -196,11 +188,6 @@ impl DocIdIndexCache {
         self.indices.push((me, index.clone()));
         index
     }
-
-    /// Drop every index (memory only: correctness rests on env identity).
-    pub fn clear(&mut self) {
-        self.indices.clear();
-    }
 }
 
 /// Everything documentation lookup caches: parsed files, per-assembly key
@@ -213,13 +200,6 @@ pub struct DocSources {
 }
 
 impl DocSources {
-    /// Drop every cache (memory only).
-    pub fn clear(&mut self) {
-        self.files.clear();
-        self.censuses.clear();
-        self.indices.clear();
-    }
-
     /// [`lookup`] through these caches.
     pub fn lookup(&mut self, env: &Arc<AssemblyEnv>, target: DocTarget) -> DocLookup {
         lookup(&mut self.files, &mut self.censuses, env, target)
@@ -337,6 +317,43 @@ mod tests {
         assert_eq!(cache.load(&path).err(), Some(LoadError::NotFound));
     }
 
+    /// A rewrite that keeps the file's size and puts its modification time
+    /// back is seen: the stamp carries the change time and inode too, and
+    /// nothing is cached under a stamp taken within the racy window of the
+    /// file's last change, so two same-size writes in one timestamp tick are
+    /// not missed either.
+    #[test]
+    fn a_same_size_rewrite_with_its_mtime_put_back_is_seen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("X.xml");
+        let first = "<doc><members><member name=\"T:A\"/></members></doc>";
+        let second = "<doc><members><member name=\"T:B\"/></members></doc>";
+        assert_eq!(first.len(), second.len(), "precondition");
+        std::fs::write(&path, first).unwrap();
+        let mut cache = DocFileCache::default();
+        let before = cache.load(&path).unwrap();
+        let mtime = crate::observed::host_fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        let file = crate::observed::host_fs::open_with(
+            std::fs::OpenOptions::new().write(true).truncate(true),
+            &path,
+        )
+        .unwrap();
+        {
+            use std::io::Write as _;
+            (&file).write_all(second.as_bytes()).unwrap();
+        }
+        file.set_modified(mtime).unwrap();
+        let after = cache.load(&path).unwrap();
+        assert_ne!(
+            before.entry("T:B").is_some(),
+            after.entry("T:B").is_some(),
+            "the rewrite was not seen"
+        );
+    }
+
     /// A path that stops being a file — deleted, or replaced by a directory —
     /// drops its cached index, so nothing of the old file can be served later.
     #[test]
@@ -345,6 +362,8 @@ mod tests {
         let path = tmp.path().join("X.xml");
         let mut cache = DocFileCache::default();
         std::fs::write(&path, "<doc><members/></doc>").unwrap();
+        // Past the racy window of the write, so the parse is cached.
+        std::thread::sleep(crate::vfs::RACY_WINDOW + std::time::Duration::from_millis(200));
         assert!(cache.load(&path).is_ok());
         assert!(cache.files.contains_key(&path));
         std::fs::remove_file(&path).unwrap();

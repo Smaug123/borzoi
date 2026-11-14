@@ -42,7 +42,7 @@ use crate::project_graph::{NodeTfm, ProjectGraph, ProjectKind};
 use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::sidecar_manager::SidecarManager;
-use crate::workspace::{EnvChecks, ProjectsGeneration, ServedTfm, Workspace};
+use crate::workspace::{EnvChecks, EvaluationId, ProjectsGeneration, ServedTfm, Workspace};
 use crate::xml_doc::inherit::{Expansion, expand};
 use crate::xml_doc::key::DocTarget;
 use crate::xml_doc::lookup::{DocLookup, DocSources};
@@ -169,11 +169,17 @@ pub struct ProjectParses {
     pub texts: Vec<Arc<str>>,
 }
 
-/// A project's cached [`ProjectParses`], and the generation in which its
-/// texts were last found current ([`SemanticState::validate_cached_fold`]).
+/// A project's cached [`ProjectParses`], the evaluation they were built
+/// from, and the generation in which their texts were last found current
+/// ([`SemanticState::validate_cached_fold`]).
 #[derive(Debug)]
 struct CachedParses {
     parses: ProjectParses,
+    /// The project evaluation whose Compile items, symbols, language
+    /// version and provenance the parses were built from
+    /// ([`Workspace::evaluation_id`]): they stand only while the workspace
+    /// serves that evaluation.
+    evaluation: Option<EvaluationId>,
     /// The [`Vfs::generation`] that last validated `parses`; `None` before
     /// any has, or when the last validation ran outside a generation.
     validated_in: Option<u64>,
@@ -271,31 +277,32 @@ struct PrevFold {
 /// assumption the request loop already makes.
 #[derive(Debug, Default)]
 pub struct SemanticState {
-    /// Per-project compile-ordered parses, keyed by [`ProjectId`]. Invalidated
-    /// by [`Self::invalidate_project`] on text-sync and by
-    /// [`Self::invalidate_all`] when `workspace/didChangeWatchedFiles` reports
-    /// a structural (`.fsproj` / assets / import) change.
+    /// Per-project compile-ordered parses, keyed by [`ProjectId`].
     ///
-    /// Each entry is validated in every generation that reads it
-    /// ([`Self::validate_cached_fold`]), so a Compile item rewritten on disk
-    /// with no watch event is still seen.
+    /// **Validated, not invalidated** (`docs/incremental-lsp-plan.md`, Stage
+    /// 7): every read of an entry first checks that the workspace still
+    /// serves the evaluation it was built from, and, once per generation,
+    /// that every Compile item's text is the one it was built from
+    /// ([`Self::validate_cached_fold`]). So an edit, a write on disk with or
+    /// without a watch event, and a moved evaluation are all seen by the
+    /// next read, and nothing has to call an invalidator.
     project_parses: HashMap<ProjectId, CachedParses>,
-    /// The last fold outcome per project, keyed by [`ProjectId`].
-    /// **Absence means [`FoldOutcome::Unknown`]** — no fold has run since the
-    /// inputs last changed — which is a third state, not a synonym for success.
+    /// The last fold refusal per project, keyed by [`ProjectId`], with the
+    /// project evaluation the refused fold read.
     ///
     /// Written **only** by [`Self::fold`], the one place the fold runs, so it
-    /// cannot disagree with what the fold actually did, and cleared by every
-    /// invalidation, because an invalidated input means the recorded outcome
-    /// describes a project that no longer exists in that form. Conflating that
-    /// with "succeeded" would let a stale refusal be re-reported against a
-    /// freshly-evaluated project; conflating it with "refused" would report a
-    /// problem that may already be fixed.
+    /// cannot disagree with what the fold actually did. A refusal speaks for
+    /// the project only while the workspace serves the evaluation it was
+    /// refused under ([`Self::fold_outcome`] reads
+    /// [`FoldOutcome::Unknown`] otherwise): reporting it against a project
+    /// evaluated since would describe a project that no longer exists in that
+    /// form. A refused project caches no parses, so every request that needs
+    /// its fold folds it again and records what it finds.
     ///
     /// Read (not drained) by [`Self::fold_outcome`], which is what lets the
     /// shell's message be a function of current state rather than of the event
     /// that provoked it.
-    observed_fold_refusals: HashMap<ProjectId, FoldRefusal>,
+    observed_fold_refusals: HashMap<ProjectId, (FoldRefusal, Option<EvaluationId>)>,
     /// Every source's parses ([`ParseMemo`]): the fold, the syntactic
     /// diagnostics and the single-file handlers each parse through it, so a
     /// text read by all of them is parsed once.
@@ -318,9 +325,10 @@ pub struct SemanticState {
     /// settings-tuple — a new text after an edit — replaces that tuple's variant,
     /// so repeated edits of a file don't grow its list.
     ///
-    /// Cleared by [`Self::invalidate_all`] on a structural change purely to bound
-    /// memory — correctness never rests on eviction, since the input comparison
-    /// in `build_parses` re-parses anything whose inputs no longer match.
+    /// Correctness never rests on eviction: the input comparison in
+    /// `build_parses` re-parses anything whose inputs no longer match. The
+    /// table holds one variant per path and distinct settings tuple the
+    /// session has folded.
     file_parses: HashMap<PathBuf, Vec<CachedParse>>,
     /// Per-project flattened name index over referenced-assembly entities,
     /// keyed by the **full value-input set** `build_assembly_env` reads: the
@@ -354,9 +362,10 @@ pub struct SemanticState {
     /// on-demand restore, the C# sidecar: [`EnvReads::unrecorded`]) is never
     /// trusted on its recorded reads alone. It is confirmed as any other is,
     /// and dropped besides by everything that dropped every env before reads
-    /// were recorded: a structural watch event or a dropped evaluation
-    /// ([`Self::invalidate_all`]), and a referenced-assembly watch event (a
-    /// `.dll`, `.cs` or `.csproj`: [`Self::invalidate_assembly_state`]). The
+    /// were recorded ([`Self::invalidate_assembly_state`]): a structural or
+    /// referenced-assembly (`.dll`, `.cs`, `.csproj`) watch event, and a
+    /// moved [`Workspace::projects_generation`]
+    /// ([`Self::sync_with_evaluations`]). The
     /// sidecar's cache is content-addressed, so that rebuild is cheap. The
     /// one exception is a *transient* sidecar transport failure, which
     /// [`Self::assembly_env_for_project`] deliberately does not cache so the
@@ -374,10 +383,13 @@ pub struct SemanticState {
     /// Per-project resolved sema output: the Compile-order fold of
     /// [`borzoi_sema::resolve_project`] over the project's [`ProjectParses`] against its
     /// [`AssemblyEnv`]. Wrapped in [`Arc`] so handlers can return it without
-    /// holding `SemanticState` borrowed across a long query. Invalidated
-    /// alongside the parses on every text-sync notification — the resolution
-    /// is a function of the parses and the env, so a parses change forces a
-    /// re-fold.
+    /// holding `SemanticState` borrowed across a long query. The resolution
+    /// is a function of the parses and the env, so it is dropped whenever
+    /// its parses are.
+    ///
+    /// Served only once [`Self::validate_cached_fold`] has confirmed the
+    /// parses it was folded over (it drops the fold with them) and the env's
+    /// entry confirms the env (`Self::env_still_served`).
     ///
     /// Stored **paired with the exact [`AssemblyEnv`] the fold resolved
     /// against**. `Resolution::Entity` / `Resolution::Member` handles index into
@@ -392,18 +404,17 @@ pub struct SemanticState {
     /// resolved projects to bound memory.
     inferred_projects: HashMap<ProjectId, CachedInference>,
     /// Per-project *previous* fold, kept for incremental re-resolution (stage 2).
-    /// Unlike `resolved_projects` — which every text-sync drops — this **survives**
-    /// text-sync, so after a keystroke [`Self::resolved_project_for`] can fold the
+    /// Unlike `resolved_projects`, which goes with its parses, this
+    /// **survives** an edit, so after a keystroke [`Self::resolved_project_for`] can fold the
     /// project incrementally: reuse the per-file [`borzoi_sema::ResolvedFile`]s of
     /// files whose parse tree is unchanged (identity-shared through the stage-1
     /// per-file parse cache) and whose threaded prefix is unchanged, re-resolving
     /// only what the edit touched. See [`PrevFold`] for the assembly-env
     /// [`Arc::ptr_eq`] precondition that keeps the reuse sound.
     ///
-    /// Cleared wholesale by [`Self::invalidate_all`], and per env when an env is
-    /// dropped (`Self::drop_env`): after those the env is a new Arc anyway, so
-    /// a stale entry could never be reused — clearing is for memory, not
-    /// correctness. `PrevFold::resolved` shares the same `Arc` as the matching
+    /// Cleared per env when an env is dropped (`Self::drop_env`): the env is
+    /// a new Arc after that anyway, so a stale entry could never be reused —
+    /// clearing is for memory, not correctness. `PrevFold::resolved` shares the same `Arc` as the matching
     /// `resolved_projects` entry, so the extra state is one `Vec<ImplFile>` of
     /// syntax handles per project.
     prev_resolved: HashMap<ProjectId, PrevFold>,
@@ -431,25 +442,24 @@ pub struct SemanticState {
     /// with a cold fold can see. Untouched by a request the cached fold
     /// answers outright.
     last_inference_reused_files: usize,
-    /// A `workspace/semanticTokens/refresh` is owed to the client: an invalidation
-    /// (a text-sync edit, or a watched structural / referenced-assembly change)
-    /// may have staled an already-open buffer's tokens, but the client only
-    /// re-requests the buffer it touched. Set by **every invalidator** — at the
-    /// invalidation, not at a later fold, so an invalidation with no following
-    /// fold (a `didClose` restoring disk text, a watched-file change, a project
-    /// that now evaluates partially) still refreshes. Drained by
+    /// A `workspace/semanticTokens/refresh` is owed to the client: a change (a
+    /// text-sync edit, a watched change, a cached value found stale, an env
+    /// dropped) may have staled an already-open buffer's tokens, but the
+    /// client only re-requests the buffer it touched. Set at the change, not
+    /// at a later fold, so a change with no following fold (a `didClose`
+    /// restoring disk text, a watched-file change) still refreshes
+    /// ([`Self::owe_token_refresh`]). Drained by
     /// [`Self::take_wants_refresh`] in the dispatch loop after each request *and*
     /// notification (it owns the connection and checks `refreshSupport`). A plain
     /// bool: the refresh is workspace-wide and idempotent, so coalescing several
     /// invalidations into one refresh is correct — and it can't loop, since the
     /// refresh's own re-requests are ordinary requests, not invalidations.
     wants_refresh: bool,
-    /// The [`Workspace::projects_generation`] every cache here was computed
-    /// in, `None` before the first [`Self::sync_with_evaluations`]. Every
-    /// cache derived from a project evaluation (the parses' Compile items
-    /// and symbols, the env's references and TFM, and the folds over them)
-    /// is dropped when it moves: the workspace dropped an evaluation one of
-    /// them may have been computed from.
+    /// The [`Workspace::projects_generation`] last seen
+    /// ([`Self::sync_with_evaluations`]), `None` before the first. When it
+    /// moves, the envs with an unrecorded reader go, as they did when a
+    /// moved generation dropped every cache here; every other cache derived
+    /// from an evaluation records the evaluation it was derived from.
     evaluations_seen: Option<ProjectsGeneration>,
     /// The portable-PDB *metadata image* (embedded, or a validated sidecar) for
     /// each referenced DLL go-to-definition has navigated into, keyed by DLL
@@ -465,17 +475,15 @@ pub struct SemanticState {
     /// served ([`Self::pdb_image`]). A sidecar `.pdb` is used only when it
     /// matches the DLL's debug directory, but its presence is not in the key:
     /// one added beside an unchanged DLL is seen after a referenced-assembly
-    /// watch event ([`Self::invalidate_assembly_state`]) or a structural one
-    /// ([`Self::invalidate_all`]), which clear the map.
+    /// or structural watch event, or a moved evaluation, which clear the map
+    /// ([`Self::invalidate_assembly_state`]).
     pdb_images: HashMap<PathBuf, PdbImage>,
     /// What XML-documentation lookup caches: the parsed sidecar `.xml` files
     /// hover has read, each validated against the file's `(size, mtime)` on
     /// every use (see [`DocFileCache`](crate::xml_doc::lookup::DocFileCache)),
     /// and the per-assembly key censuses and env-wide ID indices, each
     /// validated by env identity — so correctness does not depend on any
-    /// invalidation;
-    /// [`Self::invalidate_all`] clears them only to bound memory, alongside
-    /// the PDB images.
+    /// invalidation.
     xml_doc: DocSources,
     /// On-disk cache of each referenced DLL's projected entities, so a warm
     /// server restart skips the parse+project that dominates a cold env build.
@@ -521,6 +529,21 @@ pub struct SemanticState {
     name_table_cap: NameTableCap,
     /// Envs built in the open generation ([`Self::end_generation`]).
     envs_built: u64,
+    /// Compile-order folds computed in the open generation
+    /// ([`Self::end_generation`]).
+    folds: u64,
+}
+
+/// What the semantic layer did in one generation
+/// ([`SemanticState::end_generation`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SemanticCounts {
+    /// What the parse memo did.
+    pub parses: crate::parses::ParseCounts,
+    /// Assembly envs built.
+    pub envs_built: u64,
+    /// Compile-order folds computed, cold or incremental.
+    pub folds: u64,
 }
 
 /// The most entries, names, paths and types together, an env's tables hold
@@ -599,20 +622,22 @@ impl SemanticState {
         }
     }
 
-    /// Start a dispatch-loop generation: the parse memo's counts, and the
-    /// envs built, start again from zero.
+    /// Start a dispatch-loop generation: the parse memo's counts, the envs
+    /// built and the folds computed start again from zero.
     pub fn begin_generation(&mut self) {
         self.parses.begin_generation();
         self.envs_built = 0;
+        self.folds = 0;
     }
 
-    /// End the generation, returning what the parse memo did and how many
-    /// envs were built in it.
-    pub fn end_generation(&mut self) -> (crate::parses::ParseCounts, u64) {
-        (
-            self.parses.end_generation(),
-            std::mem::take(&mut self.envs_built),
-        )
+    /// End the generation, returning what the parse memo did, and how many
+    /// envs were built and folds computed in it.
+    pub fn end_generation(&mut self) -> SemanticCounts {
+        SemanticCounts {
+            parses: self.parses.end_generation(),
+            envs_built: std::mem::take(&mut self.envs_built),
+            folds: std::mem::take(&mut self.folds),
+        }
     }
 
     /// Opt into reading C# `<ProjectReference>`s through the C# sidecar (the
@@ -633,26 +658,25 @@ impl SemanticState {
         }
     }
 
-    /// Drop this project's compile-order parses and its resolved-project
-    /// output. Called from every text-sync notification for any URI owned by
-    /// the project, since v1 invalidation is whole-project — sema's
-    /// prefix-monotone fold makes sub-project re-resolution a future
-    /// optimisation.
-    ///
-    /// Does **not** invalidate the assembly env: editor edits can't change
-    /// `project.assets.json` or referenced DLLs. Disk-side changes to those
-    /// arrive through `workspace/didChangeWatchedFiles`
-    /// ([`Self::invalidate_all`] / [`Self::invalidate_assembly_state`]).
-    pub fn invalidate_project(&mut self, project: &Path) {
+    /// Something an open buffer's semantic tokens may read changed: a source
+    /// buffer was opened, edited or closed, or a watch event reported a
+    /// source or a project file changed. The caches need nothing (each
+    /// confirms its inputs when read), but an open buffer other than the one
+    /// touched may now be shown stale tokens, and the client re-asks only
+    /// for the one it touched, so a `workspace/semanticTokens/refresh` is
+    /// owed.
+    pub fn owe_token_refresh(&mut self) {
+        self.wants_refresh = true;
+    }
+
+    /// Forget `project`'s cached parses and fold, as if it had never been
+    /// folded: for a test whose subject is the rebuild from the per-file
+    /// caches. Nothing in the server forgets them; a read confirms them.
+    #[cfg(test)]
+    fn forget_fold(&mut self, project: &Path) {
         let key = ProjectId::new(project);
         self.project_parses.remove(&key);
         self.resolved_projects.remove(&key);
-        // The recorded fold outcome described the *old* inputs; drop it back to
-        // `FoldOutcome::Unknown` rather than let it speak for the new ones.
-        self.observed_fold_refusals.remove(&key);
-        // This edit may have staled an open later buffer's tokens; the client
-        // only re-requests the buffer it touched, so owe a workspace refresh.
-        self.wants_refresh = true;
     }
 
     /// The parse memo every reader of a source parses through.
@@ -660,46 +684,20 @@ impl SemanticState {
         &mut self.parses
     }
 
-    /// Drop **all** semantic caches derived from project evaluations —
-    /// parses, resolved projects — and every assembly env that records less
-    /// than it read. Used by `workspace/didChangeWatchedFiles` when a
-    /// project-structure file changes on disk, and when the workspace drops
-    /// an evaluation ([`Self::sync_with_evaluations`]). An env whose reads are
-    /// all recorded is kept: it is confirmed against the disk before it is
-    /// served again, and a `.fsproj` or `project.assets.json` it depends on
-    /// is among its reads. One with an unrecorded reader
-    /// ([`EnvReads::unrecorded`]) is dropped, which is all that covers what
-    /// that reader read.
-    pub fn invalidate_all(&mut self) {
-        self.project_parses.clear();
-        self.observed_fold_refusals.clear();
-        self.parses.clear();
-        self.file_parses.clear();
-        self.resolved_projects.clear();
-        self.inferred_projects.clear();
-        self.prev_resolved.clear();
-        self.assembly_envs
-            .retain(|_, entry| entry.cached.reads.unrecorded.is_empty());
-        self.pdb_images.clear();
-        self.xml_doc.clear();
-        // A structural change can stale open buffers' tokens; owe a workspace
-        // refresh (the next drain sends it, even with no following fold).
-        self.wants_refresh = true;
-    }
-
     /// Drop every assembly env whose resolution consulted a reader that
     /// records nothing ([`EnvReads::unrecorded`]: an on-demand restore, the
-    /// C# sidecar), with every fold against it, while keeping
-    /// `project_parses` (defines and Compile order are functions of project
-    /// evaluation, not of binaries). `workspace/didChangeWatchedFiles` calls
-    /// this for the referenced-assembly input class: a `.dll` rewritten by a
-    /// sibling rebuild or a restore, or a `.cs`/`.csproj` edit that changes
-    /// what the C# sidecar would emit. Nothing records what those readers
-    /// read, so the event is what covers it. An env whose reads are all
-    /// recorded is not touched: what it read is confirmed before it is served
-    /// again, and an event naming one of its reads drops it already
-    /// ([`Self::hint_assembly_paths`]). The on-disk [`AssemblyCache`] needs no
-    /// invalidation — its entries are `(size, mtime)`-validated per DLL.
+    /// C# sidecar), with every fold against it. Nothing records what those
+    /// readers read, so an event is what covers it: this is called for a
+    /// referenced-assembly watch event (a `.dll` rewritten by a sibling
+    /// rebuild or a restore, a `.cs`/`.csproj` edit that changes what the C#
+    /// sidecar would emit), a structural one, and a moved
+    /// [`Workspace::projects_generation`] ([`Self::sync_with_evaluations`]),
+    /// each of which once dropped every env. An env whose reads are all
+    /// recorded is not touched: what it read is confirmed before it is
+    /// served again, and an event naming a DLL whose stamp it read drops it
+    /// already ([`Self::hint_assembly_paths`]). The on-disk [`AssemblyCache`]
+    /// needs no invalidation — its entries are `(size, mtime)`-validated per
+    /// DLL.
     pub fn invalidate_assembly_state(&mut self) {
         let unrecorded: Vec<Arc<AssemblyEnv>> = self
             .assembly_envs
@@ -721,9 +719,9 @@ impl SemanticState {
         self.wants_refresh = true;
     }
 
-    /// Watch events named `paths`: drop every assembly env that read one of
-    /// them as spelt ([`EnvChecks::named_by`]: a path its resolution read,
-    /// or an entry of a directory it listed), with every fold against it.
+    /// Watch events named `paths`: drop every assembly env that read the
+    /// stamp of one of them as spelt ([`EnvChecks::named_by`]: a DLL), with
+    /// every fold against it.
     /// Every other env stands, and its next confirmation inside a generation
     /// covers the installed contents it trusts too, whatever the events
     /// named: an event is what covers an in-place change to an installed
@@ -821,48 +819,6 @@ impl SemanticState {
     ) -> Result<Expansion, DocLookup> {
         let entry = self.xml_doc.locate(env, target)?;
         Ok(expand(&mut self.xml_doc, env, target, entry))
-    }
-
-    /// Drop the caches for **every** cached project that lists `file` in its
-    /// compile-order parses — not just the one `Workspace::owning_project`
-    /// would single out. A shared source file can sit in multiple projects'
-    /// `<Compile>` lists (the link case `fsproj-consumption-plan.md`
-    /// flagged as out-of-scope for ownership); a text-sync against that
-    /// file invalidates the buffer overlay for every project that sees it,
-    /// so a stale fold in a sibling project doesn't surface in a later
-    /// definition / references query.
-    ///
-    /// Walks `project_parses` rather than `Workspace`: we only need to
-    /// invalidate projects we already have semantic state for, and
-    /// inspecting the live cache avoids re-evaluating projects from disk.
-    pub fn invalidate_file(&mut self, file: &Path) {
-        let target = lexically_normalize(file);
-        // A *refused* project has no `project_parses` entry at all, so the
-        // path-matching sweep below cannot find it. Its recorded refusal is
-        // nevertheless about a source file that may be exactly the one that
-        // just changed, so every refusal drops back to `FoldOutcome::Unknown`;
-        // the next fold re-establishes whichever ones still hold.
-        self.observed_fold_refusals.clear();
-        let to_drop: Vec<ProjectId> = self
-            .project_parses
-            .iter()
-            .filter(|(_, cached)| {
-                cached
-                    .parses
-                    .paths
-                    .iter()
-                    .any(|p| paths_equal(&lexically_normalize(p), &target))
-            })
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in to_drop {
-            self.project_parses.remove(&key);
-            self.resolved_projects.remove(&key);
-            self.observed_fold_refusals.remove(&key);
-        }
-        // This edit may have staled an open later buffer's tokens; the client
-        // only re-requests the buffer it touched, so owe a workspace refresh.
-        self.wants_refresh = true;
     }
 
     /// The flattened `AssemblyEnv` for the project at `project` — a name
@@ -1160,11 +1116,12 @@ impl SemanticState {
         // edges are *not* in the key: like
         // every other env input they are read fresh from disk on a miss, and a
         // `.fsproj` edit reaches this cache the same way a restore does —
-        // through [`Self::invalidate_all`].
+        // through the read set, which records both.
         // The env's references and TFM come from project evaluations, which
         // the caller confirmed for this generation in reading `dotnet_root`
-        // and `target_framework`; an env built before the workspace dropped
-        // one of them goes.
+        // and `target_framework`, and its read set holds what they read. An
+        // env with an unrecorded reader goes when the workspace has dropped
+        // an evaluation since.
         self.sync_with_evaluations(workspace.projects_generation());
         let id = ProjectId::new(project);
         // Built, restored and reported as the key spells it, so the entry holds
@@ -1339,8 +1296,8 @@ impl SemanticState {
     /// passed through to [`Self::assembly_env_for_project`]; it's `None` when
     /// SDK discovery turns nothing up (most commonly in tests).
     ///
-    /// Cached (project + env) keyed by [`ProjectId`].
-    /// Invalidated by [`Self::invalidate_project`] on any text-sync. Folds the
+    /// Cached (project + env) keyed by [`ProjectId`], and served while its
+    /// parses and env are confirmed (`Self::validate_cached_fold`). Folds the
     /// whole project; for a single-file request that only needs a prefix, prefer
     /// [`Self::resolved_prefix_and_env_for`].
     pub fn resolved_project_and_env_for(
@@ -1555,6 +1512,7 @@ impl SemanticState {
         if took_incremental {
             self.incremental_folds += 1;
         }
+        self.folds += 1;
         self.last_fold_reused_files = reused_files;
         if retryable {
             tracing::info!(
@@ -1756,6 +1714,8 @@ impl SemanticState {
                 key.clone(),
                 CachedParses {
                     parses,
+                    // The fold read the evaluation the workspace serves now.
+                    evaluation: workspace.evaluation_id(&key),
                     // Every text was read through `docs` just now.
                     validated_in: docs.generation(),
                 },
@@ -1764,32 +1724,39 @@ impl SemanticState {
         self.project_parses.get(&key).map(|cached| &cached.parses)
     }
 
-    /// Drop every cache derived from a project evaluation, as a structural
-    /// watch event does ([`Self::invalidate_all`]), when `evaluations` is not
-    /// the [`Workspace::projects_generation`] they were computed in: the
-    /// workspace has dropped an evaluation one of them may have been
-    /// computed from. Idempotent for one generation.
+    /// Drop every env with an unrecorded reader
+    /// ([`Self::invalidate_assembly_state`]) when `evaluations` is not the
+    /// [`Workspace::projects_generation`] last seen: the workspace has
+    /// dropped an evaluation, a file's owner has moved, or a structural watch
+    /// event has arrived, any of which once dropped every env, and nothing
+    /// else covers what such an env's unrecorded reader read. Every other
+    /// cache records the evaluation it was derived from and is confirmed
+    /// when read. Idempotent for one generation.
     pub fn sync_with_evaluations(&mut self, evaluations: ProjectsGeneration) {
         match self.evaluations_seen {
             Some(seen) if seen == evaluations => {}
             // Nothing has been computed yet, so nothing is stale.
             None => self.evaluations_seen = Some(evaluations),
             Some(_) => {
-                self.invalidate_all();
+                self.invalidate_assembly_state();
                 self.evaluations_seen = Some(evaluations);
             }
         }
     }
 
-    /// Drop `key`'s cached parses and resolved fold, exactly as
-    /// [`Self::invalidate_file`] would, if any Compile item's text is no longer
-    /// the text they were built from. Called by every read of a cached fold,
-    /// and costs nothing after the first call in a generation.
+    /// Drop `key`'s cached parses and resolved fold if the workspace no
+    /// longer serves the evaluation they were built from, or any Compile
+    /// item's text is no longer the text they were built from. Called by
+    /// every read of a cached fold; after the first call in a generation it
+    /// costs one lookup of the evaluation's identity.
     ///
     /// First, `key`'s evaluation is confirmed for the generation
-    /// ([`Workspace::validate`]), and every cache is dropped if the workspace
-    /// has since dropped an evaluation ([`Self::sync_with_evaluations`]): the
-    /// parses were built from the evaluation's Compile items and symbols.
+    /// ([`Workspace::validate`]), which evaluates it afresh if its reads
+    /// moved: the parses were built from its Compile items, symbols,
+    /// language version and provenance, so they stand only while the
+    /// workspace serves the very evaluation they were built from. (An
+    /// evaluation equal in value to the one it replaces still drops them;
+    /// the per-file parse cache keeps the rebuild to a lookup per item.)
     ///
     /// Each item is asked of `docs` again: the open buffer, or a disk read the
     /// [`Vfs`] confirms with one `stat` per generation and answers with the
@@ -1799,29 +1766,29 @@ impl SemanticState {
     fn validate_cached_fold(&mut self, key: &ProjectId, workspace: &mut Workspace, docs: &Vfs) {
         workspace.validate(key);
         self.sync_with_evaluations(workspace.projects_generation());
+        let evaluation = workspace.evaluation_id(key);
         let Some(cached) = self.project_parses.get_mut(key) else {
             return;
         };
         let generation = docs.generation();
-        if generation.is_some() && cached.validated_in == generation {
-            return;
-        }
-        let current = cached
-            .parses
-            .paths
-            .iter()
-            .zip(&cached.parses.texts)
-            .all(|(path, text)| {
-                docs.text_of(path)
-                    .is_some_and(|now| Arc::ptr_eq(&now, text) || *now == **text)
-            });
+        let current = cached.evaluation == evaluation
+            && ((generation.is_some() && cached.validated_in == generation)
+                || cached
+                    .parses
+                    .paths
+                    .iter()
+                    .zip(&cached.parses.texts)
+                    .all(|(path, text)| {
+                        docs.text_of(path)
+                            .is_some_and(|now| Arc::ptr_eq(&now, text) || *now == **text)
+                    }));
         if current {
             cached.validated_in = generation;
             return;
         }
         tracing::debug!(
             project = %key.as_path().display(),
-            "a Compile item's text moved under a cached fold; dropping it"
+            "a cached fold's evaluation or a Compile item's text moved; dropping it"
         );
         self.project_parses.remove(key);
         self.resolved_projects.remove(key);
@@ -1864,24 +1831,47 @@ impl SemanticState {
                 }
             }
             Err(refusal) => {
-                self.observed_fold_refusals.insert(key, refusal.clone());
+                let evaluation = workspace.evaluation_id(&key);
+                self.observed_fold_refusals
+                    .insert(key, (refusal.clone(), evaluation));
             }
         }
         outcome
     }
 
-    /// What the most recent fold of `project` did, or [`FoldOutcome::Unknown`]
-    /// if none has run since its inputs last changed.
+    /// What the most recent fold of `project` did, when it ran under
+    /// `evaluation` (the evaluation the workspace serves now:
+    /// [`Workspace::evaluation_id`]), or [`FoldOutcome::Unknown`] if no fold
+    /// has run under it.
+    ///
+    /// Read as last confirmed, as the deferral refresh reads the evaluation
+    /// itself: a Compile item that moved since the fold read it is noticed
+    /// by the next request that needs the fold, which folds a refused
+    /// project again (it caches no parses) and validates a folded one. The
+    /// report is corrected then, not before.
     ///
     /// The shell reads this to explain a project that has gone quiet. Reading
     /// rather than draining is deliberate: the message is then a pure function
     /// of current state, so a fold that recovers stops being reported *because
     /// there is nothing to report*, not because some other code path remembered
     /// to undo an earlier notification.
-    pub fn fold_outcome(&self, project: &ProjectId) -> FoldOutcome<'_> {
+    pub fn fold_outcome(
+        &self,
+        project: &ProjectId,
+        evaluation: Option<EvaluationId>,
+    ) -> FoldOutcome<'_> {
         match self.observed_fold_refusals.get(project) {
-            Some(refusal) => FoldOutcome::Refused(refusal),
-            None if self.project_parses.contains_key(project) => FoldOutcome::Succeeded,
+            Some((refusal, refused_under)) if *refused_under == evaluation => {
+                FoldOutcome::Refused(refusal)
+            }
+            Some(_) => FoldOutcome::Unknown,
+            None if self
+                .project_parses
+                .get(project)
+                .is_some_and(|cached| cached.evaluation == evaluation) =>
+            {
+                FoldOutcome::Succeeded
+            }
             None => FoldOutcome::Unknown,
         }
     }
@@ -4317,8 +4307,8 @@ mod tests {
             assert!(text_contains(&parses.texts[0], "disk"));
         }
 
-        // Now overlay a buffer and force a re-build (invalidate first).
-        sema.invalidate_project(&proj);
+        // Now overlay a buffer: the cached parses confirm their texts when
+        // read, so the next lookup rebuilds over it.
         let mut docs = Vfs::new();
         docs.insert(
             Uri::from_file_path(&file).unwrap(),
@@ -4556,10 +4546,10 @@ mod tests {
             .files[0]
             .recovery
             .clone();
-        // Invalidate the *project* memo so the rebuild runs, while leaving the
+        // Forget the *project* memo so the rebuild runs, while leaving the
         // per-file `CachedParse` table intact and the text untouched — which is
         // what makes the rebuild take the hit branch rather than re-parse.
-        sema.invalidate_project(&proj);
+        sema.forget_fold(&proj);
         let hit = sema
             .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("rebuilt parses")
@@ -4719,8 +4709,8 @@ mod tests {
             );
         }
 
-        // An invalidation changes nothing further.
-        sema.invalidate_project(&proj);
+        // A rebuild from nothing gives the same.
+        sema.forget_fold(&proj);
         let parses = sema
             .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("rebuilt parses");
@@ -5458,36 +5448,6 @@ mod tests {
         );
     }
 
-    /// `invalidate_project` only clears the compile-order parses, not the
-    /// assembly env. The env reads only disk artifacts the editor cannot edit;
-    /// re-reading every framework DLL on every keystroke would be a measurable
-    /// regression and the env wouldn't change anyway.
-    #[test]
-    fn invalidate_project_does_not_drop_assembly_env() {
-        let tmp = TempDir::new().unwrap();
-        let proj = tmp.path().join("P.fsproj");
-        write(&proj, &fsproj(&[]));
-
-        let mut sema = SemanticState::new();
-        let before = sema.assembly_env_for_project(
-            &proj,
-            None,
-            &ServedTfm::NoneDeclared,
-            &Workspace::default(),
-        );
-        sema.invalidate_project(&proj);
-        let after = sema.assembly_env_for_project(
-            &proj,
-            None,
-            &ServedTfm::NoneDeclared,
-            &Workspace::default(),
-        );
-        assert!(
-            Arc::ptr_eq(&before, &after),
-            "invalidate_project dropped the assembly env"
-        );
-    }
-
     /// The envs are keyed on neither trust opt-in, so turning either on or
     /// off drops every env: one resolved without an on-demand restore must
     /// not be served once a restore may run, nor the reverse.
@@ -5516,8 +5476,9 @@ mod tests {
         );
     }
 
-    /// The broad invalidations — a structural watch event or a dropped
-    /// evaluation ([`SemanticState::invalidate_all`]), a referenced-assembly
+    /// The broad invalidations — a moved projects generation (a dropped
+    /// evaluation, a moved owner, a structural watch event:
+    /// [`SemanticState::sync_with_evaluations`]), a referenced-assembly
     /// watch event ([`SemanticState::invalidate_assembly_state`]) — drop an
     /// env whose resolution consulted a reader that records nothing (here,
     /// the C# sidecar for a C# reference), which nothing else covers, and keep
@@ -5539,40 +5500,42 @@ mod tests {
         let dotnet = root.join("dotnet");
         std::fs::create_dir_all(&dotnet).unwrap();
 
-        let ws = Workspace::default();
+        let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         sema.set_csharp_project_references_enabled(true);
-        let env = |sema: &mut SemanticState, project: &Path| {
-            sema.assembly_env_for_project(project, Some(&dotnet), &ServedTfm::NoneDeclared, &ws)
+        let env = |sema: &mut SemanticState, ws: &Workspace, project: &Path| {
+            sema.assembly_env_for_project(project, Some(&dotnet), &ServedTfm::NoneDeclared, ws)
         };
-        env(&mut sema, &app);
-        let unrecorded = |sema: &mut SemanticState, project: &Path| {
-            sema.env_reads_for_project(project, Some(&dotnet), &ServedTfm::NoneDeclared, &ws)
+        env(&mut sema, &ws, &app);
+        let unrecorded = |sema: &mut SemanticState, ws: &Workspace, project: &Path| {
+            sema.env_reads_for_project(project, Some(&dotnet), &ServedTfm::NoneDeclared, ws)
                 .0
                 .unrecorded
                 .clone()
         };
-        assert_eq!(unrecorded(&mut sema, &app), vec![UNRECORDED_CSHARP]);
-        assert!(unrecorded(&mut sema, &fsharp_only).is_empty());
+        assert_eq!(unrecorded(&mut sema, &ws, &app), vec![UNRECORDED_CSHARP]);
+        assert!(unrecorded(&mut sema, &ws, &fsharp_only).is_empty());
 
-        type Invalidation = (&'static str, fn(&mut SemanticState));
+        type Invalidation = (&'static str, fn(&mut SemanticState, &mut Workspace));
         let invalidations: [Invalidation; 2] = [
-            ("invalidate_all", SemanticState::invalidate_all),
-            (
-                "invalidate_assembly_state",
-                SemanticState::invalidate_assembly_state,
-            ),
+            ("a moved projects generation", |sema, ws| {
+                ws.note_structural_event();
+                sema.sync_with_evaluations(ws.projects_generation());
+            }),
+            ("invalidate_assembly_state", |sema, _| {
+                sema.invalidate_assembly_state();
+            }),
         ];
         for (name, invalidate) in invalidations {
-            let app_before = env(&mut sema, &app);
-            let fsharp_only_before = env(&mut sema, &fsharp_only);
-            invalidate(&mut sema);
+            let app_before = env(&mut sema, &ws, &app);
+            let fsharp_only_before = env(&mut sema, &ws, &fsharp_only);
+            invalidate(&mut sema, &mut ws);
             assert!(
-                !Arc::ptr_eq(&app_before, &env(&mut sema, &app)),
+                !Arc::ptr_eq(&app_before, &env(&mut sema, &ws, &app)),
                 "{name} kept an env the C# sidecar answered part of"
             );
             assert!(
-                Arc::ptr_eq(&fsharp_only_before, &env(&mut sema, &fsharp_only)),
+                Arc::ptr_eq(&fsharp_only_before, &env(&mut sema, &ws, &fsharp_only)),
                 "{name} dropped an env whose reads are all recorded"
             );
         }
@@ -7687,14 +7650,15 @@ mod tests {
             "expected the same Arc on a cache hit"
         );
 
-        // A text-sync invalidation forces a re-fold; the new Arc differs.
-        sema.invalidate_project(&proj);
+        // An edit forces a re-fold; the new Arc differs.
+        let mut docs = Vfs::new();
+        docs.insert(Uri::from_file_path(&file).unwrap(), "let x = 2\n".to_string());
         let third = sema
-            .resolved_project_for(&proj, &mut ws, &Vfs::new())
-            .expect("re-fold after invalidate");
+            .resolved_project_for(&proj, &mut ws, &docs)
+            .expect("re-fold after an edit");
         assert!(
             !Arc::ptr_eq(&first, &third),
-            "expected a fresh Arc after invalidate_project"
+            "expected a fresh Arc after an edit"
         );
     }
 
@@ -7758,7 +7722,6 @@ mod tests {
         // (same path / ItemId / accessibility), so the fold recomputes only B and
         // reuses A (unchanged prefix) and C (export-neutral suffix).
         docs.insert(b_uri.clone(), "module B\nlet y = (A.x)\n".to_string());
-        sema.invalidate_project(&proj);
         sema.resolved_project_for(&proj, &mut ws, &docs)
             .expect("rebuild after body edit");
         assert_eq!(sema.incremental_fold_count(), 1, "incremental path taken");
@@ -7774,7 +7737,6 @@ mod tests {
             a_uri.clone(),
             "module A\nlet w = 0\nlet x = 1\n".to_string(),
         );
-        sema.invalidate_project(&proj);
         let (warm, warm_env) = sema
             .resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("rebuild after export edit");
@@ -7849,7 +7811,6 @@ mod tests {
             };
 
         docs.insert(a_uri.clone(), "module A\nlet x = (1)\n".to_string());
-        sema.invalidate_project(&proj);
         let warm = sema
             .inferred_prefix_for(&proj, 2, &mut ws, &docs)
             .expect("fold after a body edit");
@@ -7866,7 +7827,6 @@ mod tests {
         assert_matches_cold(&warm, &docs);
 
         docs.insert(a_uri, "module A\nlet x = \"s\"\n".to_string());
-        sema.invalidate_project(&proj);
         let warm = sema
             .inferred_prefix_for(&proj, 2, &mut ws, &docs)
             .expect("fold after a type-changing edit");
@@ -7921,7 +7881,6 @@ mod tests {
         // Remove A.x through a buffer overlay and re-fold incrementally.
         let mut docs = Vfs::new();
         docs.insert(a_uri, "module A\nlet other = 1\n".to_string());
-        sema.invalidate_project(&proj);
         let warm1 = sema
             .resolved_project_for(&proj, &mut ws, &docs)
             .expect("re-fold");
@@ -7968,12 +7927,10 @@ mod tests {
                 .resolved_project_and_env_for(&proj, &mut ws, &Vfs::new())
                 .expect("first fold");
             let first_entries = first.interned_count();
-            sema.invalidate_project(&proj);
             let (_, second) = sema
                 .resolved_project_and_env_for(&proj, &mut ws, &buffers(b_edit))
                 .expect("second fold");
             let second_entries = second.interned_count();
-            sema.invalidate_project(&proj);
             let (_, third) = sema
                 .resolved_project_and_env_for(&proj, &mut ws, &buffers(b_src))
                 .expect("third fold");
@@ -8206,7 +8163,6 @@ mod tests {
 
         // Body-only edit to C, then request C's prefix again.
         docs.insert(c_uri, "module C\nlet z = (B.y)\n".to_string());
-        sema.invalidate_project(&proj);
         let ((p2, _), trace) = crate::test_trace::capture(|| {
             sema.resolved_prefix_and_env_for(&proj, 2, &mut ws, &docs)
                 .expect("prefix up to 2 after edit")
@@ -8266,7 +8222,6 @@ mod tests {
         // Body-only edit to A (file 0), then a *prefix* token request for A —
         // folds only file 0, but must keep the len-4 base.
         docs.insert(a_uri, "module A\nlet x = (1)\n".to_string());
-        sema.invalidate_project(&proj);
         let (p, _) = sema
             .resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
             .expect("prefix up to 0 after edit");
@@ -8318,7 +8273,6 @@ mod tests {
 
         // Edit A, then a token request for A itself (an incremental fold).
         docs.insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
-        sema.invalidate_project(&proj);
         sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
             .expect("prefix A after edit");
         assert!(sema.take_wants_refresh(), "the edit flags a refresh");
@@ -8360,7 +8314,6 @@ mod tests {
 
         // Body-only edit to A: `1` -> `(1)`. Still flags a refresh (conservative).
         docs.insert(a_uri, "module A\nlet x = (1)\n".to_string());
-        sema.invalidate_project(&proj);
         sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
             .expect("prefix A after body edit");
         assert!(
@@ -8421,10 +8374,10 @@ mod tests {
             .expect("warm");
         assert!(!sema.take_wants_refresh());
 
-        // A structural change clears the incremental base, then a text edit.
-        sema.invalidate_all();
+        // A dropped env takes the incremental base with it, then a text edit.
+        sema.drop_every_env();
+        assert!(sema.take_wants_refresh(), "a dropped env owes a refresh");
         docs.insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
-        sema.invalidate_project(&proj);
         // This fold is cold (no prev base), but the edit still owes a refresh.
         sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
             .expect("cold fold after structural invalidation + edit");
@@ -8443,16 +8396,22 @@ mod tests {
         let mut sema = SemanticState::new();
         assert!(!sema.take_wants_refresh(), "nothing owed initially");
 
-        // No fold anywhere — just the invalidation the notification path performs.
-        sema.invalidate_file(Path::new("/some/project/A.fs"));
+        // No fold anywhere — just what the notification path records.
+        sema.owe_token_refresh();
         assert!(
             sema.take_wants_refresh(),
-            "a fold-less invalidation still owes a refresh"
+            "a fold-less source change still owes a refresh"
         );
 
-        // A structural / referenced-assembly change likewise.
-        sema.invalidate_all();
-        assert!(sema.take_wants_refresh(), "invalidate_all owes a refresh");
+        // A moved projects generation / referenced-assembly change likewise.
+        let mut ws = Workspace::default();
+        sema.sync_with_evaluations(ws.projects_generation());
+        ws.note_structural_event();
+        sema.sync_with_evaluations(ws.projects_generation());
+        assert!(
+            sema.take_wants_refresh(),
+            "a moved projects generation owes a refresh"
+        );
         sema.invalidate_assembly_state();
         assert!(
             sema.take_wants_refresh(),

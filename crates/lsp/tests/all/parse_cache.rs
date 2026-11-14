@@ -117,9 +117,9 @@ fn edit_reparses_only_the_changed_file() {
         (p.files[0].clone(), p.files[1].clone())
     };
 
-    // Edit B through a buffer overlay, then the text-sync invalidation.
+    // Edit B through a buffer overlay, then the text sync.
     state.docs.insert(b_uri.clone(), "let b = 2\n".to_string());
-    state.invalidate_owning_project(&b_uri);
+    state.note_source_sync(&b_uri);
 
     // Second build: A reused (same node), B re-parsed to the new text.
     let State {
@@ -180,7 +180,7 @@ fn cache_matches_a_cold_build_after_edits() {
     ];
     for (uri, text) in edits {
         warm.docs.insert((*uri).clone(), text.to_string());
-        warm.invalidate_owning_project(uri);
+        warm.note_source_sync(uri);
         let State {
             semantic,
             workspace,
@@ -393,7 +393,7 @@ fn linked_file_under_divergent_projects_does_not_thrash() {
     // reused from A's own variant — not re-parsed because B overwrote it.
     let only_a = Uri::from_file_path(tmp.path().join("OnlyA.fs")).unwrap();
     state.docs.insert(only_a.clone(), "let a = 2\n".to_string());
-    state.invalidate_owning_project(&only_a);
+    state.note_source_sync(&only_a);
 
     let State {
         semantic,

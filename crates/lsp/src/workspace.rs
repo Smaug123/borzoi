@@ -23,8 +23,12 @@
 //! them ([`Workspace::validate`], through [`crate::read_checks`]). One whose
 //! answers moved is evaluated afresh. Reads strictly inside an installed SDK,
 //! pack, workload manifest or package version are not confirmed: an installer
-//! never changes a version in place. A structural watch event still drops
-//! every evaluation ([`Workspace::invalidate_projects`]).
+//! never changes a version in place. A watch event is a hint
+//! ([`Workspace::hint`]): it names paths to ask again whatever their stamps
+//! say, and a structural one ([`Workspace::note_structural_event`]) makes the
+//! next confirmation of every evaluation cover the installed contents it
+//! trusts too. The one input no evaluation records, NuGet's settings, is
+//! covered by its watch event alone ([`Workspace::drop_every_evaluation`]).
 //!
 //! SDK resolution is wired through [`SdkDiscovery`]: each project gets
 //! its own discovery context (built from a [`SdkDiscoveryEnv`] held on
@@ -118,11 +122,13 @@ pub struct Workspace {
     /// carries what it read, and is confirmed against the disk once per
     /// generation that reads it ([`Self::validate`]).
     projects: HashMap<ProjectId, CachedEvaluation>,
-    /// Bumped whenever an evaluation the cache served is dropped: by
-    /// [`Self::invalidate_projects`], and by a validation that finds an
-    /// entry's reads moved. So a caller that read several evaluations across
-    /// a span of time can tell whether they all came from one generation of
-    /// the cache — see [`Self::projects_generation`].
+    /// Bumped whenever an evaluation the cache served is dropped (by a
+    /// validation that finds an entry's reads moved, or by
+    /// [`Self::drop_every_evaluation`]), whenever a file's owner moves, and
+    /// whenever a structural watch event arrives
+    /// ([`Self::note_structural_event`]). So a caller that read several
+    /// evaluations across a span of time can tell whether they all came from
+    /// one generation of the cache — see [`Self::projects_generation`].
     projects_generation: ProjectsGeneration,
     /// Confirms the evaluations' reads once per generation, by stamps, so
     /// confirming an unchanged file or directory costs one `stat`. The
@@ -258,8 +264,17 @@ struct CachedEvaluation {
     evaluated: Option<EvaluatedProject>,
     /// The reads to confirm before serving `evaluated` again: everything the
     /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
-    /// less the immutable contents (`Evaluation::checks`).
+    /// less the immutable contents (`Evaluation::checks_and_exempt`).
     checks: Vec<Check>,
+    /// The reads of immutable contents it trusts rather than confirms (D3's
+    /// axiom), confirmed only after a structural watch event
+    /// ([`Self::event_since`]): an event is what covers an in-place change
+    /// to an installed version.
+    exempt: Vec<Check>,
+    /// A structural watch event has arrived since the entry was last
+    /// confirmed ([`Workspace::note_structural_event`]), so its next
+    /// confirmation covers `exempt` too.
+    event_since: bool,
     /// Where the immutable contents its reads may include live, which an env
     /// built from this project's references exempts too
     /// ([`Workspace::env_checks`]).
@@ -273,9 +288,12 @@ struct CachedEvaluation {
     validated_in: Option<u64>,
 }
 
-/// The identity of one cached evaluation ([`CachedEvaluation::id`]).
+/// The identity of one cached evaluation ([`CachedEvaluation::id`]): what a
+/// value derived from an evaluation records, so that it can tell whether the
+/// evaluation it was derived from is the one the workspace serves now
+/// ([`Workspace::evaluation_id`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct EvaluationId(u64);
+pub struct EvaluationId(u64);
 
 /// A file's owner as one ownership walk found it, and everything that answer
 /// depends on: the listings of the directories it read, and the evaluations
@@ -391,6 +409,12 @@ struct Evaluation {
 }
 
 impl Evaluation {
+    /// The confirming half of [`Self::checks_and_exempt`].
+    #[cfg(test)]
+    fn checks(&self, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
+        self.checks_and_exempt(committed).0
+    }
+
     /// The reads a cached copy must confirm: every read, except those
     /// inside a version directory some read showed to exist
     /// ([`VersionDirs::containing`]), and for each such version, that it
@@ -403,15 +427,24 @@ impl Evaluation {
     /// evaluation that ran during one may have seen part of it. So a package
     /// version is trusted only where `committed` says its extraction was
     /// complete before the evaluation began ([`nuget_committed_before`]).
-    fn checks(&self, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
-        confirming_reads(self.reads.reads(), &self.immutable, committed)
-            .into_iter()
+    ///
+    /// Beside them, the reads it trusts instead, which a structural watch
+    /// event makes the next confirmation cover too.
+    fn checks_and_exempt(&self, committed: impl Fn(&Path) -> bool) -> (Vec<Check>, Vec<Check>) {
+        let reads = self.reads.reads();
+        let confirming = confirming_reads(reads, &self.immutable, committed);
+        let confirmed: HashSet<&Read> = confirming.iter().collect();
+        let exempt = reads
+            .iter()
+            .filter(|read| !confirmed.contains(read))
+            .cloned()
             .map(Check::new)
-            .collect()
+            .collect();
+        (confirming.into_iter().map(Check::new).collect(), exempt)
     }
 }
 
-/// [`Evaluation::checks`]' rule over any read set: every read, except those
+/// [`Evaluation::checks_and_exempt`]' rule over any read set: every read, except those
 /// inside a version directory under `immutable` that some read showed to
 /// exist (and, for a package version, that `committed` says was extracted
 /// before the reads began); and for each such version, that it still does.
@@ -462,10 +495,9 @@ pub struct EnvChecks {
     /// ([`Workspace::confirm_env`]'s `after_event`): an event is what covers
     /// an in-place change to an installed version.
     exempt: Vec<Check>,
-    /// Every path the resolution read, as [`path_key`] spells it.
-    read: HashSet<String>,
-    /// Every directory the resolution listed, as [`path_key`] spells it.
-    listed: HashSet<String>,
+    /// Every path whose stamp the resolution read (a DLL), as [`path_key`]
+    /// spells it.
+    stamped: HashSet<String>,
 }
 
 impl EnvChecks {
@@ -474,20 +506,20 @@ impl EnvChecks {
         self.checks.iter().map(Check::read)
     }
 
-    /// Whether a watch event naming `path`, as spelt, names something the
-    /// env read: a path its resolution read, or an entry of a directory it
-    /// listed. What drops the env at once, inside a generation or out of one;
-    /// it is the cover for a file system whose stamps do not move (D1's "not
-    /// covered"), for which it can only match the spelling the reads used.
-    /// Correctness elsewhere rests on confirmation, which an event widens to
-    /// the installed contents ([`Workspace::confirm_env`]), whatever path it
-    /// names.
+    /// Whether a watch event naming `path`, as spelt, names a file whose
+    /// stamp the env's resolution read: a DLL. What drops the env at once,
+    /// inside a generation or out of one; it is the cover for a file system
+    /// whose stamps do not move (D1's "not covered"), for which it can only
+    /// match the spelling the reads used. A stamp is the one observation an
+    /// event cannot have asked again: confirming it is a `stat`, which on
+    /// such a file system answers as before. Every other read an event names
+    /// is asked again in the next confirmation ([`Workspace::hint`]): a file
+    /// is read again and compared, and a path's kind, canonical spelling and
+    /// directory listing are asked again. Correctness elsewhere rests on
+    /// confirmation, which an event widens to the installed contents
+    /// ([`Workspace::confirm_env`]), whatever path it names.
     pub fn named_by(&self, path: &Path) -> bool {
-        let path = lexically_normalize(path);
-        self.read.contains(&path_key(&path))
-            || path
-                .parent()
-                .is_some_and(|dir| self.listed.contains(&path_key(dir)))
+        self.stamped.contains(&path_key(path))
     }
 }
 
@@ -772,35 +804,71 @@ impl Workspace {
         build_properties(&self.extra_build_properties)
     }
 
-    /// Drop every cached project evaluation, forcing re-evaluation from disk on
-    /// the next lookup. Used by `workspace/didChangeWatchedFiles` when a
-    /// `.fsproj` / `Directory.Build.*` / `global.json` changes on disk: the SDK
-    /// environment (`env`) is unchanged — only the cached parses are stale. A
-    /// broad clear (rather than per-project) keeps invalidation obviously
-    /// correct when a `Directory.Build.*` change affects a whole subtree; the
-    /// cache refills lazily on the next lookup.
-    pub fn invalidate_projects(&mut self) {
+    /// Drop every cached project evaluation and every remembered owner, so
+    /// that each is evaluated (or walked) afresh on its next lookup, and end
+    /// the [`Self::projects_generation`].
+    ///
+    /// For the one input of an evaluation that nothing records: NuGet's
+    /// settings, which choose the packages folder SDK discovery resolves
+    /// versioned SDKs from (`borzoi_nuget::settings`, read directly). A watch
+    /// event naming a `nuget.config` is all that covers a change to them
+    /// ([`crate::server::State::apply_watched_changes`]).
+    pub fn drop_every_evaluation(&mut self) {
         self.projects.clear();
         self.owners.clear();
         self.dir_listings.forget();
         self.projects_generation.0 += 1;
     }
 
-    /// Watch events named `paths`: forget what the evaluations' files held at
-    /// each, so the next validation re-reads it whatever its stamp says.
+    /// A structural watch event arrived (a project file, an import, a
+    /// `global.json`, an assets file): the next confirmation of every cached
+    /// evaluation covers the installed contents it trusts as well as what it
+    /// always confirms, and the [`Self::projects_generation`] ends, which
+    /// tells a consumer reading evaluations across a span of time (the
+    /// `workspace/diagnostic` sweep) that the disk may have moved under it.
+    ///
+    /// Nothing is dropped: an evaluation whose reads still get their answers
+    /// is the one a fresh evaluation would give. Confirming the installed
+    /// contents rather than matching the event's paths against them is what
+    /// covers an in-place change inside an installed version (D3) under any
+    /// spelling the client reports, as an env's confirmation does after any
+    /// event ([`Self::confirm_env`]'s `after_event`).
+    pub fn note_structural_event(&mut self) {
+        for cached in self.projects.values_mut() {
+            cached.event_since = true;
+        }
+        self.projects_generation.0 += 1;
+    }
+
+    /// Watch events named `paths`: ask what the evaluations, the envs and the
+    /// ownership walks read at each again, whatever the stamps say
+    /// ([`ReadChecks::hint`]). That covers, for the paths an event names, a
+    /// file system whose stamps do not move.
     pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
-        self.checker.hint(paths);
+        let paths: Vec<&Path> = paths.into_iter().collect();
+        self.checker.hint(paths.iter().copied());
+        self.dir_listings.checks.hint(paths.iter().copied());
+    }
+
+    /// The identity of the evaluation of `project` the workspace serves now,
+    /// as last confirmed, without confirming it: `None` when none is cached.
+    /// A value derived from an evaluation records the identity it was
+    /// derived from, and stands only while this is it.
+    pub fn evaluation_id(&self, project: &ProjectId) -> Option<EvaluationId> {
+        self.projects.get(project).map(|cached| cached.id)
     }
 
     /// Which generation of the project-evaluation cache lookups are served
     /// from now. Two lookups observed under one generation read the same
     /// on-disk project state — the cache is the only path to an evaluation,
-    /// and a generation ends whenever an evaluation it served is dropped
-    /// ([`Self::invalidate_projects`], or a validation that finds its reads
-    /// moved), and whenever a file's owner it served moves
-    /// ([`Self::owning_project`]) — so a consumer accumulating facts across many lookups (the
-    /// stepped `workspace/diagnostic` sweep, the semantic layer's folds)
-    /// checks it to know its facts are mutually consistent.
+    /// and a generation ends whenever an evaluation it served is dropped (a
+    /// validation that finds its reads moved, or
+    /// [`Self::drop_every_evaluation`]), whenever a file's owner it served
+    /// moves ([`Self::owning_project`]), and whenever a structural watch
+    /// event arrives ([`Self::note_structural_event`]) — so a consumer
+    /// accumulating facts across many lookups (the stepped
+    /// `workspace/diagnostic` sweep) checks it to know its facts are
+    /// mutually consistent.
     pub fn projects_generation(&self) -> ProjectsGeneration {
         self.projects_generation
     }
@@ -861,7 +929,7 @@ impl Workspace {
     /// served again, given what resolving it read (`reads`) from the
     /// generation time `started` ([`Self::generation_time`]): every read
     /// except the contents of the installed versions it trusts, by the rule
-    /// a cached evaluation follows (`Evaluation::checks`). The installed
+    /// a cached evaluation follows (`Evaluation::checks_and_exempt`). The installed
     /// versions are those under the dotnet root the env was resolved
     /// against, under every package folder its assets file names
     /// (`package_folders`: NuGet extracts a package version into
@@ -913,10 +981,9 @@ impl Workspace {
             checker: checker.id(),
             exempt,
             checks: confirming.into_iter().map(Check::new).collect(),
-            read: reads.iter().map(|read| path_key(&read.path)).collect(),
-            listed: reads
+            stamped: reads
                 .iter()
-                .filter(|read| matches!(read.observation, Observation::Listing(_)))
+                .filter(|read| matches!(read.observation, Observation::Stamp(_)))
                 .map(|read| path_key(&read.path))
                 .collect(),
         }
@@ -952,7 +1019,8 @@ impl Workspace {
 
     /// Confirm the cached evaluation of `project` for the open generation:
     /// every read it depends on (bar the immutable contents it was told it
-    /// may skip, see `Evaluation::checks`) is asked again, once per
+    /// may skip, see `Evaluation::checks_and_exempt`, unless a structural watch event
+    /// has arrived since it was last confirmed) is asked again, once per
     /// generation, and an entry any of whose answers moved is dropped, so the
     /// lookup that follows evaluates afresh. Dropping it ends the
     /// [`Self::projects_generation`]. Nothing happens outside a generation, or
@@ -964,12 +1032,15 @@ impl Workspace {
         let Some(cached) = self.projects.get_mut(project) else {
             return;
         };
-        if cached.validated_in == Some(generation) {
+        if cached.validated_in == Some(generation) && !cached.event_since {
             return;
         }
         let checker = &self.checker;
-        if cached.checks.iter().all(|check| checker.holds(check)) {
+        let holds = cached.checks.iter().all(|check| checker.holds(check))
+            && (!cached.event_since || cached.exempt.iter().all(|check| checker.holds(check)));
+        if holds {
             cached.validated_in = Some(generation);
+            cached.event_since = false;
         } else {
             tracing::info!(
                 project = %project.as_path().display(),
@@ -1547,13 +1618,27 @@ impl Workspace {
         &mut self,
         project: &ProjectId,
     ) -> ProjectEvaluation<'_> {
-        match self.cached_or_evaluated(project) {
+        self.project_evaluation_and_id_as_last_confirmed(project).0
+    }
+
+    /// [`Self::project_evaluation_as_last_confirmed`], with the identity of
+    /// the evaluation it describes ([`Self::evaluation_id`]): what a value
+    /// derived from an evaluation is checked against before it is reported
+    /// beside it.
+    pub fn project_evaluation_and_id_as_last_confirmed(
+        &mut self,
+        project: &ProjectId,
+    ) -> (ProjectEvaluation<'_>, Option<EvaluationId>) {
+        self.cached_or_evaluated(project);
+        let id = self.evaluation_id(project);
+        let evaluation = match self.projects.get(project).and_then(|c| c.evaluated.as_ref()) {
             Some(evaluated) => ProjectEvaluation::Evaluated {
                 parsed: &evaluated.parsed,
                 not_an_inner_build: evaluated.not_an_inner_build,
             },
             None => ProjectEvaluation::Failed,
-        }
+        };
+        (evaluation, id)
     }
 
     /// The cached [`EvaluatedProject`] for `project_path` — the parse plus the
@@ -1593,10 +1678,13 @@ impl Workspace {
                     evaluate_project(project.as_path(), env, extra_build_properties, evaluated);
                 let id = EvaluationId(next_evaluation.get());
                 next_evaluation.set(id.0 + 1);
+                let (checks, exempt) = evaluation
+                    .checks_and_exempt(|version| nuget_committed_before(checker, version, started));
                 CachedEvaluation {
                     id,
-                    checks: evaluation
-                        .checks(|version| nuget_committed_before(checker, version, started)),
+                    checks,
+                    exempt,
+                    event_since: false,
                     immutable: evaluation.immutable,
                     reads: evaluation.reads,
                     evaluated: evaluation.evaluated,
@@ -6855,7 +6943,7 @@ mod tests {
         }
 
         /// The soundness property for what a cached evaluation confirms, its
-        /// checks ([`Evaluation::checks`]), rather than all it read: over
+        /// checks ([`Evaluation::checks_and_exempt`]), rather than all it read: over
         /// every perturbation of a project tree outside the installs (so
         /// the immutable-content axiom holds), an evaluation whose checks
         /// all stand is the evaluation a fresh one would be. The tree holds

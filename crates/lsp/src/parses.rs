@@ -181,12 +181,6 @@ impl ParseMemo {
         fresh
     }
 
-    /// Forget every parse. Correctness never needs it (a lookup compares
-    /// every input); it bounds memory on a structural change.
-    pub fn clear(&mut self) {
-        self.files.clear();
-    }
-
     /// Start counting a new generation.
     pub fn begin_generation(&mut self) {
         self.counts = ParseCounts::default();

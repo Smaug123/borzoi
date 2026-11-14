@@ -166,9 +166,11 @@ pub struct State {
     /// cleared and shared targets publish the union (see [`PublishState`]).
     /// Unused for clients that advertise the pull-diagnostic model.
     pub publish: PublishState,
-    /// Per-project parses and (later) name resolution, layered on top of the
+    /// Per-project parses and name resolution, layered on top of the
     /// workspace's `.fsproj` cache so editor buffers can overlay disk text.
-    /// Invalidated by [`Self::invalidate_owning_project`] on text-sync.
+    /// Each cached value is confirmed against its inputs when read, so text
+    /// sync owes it nothing beyond the refresh [`Self::note_source_sync`]
+    /// records.
     pub semantic: SemanticState,
     /// Capabilities the client advertised at `initialize`. `None` means we
     /// have not yet received an `initialize` (tests, or pre-handshake).
@@ -263,19 +265,20 @@ impl State {
     }
 
     /// End the generation, logging what its source reads, its project
-    /// evaluations, its ownership walks, its parses and its assembly envs
-    /// cost.
+    /// evaluations, its ownership walks, its parses, its assembly envs and
+    /// its folds cost.
     pub fn end_generation(&mut self) -> crate::observed::Generation {
         let counts = self.workspace.end_generation();
-        let (parses, envs_built) = self.semantic.end_generation();
+        let semantic = self.semantic.end_generation();
         self.docs.end_generation_with(
             counts.evaluations,
             counts.ownership,
-            parses,
+            semantic.parses,
             crate::observed::EnvCounts {
-                built: envs_built,
+                built: semantic.envs_built,
                 validation: counts.envs,
             },
+            semantic.folds,
         )
     }
 
@@ -400,63 +403,60 @@ impl State {
             .parse(path.as_deref(), text, file_kind, &symbols, lang)
     }
 
-    /// Drop the semantic caches for **every** cached project that lists this
-    /// URI's path in its compile-order parses. Wired into every text-sync
-    /// notification (`didOpen`/`didChange`/`didClose`) so the next semantic
-    /// query re-folds against the up-to-date buffer overlay.
+    /// Record what a text-sync notification (`didOpen`/`didChange`/
+    /// `didClose`) of `uri` owes the client: for an F# source, a
+    /// semantic-token refresh ([`SemanticState::owe_token_refresh`]),
+    /// since another open buffer's tokens may read what changed and the
+    /// client re-asks only for the buffer it touched.
     ///
-    /// Two design choices worth pinning:
-    ///
-    /// - **Skips non-source URIs** (anything outside `.fs`/`.fsi`/`.fsx`): a
-    ///   `.fsproj` text-sync can't change a sema cache (those caches are
-    ///   keyed on source files), and a `.fsproj` URI under text-sync would
-    ///   not name a source file in any project anyway.
-    /// - **Walks every cached project**, not just the one
-    ///   [`Workspace::owning_project`] would pick: a shared source file can
-    ///   sit in multiple projects' `<Compile>` lists (the link case), and
-    ///   `owning_project` only returns one. Invalidating just that one
-    ///   leaves stale parses in every other cached project that sees the
-    ///   file. See [`crate::semantic::SemanticState::invalidate_file`].
-    pub fn invalidate_owning_project(&mut self, uri: &Uri) {
+    /// No cache is dropped: each cached fold confirms its Compile items'
+    /// texts against [`Self::docs`] when it is next read, so the buffer's
+    /// new text (or, after `didClose`, the disk's) reaches every project
+    /// that compiles the file, a linked one included. A `.fsproj` buffer
+    /// owes nothing: no semantic cache reads a project file's buffer.
+    pub fn note_source_sync(&mut self, uri: &Uri) {
         if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
             return;
         }
-        let Ok(path) = uri.to_file_path() else {
-            return;
-        };
-        self.semantic.invalidate_file(&path);
+        self.semantic.owe_token_refresh();
     }
 
-    /// Apply a batch of `workspace/didChangeWatchedFiles` changes to the caches
-    /// and return the open-document URIs whose diagnostics the shell must
-    /// republish — empty unless a **structural** file changed. Structural and
+    /// Apply a batch of `workspace/didChangeWatchedFiles` changes and return
+    /// the open-document URIs whose diagnostics the shell must republish —
+    /// empty unless a **structural** file changed. Structural and
     /// source-content changes also record a global pull-diagnostic refresh
     /// independently of this list, because workspace pulls include unopened
     /// files.
     ///
-    /// - Every change, whatever its class, drops the assembly envs that depend
-    ///   on its path
-    ///   ([`crate::semantic::SemanticState::hint_assembly_paths`]): a path an
-    ///   env's resolution read, an entry of a directory it listed, or a file
-    ///   inside an installed version it trusts. Every other env stands, and
-    ///   is confirmed against the disk before it is served again.
+    /// Every cache confirms its inputs when read (`docs/incremental-lsp-plan.md`,
+    /// Stage 7), so an event is a **hint**, not an invalidation: whatever its
+    /// class, each path it names is asked again by the next read that
+    /// depends on it, whatever its stamp says ([`Vfs::hint`],
+    /// [`Workspace::hint`]), and an env that read the stamp of a DLL it
+    /// names is dropped, since a stamp cannot be asked again
+    /// ([`crate::semantic::SemanticState::hint_assembly_paths`]). What is left
+    /// here is what the event owes the client, and the inputs nothing records:
+    ///
     /// - A `Structural` change (a `.fsproj` / `Directory.Build.*` /
-    ///   `global.json` / `project.assets.json`) invalidates the *whole*
-    ///   project-evaluation cache and every semantic cache derived from it
-    ///   (broad-but-correct; see `docs/completed/file-watch-invalidation-plan.md`
-    ///   W2), with each env whose reads are not all recorded, and requests a
-    ///   republish of every open buffer — its `DefineConstants` may have moved.
-    /// - A `Source` change invalidates just the semantic caches that list the
-    ///   file and requests a workspace diagnostic refresh (no push republish:
-    ///   an unopened source edit can't change an open buffer's lexer/parser
-    ///   diagnostics, but its own workspace report changed).
+    ///   `global.json` / `project.assets.json`) makes the next confirmation
+    ///   of every evaluation cover the installed contents it trusts
+    ///   ([`Workspace::note_structural_event`]), drops each env whose reads
+    ///   are not all recorded, and requests a republish of every open buffer
+    ///   and both refreshes — its `DefineConstants` may have moved.
+    /// - A `Source` change requests a workspace diagnostic refresh and a
+    ///   semantic-token refresh (no push republish: an unopened source edit
+    ///   can't change an open buffer's lexer/parser diagnostics, but its own
+    ///   workspace report changed).
     /// - An `AssemblyInput` change (a `.dll` rewritten by a sibling rebuild or
     ///   restore, a `.cs`/`.csproj` edit feeding the C# sidecar) drops each env
     ///   whose reads are not all recorded: those an on-demand restore or the
     ///   C# sidecar answered part of
-    ///   ([`crate::semantic::SemanticState::invalidate_assembly_state`]). It
-    ///   keeps project evaluation; no republish (binaries can't change an open
-    ///   buffer's lexer/parser diagnostics either).
+    ///   ([`crate::semantic::SemanticState::invalidate_assembly_state`]). No
+    ///   republish (binaries can't change an open buffer's lexer/parser
+    ///   diagnostics either).
+    /// - A NuGet settings file (`nuget.config`, any casing) drops every
+    ///   evaluation and every env: SDK discovery reads NuGet's settings
+    ///   directly, and nothing records it.
     ///
     /// Pure of IO beyond cache mutation, so it is testable without a
     /// [`Connection`]; the shell does the actual publishing.
@@ -473,9 +473,11 @@ impl State {
         self.workspace.hint(hinted.iter().map(PathBuf::as_path));
         self.semantic.hint_assembly_paths(&hinted);
         // NuGet's settings choose the packages folder SDK discovery resolves
-        // versioned SDKs from, and nothing records reading them, so no env's
-        // read set can say whether one moved it: every env goes.
+        // versioned SDKs from, and nothing records reading them, so no
+        // evaluation's or env's read set can say whether one moved it: every
+        // evaluation and every env goes.
         if hinted.iter().any(|path| is_nuget_config(path)) {
+            self.workspace.drop_every_evaluation();
             self.semantic.drop_every_env();
         }
         for change in changes {
@@ -483,23 +485,22 @@ impl State {
                 ChangeClass::Structural => structural = true,
                 ChangeClass::Source => {
                     self.wants_diagnostic_refresh = true;
-                    if let Ok(path) = change.uri.to_file_path() {
-                        self.semantic.invalidate_file(&path);
-                    }
+                    self.semantic.owe_token_refresh();
                 }
                 ChangeClass::AssemblyInput => assembly_input = true,
                 ChangeClass::Ignored => {}
             }
         }
         if structural {
-            // Subsumes the assembly-input invalidation: `invalidate_all`
-            // drops every env whose reads are not all recorded too.
-            self.workspace.invalidate_projects();
-            self.semantic.invalidate_all();
+            // Ends the projects generation, which drops every env whose
+            // reads are not all recorded (as the assembly-input arm does)
+            // and owes a semantic-token refresh.
+            self.workspace.note_structural_event();
             self.semantic
                 .sync_with_evaluations(self.workspace.projects_generation());
-            // This is the response to the dropped evaluations, so none is
-            // owed for them after the message.
+            self.semantic.owe_token_refresh();
+            // This is the response to the moved generation, so none is owed
+            // for it after the message.
             self.evaluations_reported = self.workspace.projects_generation();
             self.wants_diagnostic_refresh = true;
             WatchedChangeEffect {
@@ -541,8 +542,8 @@ impl State {
 /// installs: three glob watchers covering the project-structure, F# source,
 /// and referenced-assembly-input files [`State::apply_watched_changes`] reacts
 /// to. `kind: None` keeps the LSP default (create | change | delete), which is
-/// exactly what we want — a source create/delete drives glob-membership
-/// invalidation, a content change drives the rest. The `{}` groups keep it to
+/// exactly what we want — a source create/delete is a hint to the
+/// glob-expanded Compile sets, a content change to the rest. The `{}` groups keep it to
 /// three watchers rather than one per extension.
 fn watched_files_registration_entry() -> Registration {
     let watcher = |glob: &str| FileSystemWatcher {
@@ -615,8 +616,8 @@ fn classify_change(uri: &Uri, typ: FileChangeType) -> ChangeClass {
     // (`crate::restore` declines when one exists); `nuget.config` (any casing —
     // `name` is lowercased) steers restore through its `globalPackagesFolder`,
     // which the restore is pinned to and versioned MSBuild SDKs resolve from
-    // (`crate::sdk_discovery`), and its `fallbackPackageFolders`. Both must
-    // invalidate the project evaluations and the assembly env, so treat them
+    // (`crate::sdk_discovery`), and its `fallbackPackageFolders`. Both feed
+    // the project evaluations and the assembly env, so treat them
     // structurally like the assets file they sit beside.
     if name == "global.json"
         || name == "project.assets.json"
@@ -873,9 +874,10 @@ pub fn run_with_fetcher(
 /// Tell the client what a dropped project evaluation may have staled, as a
 /// structural watch event does ([`State::apply_watched_changes`]): every open
 /// buffer is republished to a push client, a pull client is owed a diagnostic
-/// refresh, every cache derived from an evaluation is dropped (which owes a
+/// refresh, every env with an unrecorded reader is dropped (which owes a
 /// semantic-token refresh), and the deferral scope, which a Compile list
-/// decides, is recomputed.
+/// decides, is recomputed. Every other cache derived from an evaluation
+/// records the evaluation it was derived from, and is confirmed when read.
 ///
 /// The workspace drops an evaluation when a generation that reads it finds
 /// its files moved ([`Workspace::validate`]), which needs no watch event; the
@@ -1341,7 +1343,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
             if let Ok(params) = extract_notification::<DidOpenTextDocument>(not) {
                 let uri = params.text_document.uri;
                 state.docs.insert(uri.clone(), params.text_document.text);
-                state.invalidate_owning_project(&uri);
+                state.note_source_sync(&uri);
                 publish_diagnostics(conn, state, &uri);
                 extend_deferral_scope(state, &uri);
             }
@@ -1352,7 +1354,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 if let Some(change) = params.content_changes.into_iter().next_back() {
                     let uri = params.text_document.uri;
                     state.docs.insert(uri.clone(), change.text);
-                    state.invalidate_owning_project(&uri);
+                    state.note_source_sync(&uri);
                     publish_diagnostics(conn, state, &uri);
                 }
             }
@@ -1361,7 +1363,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
             if let Ok(params) = extract_notification::<DidCloseTextDocument>(not) {
                 let uri = params.text_document.uri;
                 state.docs.remove(&uri);
-                state.invalidate_owning_project(&uri);
+                state.note_source_sync(&uri);
                 shrink_deferral_scope(state, &uri);
                 if !state.supports_pull_diagnostics() {
                     // Clear this document's own diagnostics and any it had
@@ -1374,10 +1376,10 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
         }
         DidChangeWatchedFiles::METHOD => {
             if let Ok(params) = extract_notification::<DidChangeWatchedFiles>(not) {
-                // Invalidate the affected caches, then refresh every open
-                // buffer through the negotiated delivery path. Push clients
-                // receive new notifications; pull clients read the fresh
-                // project context on their next request.
+                // Hint the caches, then refresh every open buffer through the
+                // negotiated delivery path. Push clients receive new
+                // notifications; pull clients read the fresh project context
+                // on their next request.
                 let effect = state.apply_watched_changes(&params.changes);
                 for uri in &effect.republish {
                     publish_diagnostics(conn, state, uri);
@@ -1388,9 +1390,9 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // save, every build — and recomputing on those would walk every
                 // open buffer's ancestors for nothing.
                 //
-                // After `apply_watched_changes`, which is what clears the
-                // project memo: recomputing first would read the pre-change
-                // Compile lists and record the old owner.
+                // After `apply_watched_changes`, which is what hints the
+                // workspace: recomputing first would trust the pre-change
+                // listings and Compile lists and record the old owner.
                 if effect.structural {
                     recompute_deferral_scope(state);
                 }
@@ -1501,10 +1503,10 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
             // project on every keystroke. `SemanticState::fold` records the
             // outcome wherever it does run, which is whenever a request
             // actually needs the Compile order.
-            let fold = state.semantic.fold_outcome(&project);
-            let evaluation = state
+            let (evaluation, evaluation_id) = state
                 .workspace
-                .project_evaluation_as_last_confirmed(&project);
+                .project_evaluation_and_id_as_last_confirmed(&project);
+            let fold = state.semantic.fold_outcome(&project, evaluation_id);
             // Per capability, not per project: the evaluation always settles the
             // reference-edge verdict, while an unfolded project's *fold* verdict
             // is genuinely unknown and its last one stands.
@@ -1523,9 +1525,9 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
 ///
 /// `None` for a `.fsproj` — it is in scope only through its source files. Its
 /// own text already gets span-anchored diagnostics every keystroke, which is
-/// better feedback than a toast, and evaluating it here would populate
-/// `Workspace`'s project memo from *disk* on a path text-sync deliberately does
-/// not invalidate, pinning a stale Compile list for the server's lifetime
+/// better feedback than a toast, and evaluating it here would put an
+/// evaluation of the project from *disk* in `Workspace`'s project memo on
+/// every keystroke in the project file's buffer
 /// (`tests::fsproj_sync_does_not_pin_the_project_cache`).
 ///
 /// `compiling_project`, not `owning_project`: a standalone `.fsx` beside an
@@ -1910,7 +1912,7 @@ where
     let _ = conn.sender.send(Message::Notification(notif));
 }
 
-/// Send the next client-supported refresh owed by cache invalidation.
+/// Send the next client-supported refresh a change has owed.
 ///
 /// Sends **at most one refresh at a time** ([`State::pending_refresh_id`]): while
 /// one is outstanding, owed work stays set until [`handle_refresh_reply`] clears
@@ -2209,27 +2211,26 @@ mod tests {
     }
 
     #[test]
-    fn invalidate_owning_project_skips_fsproj_uris() {
+    fn source_sync_skips_fsproj_uris() {
         // A `.fsproj` text-sync must not populate the workspace project
-        // cache. Concretely: starting from an empty `State`, sending an
-        // invalidate for a `.fsproj` URI leaves the cache empty; a `.fs`
-        // URI in the same directory triggers the lookup that would
-        // populate it.
+        // cache. Concretely: starting from an empty `State`, a source sync
+        // of a `.fsproj` URI leaves the cache empty; a `.fs` URI in the same
+        // directory triggers the lookup that would populate it.
         let tmp = tempfile::TempDir::new().unwrap();
         let proj_path = tmp.path().join("App.fsproj");
         std::fs::write(&proj_path, "<Project/>").unwrap();
         let mut state = State::default();
         let project_uri = Uri::from_file_path(&proj_path).unwrap();
-        state.invalidate_owning_project(&project_uri);
+        state.note_source_sync(&project_uri);
         // Inspect the workspace's project cache via a real test path. The
         // cache is private, but `Workspace::project` exposes the effect:
         // calling it again now returns the same `ParsedProject` (or
         // freshly evaluates one if it hadn't been cached). We assert that
-        // the project was *not* pre-populated by the no-op invalidate by
-        // pre-mutating disk between calls and observing the *new* content
-        // through `symbols_for`. After invalidate, write a fresh
-        // `DefineConstants`; the next `symbols_for` should see it (would
-        // be cached-stale if invalidate had populated the cache).
+        // the project was *not* pre-populated by the sync by pre-mutating
+        // disk between calls and observing the *new* content through
+        // `symbols_for`. After the sync, write a fresh `DefineConstants`;
+        // the next `symbols_for` should see it (would be cached-stale if
+        // the sync had populated the cache).
         std::fs::write(
             &proj_path,
             r#"<Project><PropertyGroup><DefineConstants>POST_SYNC</DefineConstants></PropertyGroup></Project>"#,
@@ -2595,7 +2596,7 @@ mod tests {
         );
 
         // Edit A on disk to reference B (cycle), keep the buffer in sync, and do
-        // NOT call invalidate_projects — the no-watcher case the fix targets.
+        // send no watch event — the no-watcher case the fix targets.
         let a_cyclic =
             r#"<Project><ItemGroup><ProjectReference Include="B.fsproj" /></ItemGroup></Project>"#;
         fs::write(&a, a_cyclic).unwrap();
@@ -2621,11 +2622,11 @@ mod tests {
     fn fsproj_sync_does_not_pin_the_project_cache() {
         // A `.fsproj` text-sync must NOT reach `owning_project`: that call
         // evaluates and caches the project (and its siblings) from disk as a
-        // side effect, and the workspace project cache has no file-watch
-        // invalidation. If a client opens/edits `App.fsproj` before touching
-        // any `.fs` file, that side-effecting read would pin the cache to the
-        // old on-disk `DefineConstants`/Compile list for the server's
-        // lifetime. Regression test for the premature `owning_project` read.
+        // side effect. Outside a generation (as here) a cached evaluation is
+        // served as it is, so if a client opens/edits `App.fsproj` before
+        // touching any `.fs` file, that side-effecting read would pin the
+        // cache to the old on-disk `DefineConstants`/Compile list. Regression
+        // test for the premature `owning_project` read.
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("App.fsproj");
         let file = tmp.path().join("Lib.fs");
@@ -2634,7 +2635,7 @@ mod tests {
 
         let mut state = State::new();
         // The client opens / edits the project file first.
-        state.invalidate_owning_project(&Uri::from_file_path(&proj).unwrap());
+        state.note_source_sync(&Uri::from_file_path(&proj).unwrap());
 
         // The project then changes on disk (e.g. the user saves a new define).
         fs::write(&proj, fsproj_define_compile("BAR", "Lib.fs")).unwrap();
@@ -2649,10 +2650,11 @@ mod tests {
     }
 
     #[test]
-    fn fs_sync_still_invalidates_the_owning_project() {
-        // The gate that skips `.fsproj` must not also skip source files: a
-        // `.fs` text-sync still has to drop the owning project's semantic
-        // parses so the next query re-folds against the buffer overlay.
+    fn fs_sync_reaches_the_owning_projects_fold() {
+        // A `.fs` text-sync drops nothing, but the next query confirms the
+        // cached parses' texts and re-folds against the buffer overlay, and
+        // the sync owes a semantic-token refresh, which a `.fsproj` sync
+        // does not.
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");
         let file = tmp.path().join("Lib.fs");
@@ -2675,7 +2677,7 @@ mod tests {
         state
             .docs
             .insert(file_url.clone(), "let buffer = 1\n".to_string());
-        state.invalidate_owning_project(&file_url);
+        state.note_source_sync(&file_url);
 
         // The next query must re-fold and see the buffer text.
         let parses = state
@@ -2684,8 +2686,14 @@ mod tests {
             .expect("rebuilt parses");
         assert!(
             parses.texts[0].contains("buffer") && !parses.texts[0].contains("disk"),
-            "fs sync did not invalidate the owning project: {:?}",
+            "the fold did not see the synced buffer: {:?}",
             parses.texts[0]
+        );
+        assert!(state.semantic.take_wants_refresh(), "a source sync owes a refresh");
+        state.note_source_sync(&Uri::from_file_path(&proj).unwrap());
+        assert!(
+            !state.semantic.take_wants_refresh(),
+            "a project file's sync owes nothing"
         );
     }
 
@@ -2762,12 +2770,13 @@ mod tests {
         );
     }
 
-    /// The headline fix: a `.fsproj` edited on disk is re-evaluated after the
-    /// watched-file change, so `symbols_for` sees the new `DefineConstants`
-    /// rather than the stale cached set. The inverse of
+    /// A `.fsproj` edited on disk is re-evaluated after the watched-file
+    /// change, so `symbols_for` sees the new `DefineConstants` rather than
+    /// the stale cached set. The inverse of
     /// `fsproj_sync_does_not_pin_the_project_cache` (which proves the cache is
-    /// real by never priming it); here we prime it, then prove invalidation
-    /// refreshes it.
+    /// real by never priming it); here we prime it, then prove the event's
+    /// hint reaches it. Outside a generation a cached evaluation is served as
+    /// it is, so the lookups run in generations, as the dispatch loop's do.
     #[test]
     fn watched_fsproj_change_refreshes_stale_defines() {
         let tmp = TempDir::new().unwrap();
@@ -2778,22 +2787,27 @@ mod tests {
 
         let mut state = State::default();
         // Prime the project cache: ALPHA is seen.
+        state.begin_generation();
         assert!(state.workspace.symbols_for(&file).contains("ALPHA"));
+        state.end_generation();
 
-        // The project changes on disk; the cache is now stale.
+        // The project changes on disk; outside a generation the cache is
+        // served as it is.
         fs::write(&proj, fsproj_define_compile("BETA", "Lib.fs")).unwrap();
         assert!(
             state.workspace.symbols_for(&file).contains("ALPHA"),
-            "cache still holds the stale value before invalidation"
+            "outside a generation the cached evaluation is served as it is"
         );
 
         // Deliver the watched-file change for the project.
+        state.begin_generation();
         let republish = state
             .apply_watched_changes(&[changed(Uri::from_file_path(&proj).unwrap())])
             .republish;
         assert!(republish.is_empty(), "no open buffers to republish here");
 
         let symbols = state.workspace.symbols_for(&file);
+        state.end_generation();
         assert!(
             symbols.contains("BETA") && !symbols.contains("ALPHA"),
             "defines must refresh after the watched change: {symbols:?}"
@@ -2869,8 +2883,9 @@ mod tests {
     }
 
     /// End-to-end: a `*.fs` Compile glob picks up a newly created source file
-    /// after its watched `Created` event — the case the targeted source
-    /// invalidation alone would miss (the project cache would stay stale).
+    /// after its watched `Created` event: the evaluation's listing of the
+    /// directory is confirmed in the next generation, and the event names a
+    /// path in it.
     #[test]
     fn created_source_refreshes_globbed_compile_set() {
         let tmp = TempDir::new().unwrap();
@@ -2884,6 +2899,7 @@ mod tests {
 
         let mut state = State::default();
         // Prime: only Lib.fs matches the glob.
+        state.begin_generation();
         let primed: Vec<PathBuf> = state
             .workspace
             .project(&proj)
@@ -2894,10 +2910,12 @@ mod tests {
             .collect();
         assert!(primed.iter().any(|p| p.ends_with("Lib.fs")), "{primed:?}");
         assert!(!primed.iter().any(|p| p.ends_with("New.fs")), "{primed:?}");
+        state.end_generation();
 
         // Create a new source file and deliver its watched `Created` event.
         let new = tmp.path().join("New.fs");
         fs::write(&new, "let y = 2\n").unwrap();
+        state.begin_generation();
         state.apply_watched_changes(&[event(
             Uri::from_file_path(&new).unwrap(),
             FileChangeType::CREATED,
@@ -2911,20 +2929,24 @@ mod tests {
             .iter()
             .map(|i| i.include.clone())
             .collect();
+        state.end_generation();
         assert!(
             after.iter().any(|p| p.ends_with("New.fs")),
             "the glob-expanded Compile set must pick up the created file: {after:?}"
         );
     }
 
-    /// The referenced-assembly class, targeted (`docs/incremental-lsp-plan.md`,
-    /// Stage 6b): a watched `.dll` change no env read (a sibling project's
-    /// output this one does not reference) leaves the cached env standing, and
-    /// a watched change to a path the env's resolution read (here the entry
-    /// project file, which it found absent) drops it, so the next lookup
-    /// re-resolves. Cache identity is observed by `Arc::ptr_eq` — the
+    /// A watch event is a hint (`docs/incremental-lsp-plan.md`, Stage 7): a
+    /// watched `.dll` change no env read (a sibling project's output this one
+    /// does not reference) leaves the cached env standing, and so does a
+    /// watched change to a path the env's resolution read (here the entry
+    /// project file, which it found absent) when the next confirmation finds
+    /// it as recorded. A NuGet settings file, which nothing records, drops
+    /// every env. Cache identity is observed by `Arc::ptr_eq` — the
     /// un-resolvable project here caches a (stable, empty) env, which is
-    /// exactly enough to see the hit/miss behaviour without real DLL fixtures.
+    /// exactly enough to see the hit/miss behaviour without real DLL
+    /// fixtures; `env_validation` holds a DLL event to dropping the env that
+    /// read its stamp.
     #[test]
     fn a_watched_change_drops_only_an_env_that_read_its_path() {
         let mut state = State::default();
@@ -2956,19 +2978,27 @@ mod tests {
             "a DLL the env never read dropped it"
         );
 
+        state.begin_generation();
         state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
         let second = env(&mut state);
+        state.end_generation();
         assert!(
-            !Arc::ptr_eq(&first, &second),
-            "the env must be re-resolved after a watched change to a path it read"
+            Arc::ptr_eq(&first, &second),
+            "an event naming a read the next confirmation finds as recorded dropped the env"
         );
 
         // NuGet's settings are read by no recorded reader, so a change to any
-        // of them drops every env, wherever it is.
+        // of them drops every env and every evaluation, wherever it is.
+        let generation = state.workspace.projects_generation();
         state.apply_watched_changes(&[changed(url("file:///elsewhere/NuGet.Config"))]);
         assert!(
             !Arc::ptr_eq(&second, &env(&mut state)),
             "a NuGet settings change left an env standing"
+        );
+        assert_ne!(
+            state.workspace.projects_generation(),
+            generation,
+            "a NuGet settings change left the evaluations standing"
         );
     }
 
@@ -3007,9 +3037,9 @@ mod tests {
 
         let mut state = State::default();
         assert!(state.workspace.symbols_for(&file).contains("ALPHA"));
-        // Rewrite the project on disk; the cache is stale but a DLL event must
-        // NOT be the thing that refreshes it (that is the structural class's
-        // job) — staleness here is the *proof* the cache survived.
+        // Rewrite the project on disk; outside a generation the cache is
+        // served as it is, so staleness here is the *proof* the DLL event
+        // dropped nothing.
         fs::write(&proj, fsproj_define_compile("BETA", "Lib.fs")).unwrap();
 
         state.apply_watched_changes(&[changed(url("file:///p/bin/Lib.dll"))]);
@@ -3291,7 +3321,6 @@ mod tests {
         state
             .docs
             .insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
-        state.semantic.invalidate_project(&proj);
         {
             let State {
                 semantic,
@@ -3332,10 +3361,10 @@ mod tests {
         let (server, client) = Connection::memory();
         let mut state = State::default();
         state.set_client_capabilities(caps_with_semantic_tokens_refresh(true));
-        let proj = std::path::Path::new("/p/P.fsproj");
+        let source = url("file:///p/A.fs");
 
         // First edit, nothing in flight: one refresh goes out and is outstanding.
-        state.semantic.invalidate_project(proj);
+        state.note_source_sync(&source);
         maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let first_id = match client
             .receiver
@@ -3357,7 +3386,7 @@ mod tests {
         // Two more edits while it's outstanding: each owes a refresh, but the
         // in-flight gate sends nothing — the burst coalesces.
         for _ in 0..2 {
-            state.semantic.invalidate_project(proj);
+            state.note_source_sync(&source);
             maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         }
         assert!(
@@ -3396,10 +3425,10 @@ mod tests {
         let (server, client) = Connection::memory();
         let mut state = State::default();
         state.set_client_capabilities(caps_with_semantic_tokens_refresh(true));
-        let proj = std::path::Path::new("/p/P.fsproj");
+        let source = url("file:///p/A.fs");
 
         // Edit 1, nothing in flight: one refresh goes out and is outstanding.
-        state.semantic.invalidate_project(proj);
+        state.note_source_sync(&source);
         maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let first_id = match client
             .receiver
@@ -3428,7 +3457,7 @@ mod tests {
 
         // Edit 2, now that the slot is clear: a *second*, distinct refresh. The gate
         // did not coalesce across the reply boundary — one refresh per edit.
-        state.semantic.invalidate_project(proj);
+        state.note_source_sync(&source);
         maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
         let second_id = match client
             .receiver
