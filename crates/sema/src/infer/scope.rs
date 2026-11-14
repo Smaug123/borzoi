@@ -55,20 +55,12 @@ pub(super) struct Scope {
     /// used as a parameter is ([`Gen::value_use`]): not another binding's
     /// opaque one.
     pub(super) match_locals: HashSet<DefId>,
-    /// The binding's instantiation variables whose type parameter carries
-    /// `equality` or `comparison`, and which ([`Gen::constrained_scheme_use`]).
-    /// Each is poisoned when it is made, so none generalises while open — no
-    /// scheme here can say `when` — and [`Gen::check_constraints`] checks what
-    /// each is solved to once the binding is solved.
-    ///
-    /// The check reads the variable's type and the env
-    /// ([`constraint_verdict_of`]), nothing of the binding, so each entry is a
-    /// constraint on its variable: FCS holds such a constraint on the type
-    /// variable and checks it when the variable is solved. Where unification
-    /// runs as the walk generates, the entries belong in [`Solver`], checked
-    /// as a variable is bound. They are held here while the check runs once,
-    /// after the binding's solve, over this binding's variables only.
-    pub(super) constrained: Vec<(TyVid, EqualityComparison)>,
+    /// [`Solver::constraint_mark`] at the binding's start: the binding's
+    /// per-variable constraints are those recorded since
+    /// ([`Gen::constrained_scheme_use`]), and its checks read those alone —
+    /// an argument check's discharge ([`Solver::unify_checked`]) and the
+    /// check once the binding is solved ([`Gen::check_constraints`]).
+    pub(super) constraints: ConstraintMark,
     /// The binding's **implicitly scoped type variables**: each name a `'a` in
     /// its head's annotations spells, to the one inference variable every
     /// mention of it denotes ([`Gen::open_head_typars`]). Empty where the head
@@ -188,6 +180,7 @@ impl<'a> Gen<'a> {
         Scope {
             mark: self.solver.table.mark(),
             emissions: self.out.mark(),
+            constraints: self.solver.constraint_mark(),
             complete: true,
             reasons: Vec::new(),
             body: None,
@@ -195,7 +188,6 @@ impl<'a> Gen<'a> {
             params: Vec::new(),
             binding_params: Vec::new(),
             match_locals: HashSet::default(),
-            constrained: Vec::new(),
             head_typars: HashMap::default(),
             typar_params: HashSet::default(),
             rigid_typars: Vec::new(),
