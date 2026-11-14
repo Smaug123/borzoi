@@ -2016,7 +2016,10 @@ and inexact, settling the offer, by a root whose expansion the walk cannot
 vouch for, by a root in a `Directory.Build.*` file the walk spliced in
 itself, by any root outside an SDK's files once such a splice has run
 (whatever it wrote may not exist in MSBuild's build, #676), or by opacity
-while the offer is open.
+while the offer is open. Beyond that it is exactly as faithful as the walk's
+import graph, like every other property: an SDK that never imports
+`Directory.Build.props` while the walk splices it in can feed it a value
+MSBuild never holds, as it can feed any property (#677).
 `fsproj_default_targets_generative_diff` holds it to MSBuild over entry and
 imported roots, literal, padded, escaped, list, empty and property-expanded
 values, blanks and separators, a `Directory.Build.props` beside an SDK-less
