@@ -1596,3 +1596,67 @@ fn the_loop_reads_again_before_each_message_it_handles() {
         assert_eq!(error_code(&answers, "s"), None);
     });
 }
+
+/// Behind `lsp-server`'s stdio transport, which hands each message over a
+/// rendezvous channel, the loop still finds a burst waiting: the input
+/// buffer takes every message the moment it is decoded. The client's whole
+/// burst is taken before the loop starts (the sender could not finish
+/// otherwise), and every request a later cancellation names is refused.
+#[test]
+fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
+    on_server_stack(|| {
+        let world = World::new();
+        let b = world.uri(Doc::Src(Src::B));
+        let (upstream, from_client) = crossbeam_channel::bounded::<Message>(0);
+        let (to_client, client) = crossbeam_channel::unbounded::<Message>();
+        let buffered = borzoi::server::buffer_input(from_client);
+        const PAIRS: usize = 32;
+        let mut burst = vec![did_open(&b, Src::B.text(0))];
+        for i in 0..PAIRS {
+            burst.push(hover_b(&world, &format!("h{i}")));
+            burst.push(notification(
+                "$/cancelRequest",
+                json!({ "id": format!("h{i}") }),
+            ));
+        }
+        burst.push(request("s", "shutdown", Value::Null));
+        burst.push(notification("exit", Value::Null));
+        let sender = std::thread::spawn(move || {
+            for message in burst {
+                upstream.send(message).unwrap();
+            }
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !sender.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "nothing took the burst from the rendezvous channel"
+            );
+            std::thread::yield_now();
+        }
+        sender.join().expect("the sender ends cleanly");
+        let mut state = State::new();
+        state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(world.root.join("no-dotnet")),
+            ..SdkDiscoveryEnv::default()
+        });
+        let connection = Connection {
+            sender: to_client,
+            receiver: buffered,
+        };
+        borzoi::server::run_with_fetcher(connection, state, None).expect("the loop ends cleanly");
+        let mut answers: BTreeMap<RequestId, Vec<Response>> = BTreeMap::new();
+        for message in client.try_iter() {
+            if let Message::Response(response) = message {
+                answers
+                    .entry(response.id.clone())
+                    .or_default()
+                    .push(response);
+            }
+        }
+        for i in 0..PAIRS {
+            assert_eq!(error_code(&answers, &format!("h{i}")), CANCELLED, "h{i}");
+        }
+        assert_eq!(error_code(&answers, "s"), None);
+    });
+}

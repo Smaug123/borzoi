@@ -3195,6 +3195,14 @@ changes before draining, to measure it.
   refusal reads nothing and opens none.
 - **The epoch is bounded** at 4,096 messages (`MAX_PENDING`); beyond it the
   loop reads nothing more until the epoch ends.
+- **The server's input is buffered** (`server::buffer_input`, applied in
+  `main`). `lsp-server`'s stdio transport hands each message over a
+  rendezvous channel and decodes the next only once the last is taken, so
+  read directly a burst would sit in stdin while the loop handled its first
+  message, and nothing would be waiting to plan with it (found by Codex: 49
+  of 50 cancelled requests still ran). A thread takes each message the
+  moment it is decoded into a buffer of 1,024, which the loop reads; a full
+  buffer holds the reader back.
 
 **Decision 1: a request runs after every notification the loop has read,
 not in arrival order.** The plan names three rules; they refuse a request
@@ -3256,6 +3264,10 @@ The oracle:
   in chunks with steps between them (exactly once, and the final state). Its
   non-vacuity check asks for every fate, an answer that a later change to
   another document moved, a spared publish and a chunked batch.
+- `a_burst_behind_a_rendezvous_transport_is_planned_together`: behind a
+  rendezvous channel, as `lsp-server`'s stdio transport delivers, a client's
+  whole burst is taken by the input buffer before the loop starts, and every
+  request a later cancellation names is refused.
 - Pinned: the real loop reads every queued message before handling one
   (`the_loop_reads_every_waiting_message_before_it_handles_one`) and reads
   again before each (`the_loop_reads_again_before_each_message_it_handles`,
@@ -3291,6 +3303,7 @@ Planted, each caught, then removed (each run against `cargo test -p borzoi
 | a cancellation not reaching the sweep in flight | `a_refresh_held_for_a_cancelled_sweep_is_released` |
 | the two refusal codes swapped | the generated property, `the_loop_reads_every_waiting_message_before_it_handles_one`, `cancel_request_ends_the_sweep` |
 | an acknowledged `shutdown` forgotten by the next epoch | the generated property (the sequential session's later epochs) |
+| the input read straight from the transport's rendezvous channel (Codex) | `a_burst_behind_a_rendezvous_transport_is_planned_together` (added for it) |
 
 Two plants first passed every test. A refusal that ran the request anyway
 called `handle_request` outside the `lsp.request` span the property counted,
@@ -3319,6 +3332,9 @@ so the two agree on any rule both apply.
 - **A notification after `shutdown`** is dropped without a generation; it
   had one, in which it did nothing.
 - **`ContentModified` despite LSP 3.17's advice** (decision 2).
+- **The input is buffered.** The plan assumed the channel the loop drains
+  holds what the client has sent; `lsp-server`'s stdio transport holds one
+  message at a time, so the server buffers its input itself.
 - **Two sweep tests drive a `Dispatcher`** rather than a pre-queued script
   (above), and `Dispatcher` is public so that tests can hand it batches of
   their choosing.
@@ -3329,7 +3345,10 @@ with this stage's `edit_counts`) and this stage. The keystroke script ran 20
 keystrokes per run; the burst mode (`EDIT_COUNTS_BURST=n`: `n` keystrokes,
 each with the requests a pull client sends after it, all queued while the
 server is held between two messages) ran 5 bursts of 4 and 3 bursts of 16
-per run. The on-disk assembly cache is off.
+per run. The on-disk assembly cache is off. `edit_counts` runs the loop over
+an in-memory connection, so every message the client has sent is waiting;
+behind stdio the input buffer makes that so up to the time to decode each
+message.
 
 | message, per keystroke | instructions 7 | 8 | allocs 7 | 8 |
 |---|---:|---:|---:|---:|
@@ -3376,6 +3395,11 @@ epoch would not need it (see the open gaps).
   owes, as before.
 - A refused request that would have found a fold refusal does not report it;
   the next request that folds the project does.
+- Behind stdio, what the loop finds waiting is what the input thread has
+  decoded when it looks: a message still being decoded misses the plan. No
+  test drives the real binary over stdio with a burst, since the outcome
+  depends on that timing; the rendezvous test holds the buffer to taking a
+  whole burst eagerly.
 
 ### Stage 9 (gated): requests on a snapshot
 

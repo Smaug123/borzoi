@@ -751,6 +751,37 @@ pub fn run_with_fetcher(
     Ok(())
 }
 
+/// How many decoded messages [`buffer_input`] holds ahead of the loop.
+pub const INPUT_BUFFER: usize = 1024;
+
+/// `receiver`'s messages, taken as soon as they arrive by a thread of their
+/// own and held in a buffer of [`INPUT_BUFFER`] for the loop to read.
+///
+/// `lsp-server`'s stdio transport hands each message over a rendezvous
+/// channel and reads the next from stdin only once the last was taken. Read
+/// directly, a burst the client has sent would sit in stdin while the loop
+/// handles its first message, and the loop would find nothing waiting to plan
+/// with it ([`crate::batch`]). The buffer decodes eagerly, so what the loop
+/// finds waiting is what the client has sent, up to the bound. A full buffer
+/// holds the reader back, so a client further ahead waits in stdin. The
+/// thread ends when the input ends or the loop drops the buffer.
+pub fn buffer_input(
+    receiver: crossbeam_channel::Receiver<Message>,
+) -> crossbeam_channel::Receiver<Message> {
+    let (sender, buffered) = crossbeam_channel::bounded(INPUT_BUFFER);
+    std::thread::Builder::new()
+        .name("borzoi-input".to_string())
+        .spawn(move || {
+            for message in receiver {
+                if sender.send(message).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn the input thread");
+    buffered
+}
+
 /// The most messages one epoch holds, handled or not ([`crate::batch`]).
 /// Once it holds this many the loop reads no more until it has handled them
 /// all and the epoch ends, which bounds the plan's size and its cost (linear
