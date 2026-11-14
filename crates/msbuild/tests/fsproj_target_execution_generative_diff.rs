@@ -147,7 +147,8 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
         }
         for hook in ["BeforeTargets", "AfterTargets"] {
             if rng.below(4) == 0 {
-                let named = if rng.below(8) == 0 {
+                // `$(Hook)` names T1, an earlier target only for T2 and T3.
+                let named = if index > 1 && rng.below(8) == 0 {
                     vec!["$(Hook)"]
                 } else {
                     others(rng, index, false)
@@ -159,6 +160,20 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
         }
         if rng.below(40) == 0 {
             attributes.push_str(" Inputs=\"a\" Outputs=\"b\"");
+        }
+        // What a target returns: plain references, which the executor accepts,
+        // and a transform or a property function that throws (failing the
+        // build once the target has run), which it declines.
+        if rng.below(20) == 0 {
+            attributes.push_str(&format!(
+                " Returns=\"{}\"",
+                rng.pick(&[
+                    "@(I)",
+                    "$(A);@(I)",
+                    "@(I->'%(M)')",
+                    "$([System.IO.File]::ReadAllText('nowhere'))"
+                ])
+            ));
         }
         out.push_str(&format!("  <Target Name=\"{name}\"{attributes}>\n"));
         for _ in 0..rng.below(3) {

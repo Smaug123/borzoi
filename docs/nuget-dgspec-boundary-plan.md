@@ -1976,10 +1976,15 @@ the two differ where it matters:
   padding kept, and a value that XML normalisation or entity decoding
   touched declines, as does inner XML.
 
+A target's `Returns` shapes only what it hands a caller, and no caller is
+modelled. But MSBuild expands it once the target has run, and a property
+function there can throw and fail the build, so only text and plain
+`$(Name)`/`@(Type)` references pass.
+
 It declines everything else: another task, a built-in task a `UsingTask`
 may rebind, an empty request (the default targets), `InitialTargets` (not
 run yet),
-`Inputs`/`Outputs`/`Returns`, a backslash in an item identity or metadatum
+`Inputs`/`Outputs`, a backslash in an item identity or metadatum
 (MSBuild's Unix path fixup may respell it),
 `%(…)` and `@(…)` (including one properties assemble, which MSBuild then
 expands as such), a property function, `MSBuildThisFile*` (which name the
@@ -1997,9 +2002,9 @@ every committed run to it. The scheduling rules above came out of its
 failures. Its soak fails when any of the three push rules is changed.
 
 The census runs `GenerateRestoreGraphFile` on every cone and pins where the
-executor stops. Every single-target cone stops at
-`_GenerateRestoreGraph`'s `Returns`. The two multi-targeting outer builds
-stop at opacity.
+executor stops. Every single-target cone stops at a condition that reads an
+item list, `@(RestoreGraphProjectInputItems) == ''`. The two
+multi-targeting outer builds stop at opacity.
 
 **`MSBuildProjectDefaultTargets`.** The hook
 `BeforeTargets="$(BuildDependsOn);Build;$(RebuildDependsOn);…"` in

@@ -387,10 +387,21 @@ impl<'s, 'r> Engine<'s, 'r> {
         let document = Document::parse(&xml)
             .or_else(|e| decline(format!("target {declared} does not parse alone: {e}")))?;
         let root = document.root_element();
-        for unmodelled in ["Inputs", "Outputs", "Returns", "KeepDuplicateOutputs"] {
+        // `Inputs`/`Outputs` decide whether the target is up to date, from the
+        // file system.
+        for unmodelled in ["Inputs", "Outputs"] {
             if root.attribute(unmodelled).is_some() {
                 return decline(format!("target {declared} has {unmodelled}"));
             }
+        }
+        // `Returns` (and `KeepDuplicateOutputs`) shape only what the target
+        // hands a caller, and no caller is modelled. But MSBuild expands it
+        // once the target has run, and a property function or transform there
+        // can fail the build, so only plain references and text pass.
+        if let Some(returns) = attribute(root, "Returns")?
+            && !plain_returns(&returns)
+        {
+            return decline(format!("target {declared} returns {returns}"));
         }
         if !self.decide(root)? {
             self.entries[entry].state = EntryState::Completed(false);
@@ -807,4 +818,30 @@ fn may_bind(task_name: &str, name: &str) -> bool {
 /// Whether escaped text holds an item or metadata reference.
 fn holds_reference(escaped: &str) -> bool {
     escaped.contains("@(") || escaped.contains("%(")
+}
+
+/// Whether a target's `Returns` is nothing but text, plain `$(Name)` and plain
+/// `@(Type)` references: what expands without a function or transform that
+/// could fail the build.
+fn plain_returns(raw: &str) -> bool {
+    if raw.contains("%(") || plain_references(raw).is_none() {
+        return false;
+    }
+    let mut rest = raw;
+    while let Some(at) = rest.find("@(") {
+        let interior = &rest[at + 2..];
+        let Some(close) = interior.find(')') else {
+            return false;
+        };
+        let name = interior[..close].trim();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return false;
+        }
+        rest = &interior[close + 1..];
+    }
+    true
 }
