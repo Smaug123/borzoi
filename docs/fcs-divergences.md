@@ -166,7 +166,9 @@ exists.
 
 - **`#nowarn` / `#warnon` numbers parsed but not consumed** — the warning numbers
   are decoded into structured payloads, but nothing consumes them to suppress
-  diagnostics. (`3c84c65`, structured payloads in PR #157)
+  diagnostics. (`3c84c65`, structured payloads in PR #157) The directives' own
+  diagnostics are reported (`crates/cst/src/parser/warn_directives.rs`; see
+  [Language-version pinning](#language-version-pinning)).
 - **`#line` request-coordinate inverse mapping remains deferred** — diagnostic
   generated→virtual remapping is implemented through `LineDirectiveStore`, but
   request handlers do not yet map virtual positions back to generated source
@@ -435,36 +437,68 @@ FCS consults (`RelaxWhitespace`, `RelaxWhitespace2`, `StrictIndentation`,
 `NullnessChecking`, `ErrorOnInvalidDeclsInTypeDefinitions`) is version-aware
 too: the lex-filter differential runs every fixture at one version per band of
 those gates, comparing both the token stream and the FS0058 offside
-diagnostics. `#nowarn` / `#warnon` arguments record whether they need
-`ParsedHashDirectiveArgumentNonQuotes` (F# 9.0), and
-`Directive::warning_numbers` reads them at a version. The features FCS
+diagnostics. The lexer is version-aware too: below F# 8.0 a `$$"""` opener is
+lexed as a `$"""` one, as FCS's lexer reads it, with FS1251. The features FCS
 checks while parsing (`CheckLanguageFeatureAndRecover`, and the lexer's dotless
-`float32` check) are version-aware: `while!`, constraint intersection,
+`float32` check) are version-aware: `while!`, `_.M`, constraint intersection,
 `static abstract`, attributes after `module`, unparenthesised `let!`/`return`
-annotations and `1f` literals each draw FCS's diagnostic below their version,
-over the same tree (`crates/cst/src/parser/feature_gates.rs`).
-`parser_diff_feature_gates` holds every fixture's whole diagnostic set and tree
-to FCS at every version. `crates/cst/language-features.tsv` lists every FCS
-feature with where FCS checks it and what we do about it. These remain
-divergent:
+annotations, the lex-filter's `>|}` and `@>|}` splits (at FCS's lexbuf
+lexeme, which is not always the closer's: `{| A = <@ 1 @>|}` reports at the
+`1`) and `1f` literals each draw FCS's diagnostic below their version, over
+the same tree (`crates/cst/src/parser/feature_gates.rs`). So do the two FCS
+checks only in its type checker that have a node of their own, interpolated
+strings (FS3350 below 5.0) and `^` index arguments (FS3303 below preview),
+graded against FCS's check (sema's `infer_legality_pin_diff`). The two parse
+errors FCS raises below 4.7, FS0010 at the `.` of a `_.` pattern
+(`member _.M`) and FS0525 at the `_` of `for _ = …`, are reported at FCS's span.
+The `#nowarn` / `#warnon` diagnostics of FCS's `WarnScopes.fs` are reported at
+every version: FS3875 (no arguments), FS3353 (not `nowarn`/`warnon`), FS0203
+(an argument that is not a warning number: a warning below 9.0 for an
+`FS`-prefixed one, from 9.0 a warning and from 10.0 an error for an
+unparsable one), FS3350 for an unquoted argument below 9.0, and, below 10.0,
+FS3350 for a top-level `#warnon` and FS0236 for a directive inside a nested
+module (`crates/cst/src/parser/warn_directives.rs`). `parser_diff_feature_gates`
+holds every fixture's whole diagnostic set and tree to FCS at every version.
+`crates/cst/language-features.tsv` lists every FCS feature with where FCS
+checks it and what we do about it. These remain divergent:
 
 - **Nullness below F# 9.0 is diagnosed, not reshaped.** Below 9.0 FCS's
   lex-filter does not relabel the `|` before `null` (`NullnessChecking`), so
   `string | null` parses as something else and errors accordingly; we parse the
   9.0 tree at every version and report FS3350 over the nullness type
   (`nullness_gate.rs`), so the typed facades see one tree. Not FCS-diffed.
-- **`_.M` and `for _ = …` are accepted at every version.** FCS gates the
-  accessor shorthand (`AccessorFunctionShorthand`, F# 8.0, FS3350 at the `_.`)
-  and a wildcard integer-`for` variable (`WildCardInForLoop`, F# 4.7, FS0525)
-  while parsing; we report neither. `_.M` is a `Diagnose` row, so its gate
-  would report a `Legality` diagnostic, which `diagnostics_are_version_invariant`
-  leaves out (`docs/ast-versioning-plan.md`, D9, D10): gating it does not make
-  the files using it version-dependent, and PR 3 gates it. `for _ =` is a
-  parse error with recovery in FCS, so its diagnostic would be `Recovery`, and
-  a gate would make every file using it version-dependent, so that a guessed
-  language version (an orphan buffer, or a project whose `LangVersion` the
-  evaluator cannot pin) retained no diagnostics for the file; PR 3 decides it.
-  Pinned by `parser_diff_feature_gates::unmodelled_gates_are_pinned`.
+- **`_.` patterns and `for _ = …` below F# 4.7 keep the 4.7 tree.** FCS
+  raises a parse error (FS0010, FS0525) and recovers to a tree of its own
+  (`member _.M` becomes a member with a `FromParseError` pattern; in a named
+  module, an object expression's `member _.M` can cost FCS the whole module).
+  We report the same error and keep the tree 4.7 gives; the two are graded by
+  the recovery relation (`parser_diff_feature_gates::reshape_gates_match_fcs_at_every_version`).
+  The errors are `Recovery` ones, so every file holding a `member _.M` is
+  version-dependent, and a guessed language version (an orphan buffer, or a
+  project whose `LangVersion` the evaluator cannot pin) retains no
+  diagnostics for it. Upstream FCS has since removed the `_.` check
+  (dotnet/fsharp#20222); the feature table follows the compiler it
+  transcribes, which still makes it.
+  FCS's recovery from the FS0010 also discards input to its resynchronising
+  point, reporting no gate inside it (a second `member _.M`, a `_.M`
+  lambda), where we report each. On the pinned corpus at 4.6 that makes 69
+  files `diverge` in `feature_gate_corpus.txt`; two more diverge the other
+  way, our parse losing members FCS keeps (a depth limit in one, and our
+  recovery from the `default` constraint `Query.fs` uses).
+- **A `^` index argument is told from an application by its spelling.**
+  FCS's checker reads `e[^i]` (no space) as indexing from F# 6.0 only when `e`
+  is not a function; a parse cannot know the type, so `f[^1]` with `f` a
+  function draws FS3303 here where FCS reports FS3534. A `^e` that is not an
+  index argument draws FS3534 below preview, as `FromEndSlicing`'s gate (so
+  that the node, which the facades below preview leave out, lies under a
+  diagnostic naming it); FCS's checker reports it at every version, and
+  nothing at all where it rejects an enclosing application first (a value
+  that is not a function applied to `[^1]` or `[|^1|]`, as `xs[^1]` is below
+  6.0, draws FS3217 at the application).
+- **An interpolated string below F# 5.0 is typed as at 5.0.** FCS's check of
+  `StringInterpolation` abandons the string (`checkLanguageFeatureError`), so
+  it types it, and what binds it, as `obj`; inference over our tree types it
+  as 5.0 does.
 - **FS3535 on `static abstract` is not reported.** From F# 7.0 FCS warns on
   every `static abstract` member. Code declaring such interfaces usually
   silences it with `#nowarn "3535"`, and we do not consume `#nowarn` (see
@@ -473,17 +507,16 @@ divergent:
 - **A dotless `float32` literal keeps its value below F# 5.0.** FCS's lexer
   reports FS1153 and substitutes `0.0f`; we report FS1153 and keep the value
   written. The file does not compile at that version either way.
-- **The extended interpolated string (`$$"""…"""`, F# 8.0) and the `>|}` /
-  `@>|}` anonymous-record closers (F# 10.0) are accepted at every version.**
-  Below 8.0, FCS's lexer reads a `$$"""` string as a plain triple-quoted one
-  with single-brace fills, so its FS1251 span depends on where that reading
-  first opens a fill. FCS reports the `>|}` gate at the lexer's current lexeme,
-  which is not always the closer's (`{| A = <@ 1 @>|}` reports at the `1`).
-- **`#nowarn` / `#warnon` diagnostics are not reported**, at any version:
-  FS3350 for an unquoted argument below F# 9.0, FS0203 for an `FS`-prefixed
-  one below 9.0 or an unparsable one from 9.0, and, below F# 10.0
-  (`ScopedNowarn`), FS3350 for a top-level `#warnon` and FS0236 for a
-  directive inside a nested module.
+- **`@>|}` inside a type application's scan** (FCS's third
+  `BetterAnonymousRecordParsing` site, `LexFilter.fs` 1223) is split, and
+  reported, when the token is next popped rather than as the scan ends, so
+  its lexbuf lexeme can differ.
+- **Some `#nowarn` / `#warnon` diagnostics are not reported**: the
+  informational FS3876 for a `#nowarn` repeating an open one (from 10.0; a
+  parse reports errors and warnings only) and the script meta-command checks
+  of unquoted `#load` / `#time` arguments below 9.0. An indented directive's range starts at its `#`, as the compiler the feature
+  table transcribes starts it; the oracle's older FCS starts it at the start
+  of the line (`parser_diff_feature_gates::an_indented_directive_range_starts_at_its_hash`).
 
 A parser-level offside diagnostic that is not version-dependent is also
 unmodelled: FCS's `classDefnMembersAtLeastOne` (pars.fsy:1855) reports FS0058 on

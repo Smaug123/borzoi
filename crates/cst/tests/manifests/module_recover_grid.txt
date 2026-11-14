@@ -1,0 +1,857 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_module_recover_grid::
+anon d1 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+anon d1 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d1 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line +deeper | end | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+anon d1 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+anon d1 | after-def same-line prior0 +deeper | ) | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 +deeper | -> | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 +deeper | ] | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 +deeper | end | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 +deeper | exception E | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 +deeper | open System | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-def same-line prior0 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-def same-line prior0 | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior0 | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | ) | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | -> | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | ] | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | end | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | exception E | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | open System | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-def same-line prior1 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-def same-line prior1 | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior1 | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | ) | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | -> | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | ] | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | end | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | exception E | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | open System | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-def same-line prior2 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-def same-line prior2 | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior2 | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | ) | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | -> | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | ] | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | end | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | exception E | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | open System | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-def same-line prior3 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-def same-line prior3 | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line prior3 | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d1 | after-def same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-def same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+anon d1 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+anon d1 | after-def | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-def | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d1 | after-expr same-line +deeper | exception E | `exception E`: FCS in Exception file, ours in nowhere
+anon d1 | after-expr same-line +deeper | let b = 1 | `let b`: FCS in Let file, ours in nowhere
+anon d1 | after-expr same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev file, ours in nowhere
+anon d1 | after-expr same-line +deeper | open System | `open System`: FCS in Open file, ours in nowhere
+anon d1 | after-expr same-line +deeper | type T = int | `type T`: FCS in Types file, ours in nowhere
+anon d1 | after-expr same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-expr same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-expr same-line | exception E | `exception E`: FCS in Exception file, ours in nowhere
+anon d1 | after-expr same-line | exception E | `let x`: FCS in Let file, ours in Let A
+anon d1 | after-expr same-line | let b = 1 | `let b`: FCS in Let file, ours in nowhere
+anon d1 | after-expr same-line | module B = List | `module B`: FCS in ModuleAbbrev file, ours in nowhere
+anon d1 | after-expr same-line | open System | `let x`: FCS in Let file, ours in Let A
+anon d1 | after-expr same-line | open System | `open System`: FCS in Open file, ours in nowhere
+anon d1 | after-expr same-line | type T = int | `type T`: FCS in Types file, ours in nowhere
+anon d1 | after-expr | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-expr | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr file, ours in Let file
+anon d1 | after-sep same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | exception E | `let x`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | exception E | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | let b = 1 | `let b`: FCS in Let file, ours in Expr file
+anon d1 | after-sep same-line | let b = 1 | `let x`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | let b = 1 | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | module B = List | `let x`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | module B = List | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | open System | `let x`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | open System | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | type T = int | `let x`: FCS in Let file, ours in nowhere
+anon d1 | after-sep same-line | type T = int | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep | -> | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep | -> | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep | exception E | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep | exception E | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep | let b = 1 | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep | let b = 1 | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep | module B = List | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep | module B = List | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep | open System | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep | open System | `let z`: FCS in Let file, ours in nowhere
+anon d1 | after-sep | type T = int | `let x`: FCS in Let file, ours in Expr file
+anon d1 | after-sep | type T = int | `let z`: FCS in Let file, ours in nowhere
+anon d1 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d1 | start | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d1 | start | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+anon d2 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d2 | after-def prior0 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior0 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior0 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior1 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior1 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior1 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior2 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior2 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior2 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior3 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior3 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def prior3 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line +deeper | end | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+anon d2 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+anon d2 | after-def same-line prior0 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior0 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior0 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior0 +deeper | end | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior0 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior0 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior0 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior0 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior0 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-def same-line prior0 | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior0 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior0 | module B = List | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior0 | type T = int | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 +deeper | end | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior1 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior1 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-def same-line prior1 | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior1 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior1 | module B = List | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior1 | type T = int | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 +deeper | end | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior2 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior2 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-def same-line prior2 | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior2 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior2 | module B = List | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior2 | type T = int | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 +deeper | end | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 +deeper | module B = List | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior3 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 +deeper | type T = int | `let x`: FCS in Let A, ours in Let file
+anon d2 | after-def same-line prior3 | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-def same-line prior3 | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior3 | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line prior3 | module B = List | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line prior3 | type T = int | `let x`: FCS in Let A, ours in Let O
+anon d2 | after-def same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-def same-line | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+anon d2 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+anon d2 | after-def | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-def | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-def | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d2 | after-expr prior0 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior0 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior0 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior1 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior1 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior1 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior2 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior2 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior2 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior3 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior3 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr prior3 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line +deeper | exception E | `exception E`: FCS in Exception O, ours in nowhere
+anon d2 | after-expr same-line +deeper | let b = 1 | `let b`: FCS in Let O, ours in nowhere
+anon d2 | after-expr same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev O, ours in nowhere
+anon d2 | after-expr same-line +deeper | open System | `open System`: FCS in Open O, ours in nowhere
+anon d2 | after-expr same-line +deeper | type T = int | `type T`: FCS in Types O, ours in nowhere
+anon d2 | after-expr same-line prior0 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior0 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior0 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior1 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior1 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior1 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior2 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior2 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior2 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior3 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior3 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line prior3 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | after-expr same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-expr same-line | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-expr same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-expr same-line | exception E | `exception E`: FCS in Exception O, ours in nowhere
+anon d2 | after-expr same-line | exception E | `let x`: FCS in Let O, ours in Let A
+anon d2 | after-expr same-line | let b = 1 | `let b`: FCS in Let O, ours in nowhere
+anon d2 | after-expr same-line | let b = 1 | `let y`: FCS in Let O, ours in Let file
+anon d2 | after-expr same-line | let b = 1 | `let z`: FCS in Let O, ours in Let file
+anon d2 | after-expr same-line | module B = List | `module B`: FCS in ModuleAbbrev O, ours in nowhere
+anon d2 | after-expr same-line | open System | `let x`: FCS in Let O, ours in Let A
+anon d2 | after-expr same-line | open System | `open System`: FCS in Open O, ours in nowhere
+anon d2 | after-expr same-line | type T = int | `type T`: FCS in Types O, ours in nowhere
+anon d2 | after-expr | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-expr | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-expr | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr file, ours in Let file
+anon d2 | after-sep same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep same-line | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | exception E | `let x`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | exception E | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | exception E | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | let b = 1 | `let b`: FCS in Let file, ours in Expr file
+anon d2 | after-sep same-line | let b = 1 | `let x`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | let b = 1 | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | let b = 1 | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | module B = List | `let x`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | module B = List | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | module B = List | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | open System | `let x`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | open System | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | open System | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | type T = int | `let x`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | type T = int | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep same-line | type T = int | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | -> | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep | -> | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | -> | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | exception E | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep | exception E | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | exception E | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | let b = 1 | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep | let b = 1 | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | let b = 1 | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | module B = List | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep | module B = List | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | module B = List | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | open System | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep | open System | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | open System | `let z`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | type T = int | `let x`: FCS in Let file, ours in Expr file
+anon d2 | after-sep | type T = int | `let y`: FCS in Let file, ours in nowhere
+anon d2 | after-sep | type T = int | `let z`: FCS in Let file, ours in nowhere
+anon d2 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d2 | start prior0 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior0 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior0 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior1 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior1 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior1 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior2 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior2 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior2 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior3 | let b = 1 | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior3 | module B = List | `let x`: FCS in Let file, ours in Let O
+anon d2 | start prior3 | type T = int | `let x`: FCS in Let file, ours in Let O
+anon d2 | start | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d2 | start | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d2 | start | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+anon d3 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d3 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let P
+anon d3 | after-def same-line +deeper | ) | `let y`: FCS in Let O, ours in Let file
+anon d3 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let P
+anon d3 | after-def same-line +deeper | -> | `let y`: FCS in Let O, ours in Let file
+anon d3 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let P
+anon d3 | after-def same-line +deeper | ] | `let y`: FCS in Let O, ours in Let file
+anon d3 | after-def same-line +deeper | end | `let x`: FCS in Let A, ours in Let P
+anon d3 | after-def same-line +deeper | end | `let y`: FCS in Let O, ours in Let file
+anon d3 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let P
+anon d3 | after-def same-line +deeper | exception E | `let y`: FCS in Let O, ours in Let file
+anon d3 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+anon d3 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let P
+anon d3 | after-def same-line +deeper | open System | `let y`: FCS in Let O, ours in Let file
+anon d3 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+anon d3 | after-def same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-def same-line | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-def same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+anon d3 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+anon d3 | after-def | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-def | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-def | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d3 | after-expr same-line +deeper | exception E | `exception E`: FCS in Exception P, ours in nowhere
+anon d3 | after-expr same-line +deeper | let b = 1 | `let b`: FCS in Let P, ours in nowhere
+anon d3 | after-expr same-line +deeper | let b = 1 | `let y`: FCS in Let file, ours in Let O
+anon d3 | after-expr same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev P, ours in nowhere
+anon d3 | after-expr same-line +deeper | open System | `open System`: FCS in Open P, ours in nowhere
+anon d3 | after-expr same-line +deeper | type T = int | `type T`: FCS in Types P, ours in nowhere
+anon d3 | after-expr same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-expr same-line | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-expr same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-expr same-line | exception E | `exception E`: FCS in Exception P, ours in nowhere
+anon d3 | after-expr same-line | exception E | `let x`: FCS in Let P, ours in Let A
+anon d3 | after-expr same-line | exception E | `let y`: FCS in Let file, ours in Let O
+anon d3 | after-expr same-line | let b = 1 | `let b`: FCS in Let P, ours in nowhere
+anon d3 | after-expr same-line | let b = 1 | `let y`: FCS in Let P, ours in Let file
+anon d3 | after-expr same-line | let b = 1 | `let z`: FCS in Let P, ours in Let file
+anon d3 | after-expr same-line | module B = List | `module B`: FCS in ModuleAbbrev P, ours in nowhere
+anon d3 | after-expr same-line | open System | `let x`: FCS in Let P, ours in Let A
+anon d3 | after-expr same-line | open System | `let y`: FCS in Let file, ours in Let O
+anon d3 | after-expr same-line | open System | `open System`: FCS in Open P, ours in nowhere
+anon d3 | after-expr same-line | type T = int | `type T`: FCS in Types P, ours in nowhere
+anon d3 | after-expr | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-expr | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-expr | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr file, ours in Let file
+anon d3 | after-sep same-line | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep same-line | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | exception E | `let x`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | exception E | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | exception E | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | let b = 1 | `let b`: FCS in Let file, ours in Expr file
+anon d3 | after-sep same-line | let b = 1 | `let x`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | let b = 1 | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | let b = 1 | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | module B = List | `let x`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | module B = List | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | module B = List | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | open System | `let x`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | open System | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | open System | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | type T = int | `let x`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | type T = int | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep same-line | type T = int | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | -> | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep | -> | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | -> | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | ;; | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | exception E | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep | exception E | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | exception E | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | let b = 1 | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep | let b = 1 | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | let b = 1 | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | module B = List | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep | module B = List | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | module B = List | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | open System | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep | open System | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | open System | `let z`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | type T = int | `let x`: FCS in Let file, ours in Expr file
+anon d3 | after-sep | type T = int | `let y`: FCS in Let file, ours in nowhere
+anon d3 | after-sep | type T = int | `let z`: FCS in Let file, ours in nowhere
+anon d3 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+anon d3 | start | ;; | `let x`: FCS in Let file, ours in Expr file
+anon d3 | start | ;; | `let y`: FCS in Let file, ours in nowhere
+anon d3 | start | ;; | `let z`: FCS in Let file, ours in nowhere
+begin d1 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+begin d1 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d1 | after-def prior0 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def prior1 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def prior2 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def prior3 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+begin d1 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+begin d1 | after-def same-line prior0 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def same-line prior0 | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior0 | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def same-line prior1 | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior1 | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def same-line prior2 | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior2 | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def same-line prior3 | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line prior3 | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d1 | after-def same-line | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+begin d1 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+begin d1 | after-def | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d1 | after-expr prior0 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr prior1 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr prior2 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr prior3 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr same-line prior0 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr same-line prior1 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr same-line prior2 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr same-line prior3 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr same-line | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-expr | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+begin d1 | after-sep same-line | exception E | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep same-line | let b = 1 | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep same-line | module B = List | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep same-line | open System | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep same-line | type T = int | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep | exception E | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+begin d1 | after-sep | module B = List | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep | open System | `let x`: FCS in Let M, ours in nowhere
+begin d1 | after-sep | type T = int | `let x`: FCS in Let M, ours in nowhere
+begin d1 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d1 | start prior0 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | start prior1 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | start prior2 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | start prior3 | end | `let x`: FCS in Let M, ours in nowhere
+begin d1 | start | end | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+begin d2 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d2 | after-def prior0 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def prior1 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def prior2 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def prior3 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+begin d2 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+begin d2 | after-def same-line prior0 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior0 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior0 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior0 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior0 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior0 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior0 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior0 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def same-line prior0 | module B = List | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior0 | type T = int | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior1 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior1 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior1 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior1 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior1 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior1 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior1 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior1 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def same-line prior1 | module B = List | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior1 | type T = int | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior2 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior2 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior2 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior2 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior2 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior2 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior2 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior2 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def same-line prior2 | module B = List | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior2 | type T = int | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior3 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior3 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior3 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior3 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior3 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior3 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior3 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+begin d2 | after-def same-line prior3 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def same-line prior3 | module B = List | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line prior3 | type T = int | `let x`: FCS in Let A, ours in Let O
+begin d2 | after-def same-line | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+begin d2 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+begin d2 | after-def | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d2 | after-expr prior0 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr prior1 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr prior2 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr prior3 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr same-line prior0 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr same-line prior1 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr same-line prior2 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr same-line prior3 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr same-line | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-expr | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+begin d2 | after-sep same-line | exception E | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep same-line | let b = 1 | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep same-line | module B = List | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep same-line | open System | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep same-line | type T = int | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep | exception E | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+begin d2 | after-sep | module B = List | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep | open System | `let x`: FCS in Let M, ours in nowhere
+begin d2 | after-sep | type T = int | `let x`: FCS in Let M, ours in nowhere
+begin d2 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d2 | start prior0 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | start prior1 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | start prior2 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | start prior3 | end | `let x`: FCS in Let O, ours in nowhere
+begin d2 | start | end | `let x`: FCS in Let O, ours in nowhere
+begin d3 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+begin d3 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d3 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let P
+begin d3 | after-def same-line +deeper | ) | `let y`: FCS in Let O, ours in Let M
+begin d3 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let P
+begin d3 | after-def same-line +deeper | -> | `let y`: FCS in Let O, ours in Let M
+begin d3 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let P
+begin d3 | after-def same-line +deeper | ] | `let y`: FCS in Let O, ours in Let M
+begin d3 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let P
+begin d3 | after-def same-line +deeper | exception E | `let y`: FCS in Let O, ours in Let M
+begin d3 | after-def same-line +deeper | let b = 1 | `let y`: FCS in Let O, ours in Let M
+begin d3 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+begin d3 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let P
+begin d3 | after-def same-line +deeper | open System | `let y`: FCS in Let O, ours in Let M
+begin d3 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+begin d3 | after-def same-line | end | `let x`: FCS in Let P, ours in nowhere
+begin d3 | after-def same-line | let b = 1 | `let y`: FCS in Let O, ours in Let M
+begin d3 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+begin d3 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+begin d3 | after-def | end | `let x`: FCS in Let P, ours in nowhere
+begin d3 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d3 | after-expr same-line | end | `let x`: FCS in Let P, ours in nowhere
+begin d3 | after-expr | end | `let x`: FCS in Let P, ours in nowhere
+begin d3 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+begin d3 | after-sep same-line | exception E | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep same-line | let b = 1 | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep same-line | module B = List | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep same-line | open System | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep same-line | type T = int | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep | exception E | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+begin d3 | after-sep | module B = List | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep | open System | `let x`: FCS in Let M, ours in nowhere
+begin d3 | after-sep | type T = int | `let x`: FCS in Let M, ours in nowhere
+begin d3 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+begin d3 | start | end | `let x`: FCS in Let P, ours in nowhere
+named d1 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+named d1 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d1 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line +deeper | end | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+named d1 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+named d1 | after-def same-line prior0 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 +deeper | end | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior0 | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | end | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior1 | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | end | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior2 | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | ) | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | -> | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | ] | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | end | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | exception E | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | open System | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 | module B = List | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line prior3 | type T = int | `let x`: FCS in Let A, ours in Let M
+named d1 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+named d1 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+named d1 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d1 | after-expr same-line +deeper | exception E | `exception E`: FCS in Exception M, ours in nowhere
+named d1 | after-expr same-line +deeper | let b = 1 | `let b`: FCS in Let M, ours in nowhere
+named d1 | after-expr same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev M, ours in nowhere
+named d1 | after-expr same-line +deeper | open System | `open System`: FCS in Open M, ours in nowhere
+named d1 | after-expr same-line +deeper | type T = int | `type T`: FCS in Types M, ours in nowhere
+named d1 | after-expr same-line | exception E | `exception E`: FCS in Exception M, ours in nowhere
+named d1 | after-expr same-line | exception E | `let x`: FCS in Let M, ours in Let A
+named d1 | after-expr same-line | let b = 1 | `let b`: FCS in Let M, ours in nowhere
+named d1 | after-expr same-line | module B = List | `module B`: FCS in ModuleAbbrev M, ours in nowhere
+named d1 | after-expr same-line | open System | `let x`: FCS in Let M, ours in Let A
+named d1 | after-expr same-line | open System | `open System`: FCS in Open M, ours in nowhere
+named d1 | after-expr same-line | type T = int | `type T`: FCS in Types M, ours in nowhere
+named d1 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+named d1 | after-sep same-line | exception E | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep same-line | let b = 1 | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep same-line | module B = List | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep same-line | open System | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep same-line | type T = int | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep | exception E | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+named d1 | after-sep | module B = List | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep | open System | `let x`: FCS in Let M, ours in nowhere
+named d1 | after-sep | type T = int | `let x`: FCS in Let M, ours in nowhere
+named d1 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d2 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+named d2 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d2 | after-def prior0 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior0 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior0 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior1 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior1 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior1 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior2 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior2 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior2 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior3 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior3 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def prior3 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line +deeper | end | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+named d2 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+named d2 | after-def same-line prior0 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior0 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior0 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior0 +deeper | end | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior0 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior0 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior0 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior0 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior0 | module B = List | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior0 | type T = int | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 +deeper | end | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior1 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior1 | module B = List | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior1 | type T = int | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 +deeper | end | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior2 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior2 | module B = List | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior2 | type T = int | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 +deeper | ) | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 +deeper | -> | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 +deeper | ] | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 +deeper | end | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 +deeper | exception E | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 +deeper | module B = List | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior3 +deeper | open System | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 +deeper | type T = int | `let x`: FCS in Let A, ours in Let M
+named d2 | after-def same-line prior3 | module B = List | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line prior3 | type T = int | `let x`: FCS in Let A, ours in Let O
+named d2 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+named d2 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+named d2 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d2 | after-expr prior0 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior0 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior0 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior1 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior1 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior1 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior2 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior2 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior2 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior3 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior3 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr prior3 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line +deeper | exception E | `exception E`: FCS in Exception O, ours in nowhere
+named d2 | after-expr same-line +deeper | let b = 1 | `let b`: FCS in Let O, ours in nowhere
+named d2 | after-expr same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev O, ours in nowhere
+named d2 | after-expr same-line +deeper | open System | `open System`: FCS in Open O, ours in nowhere
+named d2 | after-expr same-line +deeper | type T = int | `type T`: FCS in Types O, ours in nowhere
+named d2 | after-expr same-line prior0 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior0 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior0 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior1 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior1 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior1 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior2 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior2 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior2 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior3 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior3 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line prior3 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | after-expr same-line | exception E | `exception E`: FCS in Exception O, ours in nowhere
+named d2 | after-expr same-line | exception E | `let x`: FCS in Let O, ours in Let A
+named d2 | after-expr same-line | let b = 1 | `let b`: FCS in Let O, ours in nowhere
+named d2 | after-expr same-line | let b = 1 | `let y`: FCS in Let O, ours in Let M
+named d2 | after-expr same-line | let b = 1 | `let z`: FCS in Let O, ours in Let M
+named d2 | after-expr same-line | module B = List | `module B`: FCS in ModuleAbbrev O, ours in nowhere
+named d2 | after-expr same-line | open System | `let x`: FCS in Let O, ours in Let A
+named d2 | after-expr same-line | open System | `open System`: FCS in Open O, ours in nowhere
+named d2 | after-expr same-line | type T = int | `type T`: FCS in Types O, ours in nowhere
+named d2 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+named d2 | after-sep same-line | exception E | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep same-line | let b = 1 | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep same-line | module B = List | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep same-line | open System | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep same-line | type T = int | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep | exception E | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+named d2 | after-sep | module B = List | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep | open System | `let x`: FCS in Let M, ours in nowhere
+named d2 | after-sep | type T = int | `let x`: FCS in Let M, ours in nowhere
+named d2 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d2 | start prior0 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior0 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior0 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior1 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior1 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior1 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior2 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior2 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior2 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior3 | let b = 1 | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior3 | module B = List | `let x`: FCS in Let M, ours in Let O
+named d2 | start prior3 | type T = int | `let x`: FCS in Let M, ours in Let O
+named d3 | after-def +deeper | ) | `let a`: FCS in Let A, ours in Expr A
+named d3 | after-def +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d3 | after-def same-line +deeper | ) | `let x`: FCS in Let A, ours in Let P
+named d3 | after-def same-line +deeper | ) | `let y`: FCS in Let O, ours in Let M
+named d3 | after-def same-line +deeper | -> | `let x`: FCS in Let A, ours in Let P
+named d3 | after-def same-line +deeper | -> | `let y`: FCS in Let O, ours in Let M
+named d3 | after-def same-line +deeper | ] | `let x`: FCS in Let A, ours in Let P
+named d3 | after-def same-line +deeper | ] | `let y`: FCS in Let O, ours in Let M
+named d3 | after-def same-line +deeper | end | `let x`: FCS in Let A, ours in Let P
+named d3 | after-def same-line +deeper | end | `let y`: FCS in Let O, ours in Let M
+named d3 | after-def same-line +deeper | exception E | `let x`: FCS in Let A, ours in Let P
+named d3 | after-def same-line +deeper | exception E | `let y`: FCS in Let O, ours in Let M
+named d3 | after-def same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+named d3 | after-def same-line +deeper | open System | `let x`: FCS in Let A, ours in Let P
+named d3 | after-def same-line +deeper | open System | `let y`: FCS in Let O, ours in Let M
+named d3 | after-def same-line +deeper | type T = int | `type T`: FCS in Types A, ours in nowhere
+named d3 | after-def same-line | ;; | `let x`: FCS in Expr M, ours in Let M
+named d3 | after-def same-line | module B = List | `module B`: FCS in ModuleAbbrev A, ours in nowhere
+named d3 | after-def same-line | type T = int | `type T`: FCS in Types A, ours in nowhere
+named d3 | after-def | ;; | `let x`: FCS in Expr M, ours in Let M
+named d3 | after-expr +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d3 | after-expr same-line +deeper | exception E | `exception E`: FCS in Exception P, ours in nowhere
+named d3 | after-expr same-line +deeper | let b = 1 | `let b`: FCS in Let P, ours in nowhere
+named d3 | after-expr same-line +deeper | let b = 1 | `let y`: FCS in Let M, ours in Let O
+named d3 | after-expr same-line +deeper | module B = List | `module B`: FCS in ModuleAbbrev P, ours in nowhere
+named d3 | after-expr same-line +deeper | open System | `open System`: FCS in Open P, ours in nowhere
+named d3 | after-expr same-line +deeper | type T = int | `type T`: FCS in Types P, ours in nowhere
+named d3 | after-expr same-line | ;; | `let x`: FCS in Expr M, ours in Let M
+named d3 | after-expr same-line | exception E | `exception E`: FCS in Exception P, ours in nowhere
+named d3 | after-expr same-line | exception E | `let x`: FCS in Let P, ours in Let A
+named d3 | after-expr same-line | exception E | `let y`: FCS in Let M, ours in Let O
+named d3 | after-expr same-line | let b = 1 | `let b`: FCS in Let P, ours in nowhere
+named d3 | after-expr same-line | let b = 1 | `let y`: FCS in Let P, ours in Let M
+named d3 | after-expr same-line | let b = 1 | `let z`: FCS in Let P, ours in Let M
+named d3 | after-expr same-line | module B = List | `module B`: FCS in ModuleAbbrev P, ours in nowhere
+named d3 | after-expr same-line | open System | `let x`: FCS in Let P, ours in Let A
+named d3 | after-expr same-line | open System | `let y`: FCS in Let M, ours in Let O
+named d3 | after-expr same-line | open System | `open System`: FCS in Open P, ours in nowhere
+named d3 | after-expr same-line | type T = int | `type T`: FCS in Types P, ours in nowhere
+named d3 | after-expr | ;; | `let x`: FCS in Expr M, ours in Let M
+named d3 | after-sep +deeper | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+named d3 | after-sep same-line | ;; | `let x`: FCS in Expr M, ours in Let M
+named d3 | after-sep same-line | exception E | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep same-line | let b = 1 | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep same-line | module B = List | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep same-line | open System | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep same-line | type T = int | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep | ;; | `let x`: FCS in Expr M, ours in Let M
+named d3 | after-sep | exception E | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep | let b = 1 | `let b`: FCS in Expr M, ours in Let M
+named d3 | after-sep | module B = List | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep | open System | `let x`: FCS in Let M, ours in nowhere
+named d3 | after-sep | type T = int | `let x`: FCS in Let M, ours in nowhere
+named d3 | start +deeper | let b = 1 | `let b`: FCS in Expr A, ours in Let A
+named d3 | start | ;; | `let x`: FCS in Expr M, ours in Let M

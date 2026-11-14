@@ -75,9 +75,10 @@ impl LanguageVersion {
         self >= feature.introduced()
     }
 
-    /// One version from each band of the gates that shape the lex-filter's
-    /// token stream — `RelaxWhitespace2` (F# 6.0) and `StrictIndentation`
-    /// (F# 8.0) — ascending. Two versions in the same band filter every source
+    /// One version from each band of the gates that shape the token stream —
+    /// the lex-filter's `RelaxWhitespace2` (F# 6.0) and `StrictIndentation`
+    /// (F# 8.0), and the lexer's `ExtendedStringInterpolation` (F# 8.0) —
+    /// ascending. Two versions in the same band filter every source
     /// to the same stream, so comparing parses at these decides whether a
     /// parse flagged
     /// [`shape_depends_on_language_version`](crate::parser::Parse::shape_depends_on_language_version)
@@ -331,14 +332,15 @@ mod tests {
     }
 
     /// Each version maps to the representative of its shape band: the one in
-    /// [`LanguageVersion::SHAPE_REPRESENTATIVES`] that answers both
-    /// shape-affecting gates the same way, and each representative to itself.
+    /// [`LanguageVersion::SHAPE_REPRESENTATIVES`] that answers every
+    /// shape-affecting gate the same way, and each representative to itself.
     #[test]
     fn shape_representative_shares_the_gates() {
         let shape_gates = |v: LanguageVersion| {
             (
                 v.supports(LanguageFeature::RelaxWhitespace2),
                 v.supports(LanguageFeature::StrictIndentation),
+                v.supports(LanguageFeature::ExtendedStringInterpolation),
             )
         };
         for v in LanguageVersion::NUMBERED.into_iter().chain([Preview]) {

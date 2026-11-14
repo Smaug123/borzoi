@@ -3222,9 +3222,12 @@ mod tests {
     #[test]
     fn interval_table_matches_fcs() {
         for (kind, introduced) in [
+            (SyntaxKind::INTERP_STRING_EXPR, LanguageVersion::V5_0),
+            (SyntaxKind::DOT_LAMBDA_EXPR, LanguageVersion::V8_0),
             (SyntaxKind::WHILE_BANG_EXPR, LanguageVersion::V8_0),
             (SyntaxKind::INTERSECTION_TYPE, LanguageVersion::V8_0),
             (SyntaxKind::WITH_NULL_TYPE, LanguageVersion::V9_0),
+            (SyntaxKind::INDEX_FROM_END_EXPR, LanguageVersion::Preview),
         ] {
             assert_eq!(
                 kind_interval(kind),
@@ -3274,19 +3277,11 @@ mod tests {
 
     /// A deferred `Kind` row records the feature that introduced its kind but
     /// gives it no interval: the kind is in surface even at the floor until
-    /// the row goes live.
+    /// the row goes live. (Every `Kind` row is live today, so this holds
+    /// vacuously until one is deferred.)
     #[test]
     fn deferred_kinds_are_always_in_surface() {
-        let deferred: Vec<SyntaxKind> = DEFERRED_KIND_FEATURES.iter().map(|&(k, _)| k).collect();
-        assert_eq!(
-            deferred,
-            [
-                SyntaxKind::INTERP_STRING_EXPR,
-                SyntaxKind::DOT_LAMBDA_EXPR,
-                SyntaxKind::INDEX_FROM_END_EXPR,
-            ],
-        );
-        for kind in deferred {
+        for &(kind, _) in &DEFERRED_KIND_FEATURES {
             assert_eq!(kind_interval(kind), KindInterval::ALWAYS, "{kind:?}");
             assert!(kind_in_surface(kind, LanguageVersion::MIN), "{kind:?}");
         }

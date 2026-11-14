@@ -53,6 +53,9 @@ impl<'a> Filter<'a> {
                 &tt.token,
                 TokenContent::Real(TokenKind::RQuoteRawDot | TokenKind::RQuoteRawBarRBrace)
             );
+            if is_bar {
+                self.gate_better_anonymous_record_parsing();
+            }
             let close_tok = if is_raw {
                 TokenKind::RQuoteRaw
             } else {

@@ -9,13 +9,13 @@
 //! and is unrelated to F# 8's `_.Member` accessor shorthand, which is an
 //! *expression* (`SynExpr.DotLambda`, `parser_diff_dot_lambda.rs`).
 //!
-//! FCS (the `FSharp.Compiler.Service` `tools/fcs-dump` pins) gates the production
-//! on `LanguageFeature.SingleUnderscorePattern` (F# 4.7): below it the `.` is a
-//! hard FS0010 parse error, member heads included. Upstream FCS has removed that
-//! gate (dotnet/fsharp#20222), and we do not model it: the parse is clean at every
-//! version, a recorded leniency (`docs/parser-plan.md`, "Known leniencies"). The
-//! version tests below hold the trees to FCS from 4.7 up, and pin the leniency at
-//! 4.6.
+//! FCS gates the production on `LanguageFeature.SingleUnderscorePattern` (F#
+//! 4.7): below it the `.` is a hard FS0010 parse error, member heads included,
+//! and FCS recovers to a tree of its own. We report the same error and keep the
+//! 4.7 tree. The version tests below hold the trees to FCS from 4.7 up, and at
+//! 4.6 the error to FCS's and the trees to the recovery relation. (Upstream FCS
+//! has since removed the gate, dotnet/fsharp#20222; the feature table follows
+//! the compiler it transcribes, which still has it.)
 
 use std::collections::{BTreeSet, HashSet};
 use std::io::Write;
@@ -327,16 +327,10 @@ fn underscore_pat_matches_fcs_from_4_7() {
     }
 }
 
-/// The known leniency (`docs/parser-plan.md`, "Known leniencies"): at F# 4.6 the
-/// pinned FCS reports FS0010 at exactly the `_.` dots, and we parse each fixture
-/// clean and lossless, to the same tree as at preview.
-///
-/// Upstream FCS removed the gate in dotnet/fsharp#20222. Once the fcs-dump pin
-/// moves past that change, FCS stops erroring here and this test fails. The
-/// leniency is then gone: delete its entry in `docs/parser-plan.md` and this
-/// test, and add `LanguageVersion::V4_6` to [`ACCEPTING_BANDS`].
+/// At F# 4.6 FCS reports FS0010 at exactly the `_.` dots, and so do we, over the
+/// tree we parse at preview; the trees agree outside the damage.
 #[test]
-fn underscore_pat_below_4_7_is_lenient_lossless() {
+fn underscore_pat_below_4_7_is_gated_as_fcs_gates_it() {
     for source in VERSION_FIXTURES {
         let tmp = source_file(source);
         let json = fcs_ast_batch_at(tmp.path(), "4.6");
@@ -348,17 +342,28 @@ fn underscore_pat_below_4_7_is_lenient_lossless() {
         assert_eq!(
             (fcs_fs0010, fcs_parse_had_errors(&json)),
             (gated.clone(), !gated.is_empty()),
-            "at 4.6 the pinned FCS must error FS0010 at exactly the `_.` dots of {source:?}. \
-             If it no longer errors, the fcs-dump pin has moved past dotnet/fsharp#20222 and \
-             the leniency is gone: delete its entry in docs/parser-plan.md (\"Known \
-             leniencies\") and this test, and add 4.6 to ACCEPTING_BANDS.",
+            "at 4.6 FCS must error FS0010 at exactly the `_.` dots of {source:?}",
         );
         let ours = parse_at(source, LanguageVersion::V4_6);
-        assert!(
-            ours.errors.is_empty(),
-            "lenient: no error at 4.6 for {source:?}: {:?}",
+        let our_errors: BTreeSet<(usize, usize)> = ours
+            .errors
+            .iter()
+            .map(|e| (e.span.start, e.span.end))
+            .collect();
+        assert_eq!(
+            our_errors, gated,
+            "our errors at 4.6 for {source:?}: {:?}",
             ours.errors
         );
+        if !gated.is_empty() {
+            let verdict = crate::common::recovery::grade(&ours, &HashSet::new(), &json, source);
+            assert_ne!(
+                verdict.relation,
+                crate::common::recovery::Relation::Divergent,
+                "recovered trees at 4.6 for {source:?}: {}",
+                verdict.token(),
+            );
+        }
         assert_eq!(ours.root.to_string(), *source, "lossless at 4.6");
         let preview = parse_at(source, LanguageVersion::Preview);
         assert_eq!(

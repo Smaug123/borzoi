@@ -35,7 +35,6 @@ node	DoBangExpr	DO_BANG_EXPR
 node	DoExpr	DO_EXPR
 node	DotGetExpr	DOT_GET_EXPR
 node	DotIndexedGetExpr	DOT_INDEXED_GET_EXPR
-node	DotLambdaExpr	DOT_LAMBDA_EXPR
 node	DotMissingExpr	DOT_MISSING_EXPR
 node	DowncastExpr	DOWNCAST_EXPR
 node	DynamicExpr	DYNAMIC_EXPR
@@ -59,7 +58,6 @@ node	IdentExpr	IDENT_EXPR
 node	IfThenElseExpr	IF_THEN_ELSE_EXPR
 node	ImplFile	IMPL_FILE
 node	ImplicitCtor	IMPLICIT_CTOR
-node	IndexFromEndExpr	INDEX_FROM_END_EXPR
 node	IndexRangeExpr	INDEX_RANGE_EXPR
 node	InferredDowncastExpr	INFERRED_DOWNCAST_EXPR
 node	InferredUpcastExpr	INFERRED_UPCAST_EXPR
@@ -67,7 +65,6 @@ node	InheritMember	INHERIT_MEMBER
 node	InlineIlExpr	INLINE_IL_EXPR
 node	InlineIlRepr	INLINE_IL_REPR
 node	InterfaceImpl	INTERFACE_IMPL
-node	InterpStringExpr	INTERP_STRING_EXPR
 node	IsInstPat	IS_INST_PAT
 node	JoinInExpr	JOIN_IN_EXPR
 node	LazyExpr	LAZY_EXPR
@@ -181,7 +178,6 @@ enum	Expr	Do	DoExpr
 enum	Expr	DoBang	DoBangExpr
 enum	Expr	DotGet	DotGetExpr
 enum	Expr	DotIndexedGet	DotIndexedGetExpr
-enum	Expr	DotLambda	DotLambdaExpr
 enum	Expr	DotMissing	DotMissingExpr
 enum	Expr	Downcast	DowncastExpr
 enum	Expr	Dynamic	DynamicExpr
@@ -191,12 +187,10 @@ enum	Expr	ForEach	ForEachExpr
 enum	Expr	Fun	FunExpr
 enum	Expr	Ident	IdentExpr
 enum	Expr	IfThenElse	IfThenElseExpr
-enum	Expr	IndexFromEnd	IndexFromEndExpr
 enum	Expr	IndexRange	IndexRangeExpr
 enum	Expr	InferredDowncast	InferredDowncastExpr
 enum	Expr	InferredUpcast	InferredUpcastExpr
 enum	Expr	InlineIl	InlineIlExpr
-enum	Expr	InterpString	InterpStringExpr
 enum	Expr	JoinIn	JoinInExpr
 enum	Expr	Lazy	LazyExpr
 enum	Expr	LetOrUse	LetOrUseExpr
@@ -479,7 +473,6 @@ accessor	DotGetExpr	expr	option enum Expr	union.expr
 accessor	DotGetExpr	long_ident	option node LongIdent	union.long_ident
 accessor	DotIndexedGetExpr	index	option enum Expr	union.index
 accessor	DotIndexedGetExpr	object	option enum Expr	union.object
-accessor	DotLambdaExpr	expr	option enum Expr	union.expr
 accessor	DotMissingExpr	receiver	option enum Expr	union.receiver
 accessor	DowncastExpr	expr	option enum Expr	union.expr
 accessor	DowncastExpr	ty	option enum Type	union.ty
@@ -542,7 +535,6 @@ accessor	ImplFile	modules	iter node ModuleOrNamespace	union.modules
 accessor	ImplicitCtor	args	option enum Pat	union.args
 accessor	ImplicitCtor	attributes	iter node AttributeList	union.attributes
 accessor	ImplicitCtor	self_id	option token	union.self_id
-accessor	IndexFromEndExpr	expr	option enum Expr	union.expr
 accessor	IndexRangeExpr	lower	option enum Expr	union.lower
 accessor	IndexRangeExpr	upper	option enum Expr	union.upper
 accessor	InferredDowncastExpr	expr	option enum Expr	union.expr
@@ -556,7 +548,6 @@ accessor	InlineIlExpr	types	iter enum Type	union.types
 accessor	InterfaceImpl	has_with	bool	union.has_with
 accessor	InterfaceImpl	interface_type	option enum Type	union.interface_type
 accessor	InterfaceImpl	members	iter enum MemberDefn	union.members
-accessor	InterpStringExpr	parts	vec value InterpStringPart	union.parts
 accessor	IsInstPat	ty	option enum Type	union.ty
 accessor	JoinInExpr	in_token	option token	union.in_token
 accessor	JoinInExpr	lhs	option enum Expr	union.lhs

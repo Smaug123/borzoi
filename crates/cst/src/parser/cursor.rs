@@ -974,6 +974,7 @@ fn stamp_mismatch(entry: &Result<FilteredToken<'_>, LexError>, kind: SyntaxKind)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokens::lex_full_trivia;
 
     #[test]
     fn a_virtual_takes_only_error_or_its_own_marker_kind() {

@@ -17,13 +17,14 @@
 //! `Recovery` and must never read as `Legality`.
 //!
 //! The fixtures are keyed by feature, and the table decides which features need
-//! one: every live row FCS consults while parsing. A row that goes live, or
-//! moves from one effect to another, fails here until it has a fixture graded
-//! by its new class.
+//! one: every live row, those FCS consults only in its type checker included,
+//! since their gates report while parsing too. A row that goes live, or moves
+//! from one effect to another, fails here until it has a fixture graded by its
+//! new class.
 
 use std::collections::{BTreeMap, HashSet};
 
-use borzoi_astgen::features::{Effect, Stage, feature_table};
+use borzoi_astgen::features::{Effect, feature_table};
 use borzoi_cst::language_version::{LanguageFeature, LanguageVersion};
 use borzoi_cst::parser::{
     DiagnosticClass, FileKind, Parse, ParseDiagnostic, ParseOptions, parse_with_options,
@@ -34,12 +35,32 @@ use borzoi_cst::parser::{
 /// have several, one per construct its gate covers.
 const FIXTURES: &[(LanguageFeature, &str)] = &[
     (
+        LanguageFeature::SingleUnderscorePattern,
+        "module M\ntype T() =\n    member _.M = 1\n",
+    ),
+    (
+        LanguageFeature::SingleUnderscorePattern,
+        "module M\nlet f x =\n    match x with\n    | _.Case -> 1\n    | _ -> 2\n",
+    ),
+    (
+        LanguageFeature::WildCardInForLoop,
+        "module M\nlet f () =\n    for _ = 1 to 3 do\n        ()\n",
+    ),
+    (
         LanguageFeature::RelaxWhitespace,
         "module M\ntype T() =\n    static member P\n        with get() =\n      1\n",
     ),
     (
         LanguageFeature::DotlessFloat32Literal,
         "module M\nlet x = 1f\n",
+    ),
+    (
+        LanguageFeature::StringInterpolation,
+        "module M\nlet s = $\"a{1}b\" + $\"\"\"c\"\"\" + $@\"d\"\n",
+    ),
+    (
+        LanguageFeature::ExtendedStringInterpolation,
+        "module M\nlet s = $$\"\"\"a{{1}}b{x}c\"\"\"\n",
     ),
     (
         LanguageFeature::RelaxWhitespace2,
@@ -56,6 +77,10 @@ const FIXTURES: &[(LanguageFeature, &str)] = &[
     (
         LanguageFeature::InterfacesWithAbstractStaticMembers,
         "module M\ntype I =\n    static abstract M: int -> int\n",
+    ),
+    (
+        LanguageFeature::AccessorFunctionShorthand,
+        "module M\nlet f xs = xs |> List.map _.Length\n",
     ),
     (LanguageFeature::StrictIndentation, "match x with\n"),
     (
@@ -79,6 +104,26 @@ const FIXTURES: &[(LanguageFeature, &str)] = &[
         "module M\n#nowarn 40\nlet x = 1\n",
     ),
     (
+        LanguageFeature::ParsedHashDirectiveArgumentNonQuotes,
+        "module M\n#nowarn \"FS40\"\nlet x = 1\n",
+    ),
+    (
+        LanguageFeature::BetterAnonymousRecordParsing,
+        "module M\nlet x = {| A = id<int>|}\n",
+    ),
+    (
+        LanguageFeature::BetterAnonymousRecordParsing,
+        "module M\nlet x = {| A = <@ 1 @>|}\n",
+    ),
+    (
+        LanguageFeature::ScopedNowarn,
+        "module M\n#warnon \"40\"\nlet x = 1\n",
+    ),
+    (
+        LanguageFeature::ScopedNowarn,
+        "module M\nmodule N =\n    #nowarn \"40\"\n    let x = 1\n",
+    ),
+    (
         LanguageFeature::AllowTypedLetUseAndBang,
         "module M\nlet f () =\n    async {\n        let! x: int = async { return 1 }\n        return x\n    }\n",
     ),
@@ -94,16 +139,11 @@ const FIXTURES: &[(LanguageFeature, &str)] = &[
         LanguageFeature::PreprocessorElif,
         "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n",
     ),
+    (
+        LanguageFeature::FromEndSlicing,
+        "module M\nlet xs = [| 1; 2 |]\nlet a = xs.[^1]\nlet b = xs[..^1]\n",
+    ),
 ];
-
-/// `Diagnose` rows whose gate borzoi does not report, with the reason. Their
-/// fixtures must still parse to one tree and one set of diagnostics at every
-/// version, so that reporting them later is a matter of classing the new
-/// diagnostics, not of discovering a tree that moves.
-const NOT_REPORTED: &[(LanguageFeature, &str)] = &[(
-    LanguageFeature::ParsedHashDirectiveArgumentNonQuotes,
-    "its FS3350 and FS0203 are not reported; Directive::warning_numbers reads the feature",
-)];
 
 const LADDER: [LanguageVersion; 10] = [
     LanguageVersion::V4_6,
@@ -163,13 +203,12 @@ fn the_class_of_a_gate_is_its_rows_effect() {
     }
 }
 
-/// Every live row FCS consults while parsing has a fixture, and every fixture
-/// names such a row.
+/// Every live row has a fixture, and every fixture names one.
 #[test]
 fn every_parse_time_row_has_a_fixture() {
     let needed: BTreeMap<String, LanguageFeature> = feature_table()
         .into_iter()
-        .filter(|row| row.is_live() && row.stages != [Stage::Check])
+        .filter(|row| row.is_live())
         .map(|row| {
             let f = feature_named(&row.name).expect("every row is a LanguageFeature");
             (row.name, f)
@@ -179,21 +218,14 @@ fn every_parse_time_row_has_a_fixture() {
     for (name, feature) in &needed {
         if !FIXTURES.iter().any(|(f, _)| f == feature) {
             failures.push(format!(
-                "{name} is a live parse-time row with no fixture; add a source using it to FIXTURES"
+                "{name} is a live row with no fixture; add a source using it to FIXTURES"
             ));
         }
     }
     for (feature, source) in FIXTURES {
         if !needed.values().any(|f| f == feature) {
             failures.push(format!(
-                "the fixture {source:?} names {feature:?}, which is not a live parse-time row"
-            ));
-        }
-    }
-    for (feature, _) in NOT_REPORTED {
-        if DiagnosticClass::of_gate(*feature) == DiagnosticClass::Recovery {
-            failures.push(format!(
-                "{feature:?} is in NOT_REPORTED, which is for Diagnose rows"
+                "the fixture {source:?} names {feature:?}, which is not a live row"
             ));
         }
     }
@@ -221,7 +253,6 @@ fn each_gate_keeps_the_promise_of_its_class() {
         };
         match DiagnosticClass::of_gate(feature) {
             class @ DiagnosticClass::Legality { .. } => {
-                let reported = !NOT_REPORTED.iter().any(|(f, _)| *f == feature);
                 if !at.errors.is_empty() || !at.warnings.is_empty() {
                     fail(
                         introduced,
@@ -264,7 +295,7 @@ fn each_gate_keeps_the_promise_of_its_class() {
                             format!("a warning is a legality one: {:?}", p.warnings),
                         );
                     }
-                    let expect_gate = reported && lang < introduced;
+                    let expect_gate = lang < introduced;
                     if gated.is_empty() == expect_gate {
                         fail(
                             lang,
@@ -281,10 +312,13 @@ fn each_gate_keeps_the_promise_of_its_class() {
                 let mut moves = false;
                 for (lang, p) in &parses {
                     let lang = *lang;
+                    // A construct may need an older feature too (a `$$"""` string
+                    // is an interpolated one), whose `Legality` gate is no
+                    // concern here.
                     if let Some(d) = legality(&p.errors)
                         .into_iter()
                         .chain(legality(&p.warnings))
-                        .next()
+                        .find(|d| d.class == DiagnosticClass::Legality { feature })
                     {
                         fail(
                             lang,

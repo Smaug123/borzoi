@@ -41,7 +41,7 @@ use borzoi_cst::lexfilter::{FilteredToken, OffsideSeverity, Virtual, filter_coll
 use borzoi_cst::parser::{
     FileKind, ParseOptions, parse, parse_sig, parse_with_options, parse_with_symbols,
 };
-use borzoi_cst::tokens::lex_full_trivia;
+use borzoi_cst::tokens::lex_full_trivia_at;
 use borzoi_oracle_harness::{BatchChild, BoundedCommand};
 
 /// The sweeps here silence their *expected* panics; the implementation is shared
@@ -1929,7 +1929,10 @@ fn filtered_streams_at(
     // inactive `#if` region are trivia, as FCS's lexer skips them. The
     // filter consumes trivia internally (for offside line/column tracking)
     // and never emits it, so no trivia filter is needed on the output.
-    let run = filter_collect(&lex_full_trivia(source, &HashSet::new()).tokens, lang);
+    let run = filter_collect(
+        &lex_full_trivia_at(source, &HashSet::new(), lang).tokens,
+        lang,
+    );
     let rust_offside: Offside = run
         .diagnostics
         .iter()

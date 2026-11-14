@@ -5,11 +5,13 @@
 //! Most are checks FCS makes with `CheckLanguageFeatureAndRecover` before
 //! parsing the construct anyway, so its tree is the same at every version and
 //! only the diagnostics move. That is how every gate is modelled here: a walk
-//! over the finished tree, which never alters it. Two gate a feature whose
+//! over the finished tree, which never alters it. Four gate a feature whose
 //! tree FCS does change below its version, and here keep the newer tree: the
-//! dotless `float32` literal, which FCS's lexer replaces with `0.0f`, and the
-//! nullness annotation, whose `|` FCS's lex-filter does not relabel. Which is
-//! which is the feature table's `fcs_effect`, and each diagnostic's
+//! dotless `float32` literal, which FCS's lexer replaces with `0.0f`; the
+//! nullness annotation, whose `|` FCS's lex-filter does not relabel; and the
+//! `_.` pattern and the `for _ =` loop, where FCS raises a parse error and
+//! recovers to a different tree. Which is which is the feature table's
+//! `fcs_effect`, and each diagnostic's
 //! [`DiagnosticClass`](super::DiagnosticClass) is read off it
 //! ([`ParseDiagnostic::gate`]): `Legality` for the first kind, `Recovery` for
 //! the second.
@@ -19,6 +21,13 @@
 //! after the attributes (FCS reports at the empty `opt_rec`, whose range is the
 //! next token's). `parser_diff_feature_gates` holds every span, severity and
 //! message to FCS at every version.
+//!
+//! Two of the features are checked by FCS's type checker, not its parser:
+//! interpolated strings ([`LanguageFeature::StringInterpolation`]) and `^`
+//! index arguments ([`LanguageFeature::FromEndSlicing`]). Their gates report
+//! here what the checker reports, so that a node a version's facade leaves out
+//! lies under a diagnostic (`docs/ast-versioning-plan.md`, D9), and
+//! `parser_diff_feature_gates` holds them to FCS's check diagnostics.
 //!
 //! The features gated here are the feature table's live `Kind` rows, through
 //! [`kind_feature`], and its live `Positional` rows whose detector is a function
@@ -36,16 +45,38 @@ use super::ParseDiagnostic;
 /// literal below [`LanguageFeature::DotlessFloat32Literal`].
 const INVALID_FLOAT: &str = "Invalid floating point number";
 
+/// FCS's FS0010 (`parsUnexpectedSymbolDot`), raised at the `.` of a pattern
+/// long identifier rooted at `_` below
+/// [`LanguageFeature::SingleUnderscorePattern`], whatever the pattern's context.
+const UNEXPECTED_SYMBOL_DOT: &str =
+    "Unexpected symbol '.' in member definition. Expected 'with', '=' or other token.";
+
+/// FCS's FS0525 (`parsIntegerForLoopRequiresSimpleIdentifier`), raised at the
+/// `_` of `for _ = …` below [`LanguageFeature::WildCardInForLoop`].
+const FOR_LOOP_REQUIRES_SIMPLE_IDENTIFIER: &str =
+    "An integer for loop must use a simple identifier";
+
+/// FCS's FS3303 (`fromEndSlicingRequiresVFive`): the type checker's error for a
+/// `^` index argument below [`LanguageFeature::FromEndSlicing`], which it
+/// reports in place of FS3350.
+const FROM_END_SLICING: &str =
+    "The 'from the end slicing' feature requires language version 'preview'.";
+
+/// FCS's FS3534 (`tcTraitInvocationShouldUseTick`): its checker's error for a
+/// `^e` that is not an index argument, at every version.
+const STATIC_CONSTRAINT_INVOCATION: &str = "Invocation of a static constraint should use \"'T.Ident\" \
+     and not \"^T.Ident\", even for statically resolved type parameters.";
+
 /// The errors the gates report for the tree `root` parsed at `lang`.
 pub(super) fn feature_gate_diagnostics(
     root: &SyntaxNode,
     lang: LanguageVersion,
 ) -> Vec<ParseDiagnostic> {
     let mut out = Vec::new();
-    // The common case — a project at F# 10.0, or an orphan buffer at preview —
-    // has every feature gated here, so skip the walk. `POSITIONAL_GATES` is
-    // every live `Kind` or `Positional` row of the feature table, a superset of
-    // what this walk gates.
+    // A parse at preview (an orphan buffer) has every feature gated here, so
+    // skip the walk. `POSITIONAL_GATES` is every live `Kind` or `Positional`
+    // row of the feature table, a superset of what this walk gates; a
+    // numbered version lacks `FromEndSlicing`, so its parse always walks.
     if LanguageFeature::POSITIONAL_GATES
         .iter()
         .all(|&f| lang.supports(f))
@@ -56,18 +87,32 @@ pub(super) fn feature_gate_diagnostics(
         if !lang.supports(feature) {
             out.push(ParseDiagnostic::gate(
                 feature,
-                feature.not_available_message(lang),
+                gate_message(feature, lang),
                 span,
             ));
         }
     };
+    // `^e` below preview where it is not an index argument.
+    let mut static_constraint_invocations = Vec::new();
     for node in root.descendants() {
-        if let Some(feature) = kind_feature(node.kind())
+        if node.kind() == SyntaxKind::INDEX_FROM_END_EXPR && !is_index_argument(&node, lang) {
+            static_constraint_invocations.extend(significant_range(&node));
+        } else if let Some(feature) = kind_feature(node.kind())
             && let Some(span) = kind_gate_span(&node)
         {
             gate(feature, span);
         }
         match node.kind() {
+            SyntaxKind::LONG_IDENT_PAT => {
+                if let Some(span) = underscore_dot_pattern_span(&node) {
+                    gate(LanguageFeature::SingleUnderscorePattern, span);
+                }
+            }
+            SyntaxKind::FOR_EXPR => {
+                if let Some(span) = wildcard_for_loop_span(&node) {
+                    gate(LanguageFeature::WildCardInForLoop, span);
+                }
+            }
             SyntaxKind::TYPAR_DECL => {
                 if let Some(span) = typar_decl_intersection_span(&node) {
                     gate(LanguageFeature::ConstraintIntersectionOnFlexibleTypes, span);
@@ -99,6 +144,16 @@ pub(super) fn feature_gate_diagnostics(
             gate(LanguageFeature::InterfacesWithAbstractStaticMembers, span);
         }
     }
+    // FCS's checker rejects such a `^e` at every version (FS3534) and consults
+    // the feature only for an index argument; below preview the error is
+    // reported here, as the feature's gate, so that the node, which the
+    // facades below preview leave out, lies under a diagnostic naming it.
+    let from_end = LanguageFeature::FromEndSlicing;
+    if !lang.supports(from_end) {
+        out.extend(static_constraint_invocations.into_iter().map(|span| {
+            ParseDiagnostic::gate(from_end, STATIC_CONSTRAINT_INVOCATION.to_string(), span)
+        }));
+    }
     if !lang.supports(LanguageFeature::DotlessFloat32Literal) {
         for token in root
             .descendants_with_tokens()
@@ -114,6 +169,17 @@ pub(super) fn feature_gate_diagnostics(
         }
     }
     out
+}
+
+/// The message FCS reports a gate on `feature` with at `lang`: FS3350, unless
+/// FCS has an error of its own for the feature.
+fn gate_message(feature: LanguageFeature, lang: LanguageVersion) -> String {
+    match feature {
+        LanguageFeature::SingleUnderscorePattern => UNEXPECTED_SYMBOL_DOT.to_string(),
+        LanguageFeature::WildCardInForLoop => FOR_LOOP_REQUIRES_SIMPLE_IDENTIFIER.to_string(),
+        LanguageFeature::FromEndSlicing => FROM_END_SLICING.to_string(),
+        _ => feature.not_available_message(lang),
+    }
 }
 
 fn token_span(token: &SyntaxToken) -> Range<usize> {
@@ -148,8 +214,9 @@ fn significant_children(node: &SyntaxNode) -> impl Iterator<Item = SyntaxElement
     })
 }
 
-/// Where FCS reports a [`kind_feature`] node: a `while!` at its keyword, an
-/// intersection type and a nullness annotation at the whole type.
+/// Where FCS reports a [`kind_feature`] node: a `while!` at its keyword, a
+/// `_.M` at its `_.`, an intersection type, a nullness annotation, an
+/// interpolated string and an index argument `^e` at the whole node.
 fn kind_gate_span(node: &SyntaxNode) -> Option<Range<usize>> {
     match node.kind() {
         SyntaxKind::WHILE_BANG_EXPR => node
@@ -161,8 +228,109 @@ fn kind_gate_span(node: &SyntaxNode) -> Option<Range<usize>> {
             let range = node.text_range();
             Some(usize::from(range.start())..usize::from(range.end()))
         }
+        // `pars.fsy`'s `UNDERSCORE DOT atomicExpr` checks the union of the
+        // two tokens' ranges.
+        SyntaxKind::DOT_LAMBDA_EXPR => {
+            let mut tokens = node
+                .children_with_tokens()
+                .filter_map(SyntaxElement::into_token)
+                .filter(is_significant);
+            let underscore = tokens.next()?;
+            let dot = tokens.find(|t| t.kind() == SyntaxKind::DOT_TOK)?;
+            Some(token_span(&underscore).start..token_span(&dot).end)
+        }
         _ => significant_range(node),
     }
+}
+
+/// Whether the `^e` node `node` is an index argument at `lang`, the one place
+/// FCS's checker consults [`LanguageFeature::FromEndSlicing`]
+/// (`CheckExpressions.fs`'s `DecodeIndexArg`): the argument of `e.[…]`, or of
+/// `e[…]` written with no space before the `[`, after splitting a tuple of
+/// arguments and taking either bound of a range. Anywhere else FCS's checker
+/// rejects `^e` at every version (FS3534), which the gate reports instead below
+/// preview.
+///
+/// FCS's checker reads `e[…]` as indexing only from
+/// [`LanguageFeature::IndexerNotationWithoutDot`] (6.0), and then only when
+/// `e` is not a function; below it, and for a function, it is an application.
+/// The version is read here; the type, which a parse cannot know, is not, so a
+/// function applied to `[^e]` with no space draws FS3303 here where FCS's
+/// checker reports FS3534.
+fn is_index_argument(node: &SyntaxNode, lang: LanguageVersion) -> bool {
+    let mut arg = node.clone();
+    let mut parent = node.parent();
+    for wrapper in [SyntaxKind::INDEX_RANGE_EXPR, SyntaxKind::TUPLE_EXPR] {
+        if let Some(p) = parent.clone().filter(|p| p.kind() == wrapper) {
+            arg = p;
+            parent = arg.parent();
+        }
+    }
+    let Some(parent) = parent else {
+        return false;
+    };
+    match parent.kind() {
+        // The receiver is the first child, the argument the second.
+        SyntaxKind::DOT_INDEXED_GET_EXPR => parent.children().nth(1).as_ref() == Some(&arg),
+        // `IndexerNotationWithoutDot` gates nothing of its own (its row is
+        // checker-only), so its version is read as this gate's condition
+        // rather than through `supports`.
+        SyntaxKind::ARRAY_OR_LIST_EXPR
+            if lang >= LanguageFeature::IndexerNotationWithoutDot.introduced() =>
+        {
+            let Some(app) = parent.parent().filter(|a| a.kind() == SyntaxKind::APP_EXPR) else {
+                return false;
+            };
+            let mut children = app.children();
+            let (Some(receiver), Some(list)) = (children.next(), children.next()) else {
+                return false;
+            };
+            // A list, `[…]`: an array, `[|…|]`, is applied at every version.
+            let opener = parent
+                .children_with_tokens()
+                .filter_map(SyntaxElement::into_token)
+                .find(is_significant);
+            list == parent
+                && opener.is_some_and(|t| t.kind() == SyntaxKind::LBRACK_TOK)
+                && parent.children().count() == 1
+                && significant_range(&receiver)
+                    .zip(significant_range(&list))
+                    .is_some_and(|(r, l)| r.end == l.start)
+        }
+        _ => false,
+    }
+}
+
+/// `_.M` in a pattern (`member _.M`, `| _.Case`): FCS's
+/// `atomicPatternLongIdent` raises its parse error at the `.` (`pars.fsy`).
+fn underscore_dot_pattern_span(node: &SyntaxNode) -> Option<Range<usize>> {
+    let long_ident = node
+        .children()
+        .find(|n| n.kind() == SyntaxKind::LONG_IDENT)?;
+    let mut tokens = long_ident
+        .children_with_tokens()
+        .filter_map(SyntaxElement::into_token)
+        .filter(is_significant);
+    let first = tokens.next()?;
+    let dot = tokens.next()?;
+    (first.kind() == SyntaxKind::IDENT_TOK
+        && first.text() == "_"
+        && dot.kind() == SyntaxKind::DOT_TOK)
+        .then(|| token_span(&dot))
+}
+
+/// `for _ = a to b`: FCS's `idOfPat` raises its parse error at the pattern
+/// (`ParseHelpers.fs`).
+fn wildcard_for_loop_span(node: &SyntaxNode) -> Option<Range<usize>> {
+    let mut children = significant_children(node);
+    if children.next()?.kind() != SyntaxKind::FOR_TOK {
+        return None;
+    }
+    let SyntaxElement::Token(binder) = children.next()? else {
+        return None;
+    };
+    let equals = children.next()?;
+    (binder.text() == "_" && equals.kind() == SyntaxKind::EQUALS_TOK).then(|| token_span(&binder))
 }
 
 /// `'a & #I` in a type-parameter declaration: FCS reports from the first `&`

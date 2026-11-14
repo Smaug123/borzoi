@@ -47,7 +47,7 @@ use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
 };
 use crate::syntax::{SyntaxKind, SyntaxNode};
-use crate::tokens::{FilteredKind, FilteredTokens, RawKind, RawTokens, lex_full_trivia};
+use crate::tokens::{FilteredKind, FilteredTokens, RawKind, RawTokens, lex_full_trivia_at};
 use dual_keyword::{DualKeyword, KeywordForm};
 use expr::decl_expr_keyword;
 use filtered_cursor::FilteredCursor;
@@ -145,6 +145,7 @@ mod sign_fold;
 mod strings;
 mod tree_builder;
 mod types;
+mod warn_directives;
 
 use crate::syntax::Checkpoint;
 use classify::{
@@ -202,16 +203,17 @@ pub struct Parse {
     /// [`LanguageVersion::Preview`] — every implemented feature on, i.e. the
     /// parser's historical "no version gating" behaviour — so existing callers
     /// are unaffected. [`parse_with_options`] threads a chosen version through.
-    /// It drives the `#elif` legality gate (diagnostics only — see
-    /// `docs/ast-versioning-plan.md`) and, since the offside-diagnostics
-    /// emission stages, the lex-filter's strict-indentation push decision and
-    /// its `relaxWhitespace2` pops — which **can** change the tree shape
-    /// across the F# 8 and F# 6 boundaries;
+    /// It drives the language-version gates (`docs/ast-versioning-plan.md`,
+    /// the feature table), most of them diagnostics only, and the lexer's
+    /// reading of a `$$"""` opener and the lex-filter's strict-indentation
+    /// push decision and `relaxWhitespace2` pops — which **can** change the
+    /// tree shape across the F# 8 and F# 6 boundaries;
     /// [`Parse::shape_depends_on_language_version`] reports whether it
     /// actually did for this source.
     pub lang: LanguageVersion,
-    /// Whether this parse's tree shape depends on [`Parse::lang`]: the
-    /// lex-filter reached a decision point whose outcome differs across
+    /// Whether this parse's tree shape depends on [`Parse::lang`]: the source
+    /// holds a `$$"""` string, which the lexer reads differently below F# 8,
+    /// or the lex-filter reached a decision point whose outcome differs across
     /// language versions (an offside version-gated context push — aborted at
     /// F# 8+, kept with a warning below — or a `relaxWhitespace2` pop that
     /// matters, F# 6).
@@ -573,7 +575,7 @@ pub fn context_pushes(
     symbols: &HashSet<String>,
     lang: LanguageVersion,
 ) -> Vec<ContextPush> {
-    let lexed = lex_full_trivia(source, symbols);
+    let lexed = lex_full_trivia_at(source, symbols, lang);
     crate::lexfilter::context_pushes(&lexed.tokens, lang)
 }
 
@@ -610,7 +612,7 @@ fn parse_inner_stopping_at(
     // user still sees one squiggle, not two. Active lex failures
     // (`PreprocError::Lex`) are kept in the raw stream — they are genuine breaks
     // that surface as ERROR nodes.
-    let lexed = lex_full_trivia(source, symbols);
+    let lexed = lex_full_trivia_at(source, symbols, lang);
     let directive_errors: Vec<ParseError> = lexed
         .preproc_errors
         .iter()
@@ -632,12 +634,32 @@ fn parse_inner_stopping_at(
     let filter_run = filter_collect(&raw_tokens, lang);
     let mut filtered_tokens = filter_run.tokens;
     let offside_diagnostics: Vec<OffsideDiagnostic> = filter_run.diagnostics;
-    let shape_depends_on_language_version = filter_run.shape_depends_on_language_version;
+    let extended_openers = extended_interpolation_openers(source, &raw_tokens);
+    let shape_depends_on_language_version =
+        filter_run.shape_depends_on_language_version || !extended_openers.is_empty();
+    let extended_interpolation_errors = extended_interpolation_diagnostics(&extended_openers, lang);
     // Fold an adjacent `+`/`-` into the following numeric literal, mirroring
     // FCS's token-layer sign fold (`LexFilter.fs:2694`). Done before the
     // parser runs so a signed literal is a single token in both expression
     // and pattern position. See `sign_fold`.
-    sign_fold::fold_adjacent_signs(&raw_tokens, &mut filtered_tokens);
+    let folded = sign_fold::fold_adjacent_signs(&raw_tokens, &mut filtered_tokens);
+    // A lex-filter gate reports at FCS's lexbuf lexeme, which for a token the
+    // filter handed over is that token's range; FCS folds a sign into a
+    // literal before handing it over, so a literal the fold merged reports
+    // with its sign.
+    let filter_gates: Vec<ParseDiagnostic> = filter_run
+        .gates
+        .into_iter()
+        .map(|(feature, span)| {
+            let span = folded
+                .binary_search_by_key(&span.end, |merged| merged.end)
+                .ok()
+                .map(|i| folded[i].clone())
+                .filter(|merged| merged.start < span.start)
+                .unwrap_or(span);
+            ParseDiagnostic::gate(feature, feature.not_available_message(lang), span)
+        })
+        .collect();
 
     // FS1161 tabs, FS0046 reserved-identifier warnings and `:`/`$` inside an
     // operator lexeme: lexer-level diagnostics, scanned off the raw table
@@ -718,10 +740,11 @@ fn parse_inner_stopping_at(
     let gates = feature_gates::feature_gate_diagnostics(&root, lang);
     // Merge the directive errors (collected in source order above), the FS1161
     // tab errors (scanned off the whitespace trivia), the `#elif` trivia gate,
-    // and the feature gates with the productions' errors (emitted in
-    // parse order), then re-sort by span start so the final list reads in source
-    // order regardless of which producer found each problem. Every producer
-    // but the two gates finds recovery diagnostics; the gates class theirs.
+    // the feature gates, the lex-filter's and the lexer's gates and the
+    // `#nowarn` diagnostics with the productions' errors (emitted in parse
+    // order), then re-sort by span start so the final list reads in source
+    // order regardless of which producer found each problem. The gates class
+    // their diagnostics; every other producer finds recovery diagnostics.
     let mut errors: Vec<ParseDiagnostic> = parser
         .errors
         .into_iter()
@@ -732,6 +755,11 @@ fn parse_inner_stopping_at(
     errors.extend(operator_char_errors);
     errors.extend(langversion_errors);
     errors.extend(gates);
+    errors.extend(filter_gates);
+    errors.extend(extended_interpolation_errors);
+    let (warn_errors, warn_warnings) =
+        warn_directives::warn_directive_diagnostics(&root, source, lang);
+    errors.extend(warn_errors);
     // Warnings come from the productions and the lex-filter's offside
     // diagnostics; directive/tab/langversion problems are all errors.
     let mut warnings: Vec<ParseDiagnostic> = parser
@@ -740,6 +768,7 @@ fn parse_inner_stopping_at(
         .map(ParseError::recovery)
         .collect();
     warnings.extend(reserved_warnings);
+    warnings.extend(warn_warnings);
     // The lex-filter's offside / indentation diagnostics (FS0058), split by the
     // severity it resolved from `lang`.
     for diag in offside_diagnostics {
@@ -793,6 +822,56 @@ fn langversion_diagnostics(
         .iter()
         .map(|span| {
             ParseDiagnostic::gate(feature, feature.not_available_message(lang), span.clone())
+        })
+        .collect()
+}
+
+/// The span of every `$$"""` opener among `raw_tokens` (two `$` or more), in
+/// source order, whichever way the lexer read it
+/// ([`LanguageFeature::ExtendedStringInterpolation`]).
+fn extended_interpolation_openers(source: &str, raw_tokens: &RawTokens<'_>) -> Vec<Range<usize>> {
+    (0..raw_tokens.len())
+        .filter(|&i| {
+            matches!(
+                raw_tokens.kind(i),
+                RawKind::Lexed(
+                    TokenKind::InterpExtendedBegin
+                        | TokenKind::InterpExtendedBeginEnd
+                        | TokenKind::InterpTripleBegin
+                        | TokenKind::InterpTripleBeginEnd
+                ) | RawKind::UnterminatedString
+            )
+        })
+        .map(|i| raw_tokens.span(i))
+        .filter(|span| {
+            let text = &source.as_bytes()[span.clone()];
+            let dollars = text.iter().take_while(|&&b| b == b'$').count();
+            dollars >= 2 && text[dollars..].starts_with(b"\"\"\"")
+        })
+        .collect()
+}
+
+/// FCS's FS1251 (`lexExtendedStringInterpolationNotSupported`) on each
+/// `$$"""` opener below [`LanguageFeature::ExtendedStringInterpolation`],
+/// where its lexer reads the opener as a `$"""` one (`lex.fsl`): at the
+/// lexeme, which runs to the string's first fill or its end, the token the
+/// lexer then produced.
+fn extended_interpolation_diagnostics(
+    openers: &[Range<usize>],
+    lang: LanguageVersion,
+) -> Vec<ParseDiagnostic> {
+    let feature = LanguageFeature::ExtendedStringInterpolation;
+    if lang.supports(feature) {
+        return Vec::new();
+    }
+    openers
+        .iter()
+        .map(|span| {
+            ParseDiagnostic::gate(
+                feature,
+                "Extended string interpolation is not supported in this version of F#.".to_string(),
+                span.clone(),
+            )
         })
         .collect()
 }

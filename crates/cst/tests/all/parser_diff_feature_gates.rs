@@ -17,8 +17,15 @@
 //! - `ConstraintIntersectionOnFlexibleTypes` (8.0): `'T & #I` in type position
 //!   and in a type-parameter declaration.
 //! - `WhileBang` (8.0): `while!`.
+//! - `AccessorFunctionShorthand` (8.0): `_.M`, at its `_.`.
+//! - `ParsedHashDirectiveArgumentNonQuotes` (9.0) and `ScopedNowarn` (10.0):
+//!   a `#nowarn` / `#warnon` argument unquoted or `FS`-prefixed, a top-level
+//!   `#warnon`, a directive in a nested module, an argument that is not a
+//!   number (`WarnScopes.fs`).
 //! - `AllowTypedLetUseAndBang` (10.0): `let! x: T`, `use!`/`and!` alike, and
 //!   `return e: T` / `yield e: T` and their `!` forms.
+//! - `BetterAnonymousRecordParsing` (10.0): the lex-filter's split of `>|}`
+//!   and `@>|}`, reported at FCS's lexbuf lexeme.
 //!
 //! The gate is diagnostic-only: FCS recovers and builds the tree it builds at
 //! the newest version, and so do we, so the tree is also checked to be the same
@@ -26,12 +33,11 @@
 //! literal, for which FCS's lexer substitutes `0.0f` below 5.0
 //! ([`INVALID_FLOAT`]).
 //!
-//! Two parse-time gates are *not* modelled, and [`unmodelled_gates_are_pinned`]
-//! holds them to that: the accessor shorthand `_.M` (`AccessorFunctionShorthand`,
-//! 8.0) and the integer `for _ = …` loop (`WildCardInForLoop`, 4.7). Modelling
-//! either would make every file using it version-dependent under
-//! `diagnostics_are_version_invariant` (see `docs/fcs-divergences.md`,
-//! "Language-version pinning").
+//! The gates whose FCS effect is `Reshape` are graded apart, in
+//! [`reshape_gates_match_fcs_at_every_version`]: below the feature's version
+//! FCS raises a parse error and recovers to a different tree, where we report
+//! the same error and keep the newer tree, so there the trees are graded by
+//! the recovery relation (`common::recovery`).
 
 use std::collections::{BTreeSet, HashSet};
 use std::io::Write;
@@ -58,6 +64,15 @@ const FS3535: &str = "Declaring \"interfaces with static abstract methods\" is a
 /// version that does not report this, and is checked to be the same at all.
 const INVALID_FLOAT: &str = "Invalid floating point number";
 
+/// FCS's FS0010 for a `_.` pattern below F# 4.7 (`parsUnexpectedSymbolDot`).
+const UNEXPECTED_SYMBOL_DOT: &str =
+    "Unexpected symbol '.' in member definition. Expected 'with', '=' or other token.";
+
+/// FCS's FS0525 (`parsIntegerForLoopRequiresSimpleIdentifier`), which it
+/// reports for `for _ = …` below F# 4.7.
+const FOR_LOOP_REQUIRES_SIMPLE_IDENTIFIER: &str =
+    "An integer for loop must use a simple identifier";
+
 /// One version per band of every gate below, ascending, with the
 /// `<LangVersion>` token FCS reads.
 const VERSIONS: &[(LanguageVersion, &str)] = &[
@@ -74,8 +89,10 @@ const VERSIONS: &[(LanguageVersion, &str)] = &[
 ];
 
 /// Whether FCS gates something in the fixture: a gated fixture must draw an
-/// FCS diagnostic at the floor, a control none at any version. Checked against
-/// FCS, so a fixture cannot silently stop testing what it is listed for.
+/// FCS diagnostic at some version (at the floor for every gate but the warn
+/// directives' FS0203, which appears from 9.0), a control none at any version.
+/// Checked against FCS, so a fixture cannot silently stop testing what it is
+/// listed for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Expect {
     Gated,
@@ -85,6 +102,63 @@ enum Expect {
 use Expect::{Control, Gated};
 
 const IMPL: &[(&str, Expect)] = &[
+    // `_.M`: the `_.`.
+    (
+        "module M\nlet f xs = xs |> List.map (_.Length) |> List.map _.ToString()\n",
+        Gated,
+    ),
+    // `>|}` closing a type application, and `@>|}` closing a quotation: FCS
+    // reports at its lexbuf's lexeme, which is the `>|}` itself, the `@>|}`
+    // when nothing peeked it, and otherwise the token handed over before it.
+    ("module M\nlet x = {| A = id<int>|}\n", Gated),
+    (
+        "module M\nlet y = {| B = <@ 1 @>|}\nlet z = {| C = <@@ foo bar @@>|}\n",
+        Gated,
+    ),
+    ("module M\nlet y = {| B = <@ (1) @>|}.B\n", Gated),
+    // FCS folds the sign into the literal before handing it over.
+    (
+        "module M\nlet y = {| B = <@ -1 @>|}\nlet z = {| C = <@ f -2.0 @>|}\n",
+        Gated,
+    ),
+    ("module M\nlet y = {| B = <@ 1 @> |}\n", Control),
+    // `#nowarn` / `#warnon`: unquoted and `FS`-prefixed arguments, a
+    // top-level `#warnon`, a directive in a nested module, arguments that are
+    // not numbers, a repeated `#warnon`, and malformed directives.
+    (
+        "module M\n#nowarn 40\n#nowarn FS41 \"FS42\" \"43\" \"\"\"44\"\"\"\nlet x = 1\n",
+        Gated,
+    ),
+    (
+        "module M\n#warnon \"40\"\nmodule N =\n#nowarn \"41\"\n    let x = 1\nlet y = 2\n",
+        Gated,
+    ),
+    (
+        "module M\n#nowarn \"abc\" \"\" \"FS\" \"99999999999\" xyz\nlet x = 1\n",
+        Gated,
+    ),
+    (
+        "module M\n#nowarn \"40\"\n#warnon \"40\"\n#warnon \"40\"\n#warnon \"41\"\n#warnon \"41\"\nlet x = 1\n",
+        Gated,
+    ),
+    (
+        "module M\n#nowarn\n#nowarnx 1\n#nowarn;; \"43\"\n#nowarn 45;46\n#nowarn \"47\";;\nlet x = 1\n",
+        Gated,
+    ),
+    (
+        "module M\n#nowarn \"40\" \"\"\"41\"\"\" // c\n#nowarn \"40\"\nlet x = 1\n",
+        Control,
+    ),
+    // A directive's range is counted in UTF-16 columns from its line's start.
+    (
+        "module M\nmodule N =\n\t#nowarn \"40\" // é\n    let x = 1\n",
+        Gated,
+    ),
+    // `Int32.TryParse` admits a sign, surrounding white space and trailing NULs.
+    (
+        "module M\n#nowarn \"\t40\" \"41\t\" \"+42\" \"\x0B43\x0C\" \"44\0\" \"45\t\0\"\nlet x = 1\n",
+        Control,
+    ),
     // `while!`: the keyword.
     (
         "module M\nlet f () = async {\n    while! async { return false } do\n        ()\n    return 1 }\n",
@@ -277,10 +351,19 @@ fn source_file(source: &str, kind: FileKind) -> NamedTempFile {
 
 type Diagnostic = (usize, usize, String, &'static str);
 
+/// Our parse's diagnostics, less the gates of the features FCS checks only in
+/// its type checker, which FCS's parse does not report (sema's
+/// `infer_legality_pin_diff` holds them to its check).
 fn our_diagnostics(parse: &Parse) -> BTreeSet<Diagnostic> {
+    use borzoi_cst::language_version::FcsStage;
+    use borzoi_cst::parser::DiagnosticClass;
     let errors = parse
         .errors
         .iter()
+        .filter(|e| {
+            !matches!(e.class, DiagnosticClass::Legality { feature }
+                if feature.fcs_stages() == [FcsStage::Check])
+        })
         .map(|e| (e.span.start, e.span.end, e.message.clone(), "Error"));
     let warnings = parse
         .warnings
@@ -289,16 +372,20 @@ fn our_diagnostics(parse: &Parse) -> BTreeSet<Diagnostic> {
     errors.chain(warnings).collect()
 }
 
+/// FCS's parse diagnostics, less [`FS3535`] and its informational ones (the
+/// FS3876 a repeated `#nowarn` draws from 10.0), which a parse of ours, having
+/// errors and warnings only, does not report.
 fn fcs_diagnostics(json: &str, source: &str) -> BTreeSet<Diagnostic> {
     fcs_all_diagnostics(json, source)
         .into_iter()
-        .map(|(span, message, severity)| {
+        .filter_map(|(span, message, severity)| {
             let severity = match severity.as_str() {
                 "Error" => "Error",
                 "Warning" => "Warning",
+                "Info" => return None,
                 other => panic!("unexpected FCS severity {other:?}"),
             };
-            (span.start, span.end, message, severity)
+            Some((span.start, span.end, message, severity))
         })
         .filter(|(_, _, message, _)| message != FS3535)
         .collect()
@@ -310,14 +397,11 @@ fn check(source: &str, kind: FileKind, expect: Expect) -> Vec<String> {
     let mut failures = Vec::new();
     let tmp = source_file(source, kind);
     let preview = parse_at(source, kind, LanguageVersion::Preview);
+    let mut fcs_gates = false;
     for &(lang, lang_text) in VERSIONS {
         let json = fcs_ast_batch_at(tmp.path(), lang_text);
         let fcs_diags = fcs_diagnostics(&json, source);
-        if lang == LanguageVersion::MIN && fcs_diags.is_empty() == (expect == Gated) {
-            failures.push(format!(
-                "{source:?} is listed as {expect:?}, but FCS at {lang_text} reports {fcs_diags:?}"
-            ));
-        }
+        fcs_gates |= !fcs_diags.is_empty();
         if expect == Control && !fcs_diags.is_empty() {
             failures.push(format!(
                 "control {source:?}: FCS reports {fcs_diags:?} at {lang_text}"
@@ -343,6 +427,11 @@ fn check(source: &str, kind: FileKind, expect: Expect) -> Vec<String> {
                 "the gates are diagnostic-only, but the {lang_text} tree of {source:?} is not the preview tree"
             ));
         }
+    }
+    if expect == Gated && !fcs_gates {
+        failures.push(format!(
+            "{source:?} is listed as gated, but FCS reports nothing at any version"
+        ));
     }
     failures
 }
@@ -430,57 +519,160 @@ fn feature_gates_on_recovered_input_match_fcs() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The parse-time gates deliberately left unmodelled, each with the version
-/// FCS introduces it at and the error number it reports below that.
+/// The gates whose FCS effect is `Reshape`: `_.` in a pattern
+/// (`SingleUnderscorePattern`, FS0010 at the `.`) and `for _ = …`
+/// (`WildCardInForLoop`, FS0525 at the `_`), both 4.7. Below the feature's
+/// version FCS raises a parse error and recovers to a tree of its own; we
+/// report the same error and keep the newer tree.
 ///
-/// Modelling either would make every file using the construct
-/// version-dependent under `diagnostics_are_version_invariant`, so a guessed
-/// language version (an orphan buffer, or a project whose `LangVersion` the
-/// evaluator cannot pin) would retain no diagnostics for it — and `_.M` lambdas
-/// and `for _ = …` loops are common in real code. Until PR 3 of
-/// `docs/ast-versioning-plan.md` gates them (their feature-table rows say so),
-/// this test pins the leniency: FCS errors below the threshold and we do not.
-/// It fails if either side changes.
+/// At every version the diagnostics must agree exactly and our tree be the
+/// preview tree. Where FCS's parse is clean the normalised trees must agree;
+/// where it recovers, the trees are graded by the recovery relation
+/// (`common::recovery`), which must not find them divergent and must compare
+/// the declaration after the damage.
 #[test]
-fn unmodelled_gates_are_pinned() {
-    const UNMODELLED: &[(&str, LanguageVersion, &str, i64)] = &[
-        (
-            "module M\nlet f xs = xs |> List.map (_.Length) |> List.map _.ToString()\n",
-            LanguageVersion::V8_0,
-            "7.0",
-            3350,
-        ),
-        (
-            "module M\nlet f () =\n    for _ = 1 to 3 do\n        ()\n",
-            LanguageVersion::V4_7,
-            "4.6",
-            525,
-        ),
+fn reshape_gates_match_fcs_at_every_version() {
+    use crate::common::recovery::{Relation, grade};
+    const RESHAPE: &[&str] = &[
+        "module M\nlet f () =\n    for _ = 1 to 3 do\n        ()\nlet g = 2\n",
+        "module M\nlet f () =\n    for _ = 3 downto 1 do printfn \"x\"\nlet g = 2\n",
+        "module M\ntype T() =\n    member _.M = 1\n    member this.N = 2\nlet g = 3\n",
+        "module M\nlet f x =\n    match x with\n    | _.Case -> 1\n    | _ -> 2\nlet g = 3\n",
     ];
-    for &(source, introduced, below, error_number) in UNMODELLED {
+    let mut failures = Vec::new();
+    for &source in RESHAPE {
         let tmp = source_file(source, FileKind::Impl);
-        let json = fcs_ast_batch_at(tmp.path(), below);
-        assert!(
-            !crate::common::fcs_diagnostic_spans(&json, source, error_number).is_empty(),
-            "FCS at {below} must report FS{error_number:04} for {source:?}",
-        );
-        for &(lang, _) in VERSIONS {
+        let preview = parse_at(source, FileKind::Impl, LanguageVersion::Preview);
+        let mut recovered_somewhere = false;
+        for &(lang, lang_text) in VERSIONS {
+            let json = fcs_ast_batch_at(tmp.path(), lang_text);
+            let fcs_diags = fcs_diagnostics(&json, source);
             let ours = parse_at(source, FileKind::Impl, lang);
-            assert!(
-                ours.errors.is_empty() && ours.warnings.is_empty(),
-                "{source:?} is lenient at {lang} (FCS gates it on {introduced}): {:?} {:?}",
-                ours.errors,
-                ours.warnings,
-            );
+            let our_diags = our_diagnostics(&ours);
+            if our_diags != fcs_diags {
+                failures.push(format!(
+                    "diagnostics diverge from FCS at {lang_text} for {source:?}\n  ours: \
+                     {our_diags:?}\n  fcs:  {fcs_diags:?}"
+                ));
+            }
+            if !ours.root.structurally_eq(&preview.root) {
+                failures.push(format!(
+                    "the {lang_text} tree of {source:?} is not the preview tree"
+                ));
+            }
+            if fcs_diags.is_empty() {
+                let fcs = normalised_ast::normalise_fcs_dump(&json);
+                let rust = normalised_ast::normalise_parse(&ours);
+                if rust != fcs {
+                    failures.push(format!(
+                        "AST divergence at {lang_text} for {source:?}\n  rust: {rust:?}\n  \
+                         fcs:  {fcs:?}"
+                    ));
+                }
+            } else {
+                recovered_somewhere = true;
+                let verdict = grade(&ours, &HashSet::new(), &json, source);
+                if verdict.relation == Relation::Divergent || verdict.compared == 0 {
+                    failures.push(format!(
+                        "recovered trees at {lang_text} for {source:?}: {} {}",
+                        verdict.token(),
+                        verdict.first_divergence.unwrap_or_default(),
+                    ));
+                }
+            }
+        }
+        if !recovered_somewhere {
+            failures.push(format!("FCS reports nothing for {source:?} at any version"));
         }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// `ExtendedStringInterpolation` (8.0), a `Reshape` gate we follow rather than
+/// keep the newer tree for: below 8.0 FCS's lexer reads a `$$"""` opener as a
+/// `$"""` one, single braces delimiting a fill and `{{` a literal brace, and
+/// reports FS1251 at the lexeme, which runs to the string's first fill or its
+/// end. So does ours, and at every version the diagnostics and the normalised
+/// trees must agree with FCS's.
+#[test]
+fn extended_interpolation_lexes_as_fcs_does_at_every_version() {
+    const EXTENDED: &[&str] = &[
+        "module M\nlet x = $$\"\"\"a{{1}}b\"\"\"\nlet g = 3\n",
+        "module M\nlet y = $$\"\"\"a{x}b{{2}}c\"\"\"\nlet g = 3\n",
+        "module M\nlet z = $$$\"\"\"{{{3}}} and {4}\"\"\"\nlet w = $\"\"\"p{5}q\"\"\"\n",
+        "module M\nlet b = $$\"\"\"{{1}}\"\"\".Length\nlet c = $$\"\"\"%d{{7}}\"\"\"\n",
+    ];
+    let mut failures = Vec::new();
+    for &source in EXTENDED {
+        let tmp = source_file(source, FileKind::Impl);
+        let mut gated = false;
+        for &(lang, lang_text) in VERSIONS {
+            let json = fcs_ast_batch_at(tmp.path(), lang_text);
+            let fcs_diags = fcs_diagnostics(&json, source);
+            gated |= !fcs_diags.is_empty();
+            let ours = parse_at(source, FileKind::Impl, lang);
+            let our_diags = our_diagnostics(&ours);
+            if our_diags != fcs_diags {
+                failures.push(format!(
+                    "diagnostics diverge from FCS at {lang_text} for {source:?}\n  ours: \
+                     {our_diags:?}\n  fcs:  {fcs_diags:?}"
+                ));
+            }
+            let fcs = normalised_ast::normalise_fcs_dump(&json);
+            let rust = normalised_ast::normalise_parse(&ours);
+            if rust != fcs {
+                failures.push(format!(
+                    "AST divergence at {lang_text} for {source:?}\n  rust: {rust:?}\n  fcs:  \
+                     {fcs:?}"
+                ));
+            }
+            if !ours.shape_depends_on_language_version {
+                failures.push(format!(
+                    "{source:?} holds a `$$\"\"\"` string, so its shape depends on the version"
+                ));
+            }
+        }
+        if !gated {
+            failures.push(format!("FCS reports nothing for {source:?} at any version"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Where FCS puts an indented `#nowarn`'s `DirectiveRange`, which its FS0236,
+/// FS3875, FS3353 and top-level-`#warnon` FS3350 report at. The compiler the
+/// feature table transcribes starts it after the spaces before the `#`
+/// (`WarnScopes.fs`, `parseDirective`); the oracle's older FCS starts it at the
+/// start of the line. We follow the compiler, so this pins the oracle's reading
+/// with ours, and fails once the oracle moves (then delete it, and indent a
+/// directive in `IMPL`).
+#[test]
+fn an_indented_directive_range_starts_at_its_hash() {
+    let source = "module M\nmodule N =\n    #nowarn \"41\" // why\n    let x = 1\n";
+    let line_start = source.find("    #nowarn").expect("the directive");
+    let hash = source.find('#').expect("the directive");
+    let end = source.find(" // why").expect("the comment") + " // why".len();
+    let message = "Directives inside modules are ignored".to_string();
+    let tmp = source_file(source, FileKind::Impl);
+    let json = fcs_ast_batch_at(tmp.path(), "9.0");
+    assert_eq!(
+        fcs_diagnostics(&json, source),
+        BTreeSet::from([(line_start, end, message.clone(), "Warning")]),
+    );
+    let ours = our_diagnostics(&parse_at(source, FileKind::Impl, LanguageVersion::V9_0));
+    assert_eq!(ours, BTreeSet::from([(hash, end, message, "Warning")]));
 }
 
 /// The modelled gates' diagnostics at `lang` for one file: the FS3350s naming a
-/// modelled feature, and the FS1153s on a `float32` literal (FCS reports
-/// FS1153 for other bad literals too).
+/// modelled feature, the FS1153s on a `float32` literal (FCS reports FS1153
+/// for other bad literals too), the FS0010 of a `_.` pattern, the FS0525 of a
+/// `for _ =` loop (FCS reports FS0525 for other loop patterns too), and the
+/// FS0203 of a warn directive's argument.
 /// Nullness is left out: below 9.0 FCS does not parse `string | null` as a
 /// nullness annotation at all (`docs/completed/ast-versioning-nullness-proof.md`).
+/// So are the warn-directive diagnostics reported at the directive's range
+/// (FS0236, and `ScopedNowarn`'s FS3350), which the oracle starts elsewhere
+/// for an indented directive ([`an_indented_directive_range_starts_at_its_hash`]).
 fn modelled_gate_diagnostics(
     diags: impl IntoIterator<Item = (std::ops::Range<usize>, String)>,
     source: &str,
@@ -490,9 +682,12 @@ fn modelled_gate_diagnostics(
     let feature_messages: Vec<String> = [
         LanguageFeature::AttributesToRightOfModuleKeyword,
         LanguageFeature::InterfacesWithAbstractStaticMembers,
+        LanguageFeature::AccessorFunctionShorthand,
         LanguageFeature::ConstraintIntersectionOnFlexibleTypes,
         LanguageFeature::WhileBang,
+        LanguageFeature::ParsedHashDirectiveArgumentNonQuotes,
         LanguageFeature::AllowTypedLetUseAndBang,
+        LanguageFeature::BetterAnonymousRecordParsing,
     ]
     .map(|f| f.not_available_message(lang))
     .to_vec();
@@ -503,11 +698,16 @@ fn modelled_gate_diagnostics(
             .get(span.clone())
             .is_some_and(|text| text.ends_with(['f', 'F']) && !text.contains(['x', 'X']))
     };
+    let text_is =
+        |span: &std::ops::Range<usize>, text: &str| source.get(span.clone()) == Some(text);
     diags
         .into_iter()
         .filter(|(span, message)| {
             feature_messages.contains(message)
                 || (message == INVALID_FLOAT && float32_literal(span))
+                || (message == UNEXPECTED_SYMBOL_DOT && text_is(span, "."))
+                || (message == FOR_LOOP_REQUIRES_SIMPLE_IDENTIFIER && text_is(span, "_"))
+                || message.starts_with("Invalid warning number '")
         })
         .map(|(span, message)| (span.start, span.end, message))
         .collect()

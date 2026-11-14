@@ -18,6 +18,7 @@ mod dispatch_coalescing;
 mod env_read_set_soundness;
 mod env_validation;
 mod fcs_bridge;
+mod fcs_dump_langversion_pin;
 mod fsharp_name_lexes_back;
 mod goto_source_fsharp_core;
 mod goto_source_sidecar;

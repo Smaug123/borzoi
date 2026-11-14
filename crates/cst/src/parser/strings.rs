@@ -150,15 +150,27 @@ impl<'src> Parser<'src> {
         );
         // Delimiter prefix length so the diagnostic span covers only the
         // opener: `$$"""` → n+3, `$"""` → 4, `$@"` / `@$"` → 3, `$"` → 2.
+        // A triple-quoted opener counts its `$`s, since below F# 8.0 a
+        // `$$"""` opener is lexed as one.
         let delim_len = if let Some(n) = extended_n {
             n + 3
         } else if inner_is_triple {
-            4
+            self.source[span.clone()]
+                .bytes()
+                .take_while(|&b| b == b'$')
+                .count()
+                + 3
         } else if inner_is_verbatim {
             3
         } else {
             2
         };
+        // Below F# 8.0 FCS's lexer reads a `$$"""` opener as a `$"""` one
+        // by a branch that makes no nesting check (`lex.fsl`), and ours lexes
+        // it as a triple-quoted opener whose text keeps its `$`s.
+        if extended_n.is_none() && delim_len > 4 {
+            return;
+        }
         let delim_span = span.start..span.start + delim_len;
         self.check_nested_string(inner_is_triple, delim_span);
     }

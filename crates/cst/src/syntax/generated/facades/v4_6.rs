@@ -5,11 +5,11 @@
 //! Generated from `crates/cst/facades/v4_6.lock` and the union's lock.
 //!
 //! The **F# 4.6** typed facade (`docs/ast-versioning-plan.md` D4): every node
-//! type and enum of the F# 4.6 / F# 4.7 / F# 5.0 / F# 6.0 / F# 7.0 surface, each a newtype over the union's, with
+//! type and enum of the F# 4.6 / F# 4.7 surface, each a newtype over the union's, with
 //! accessors that re-cast the union's results. A node outside the surface
 //! reads as an absent child. Read a parse through it with
 //! [`Parse::view`](crate::parser::Parse::view).
-//! `v4_7`, `v5`, `v6`, `v7` have the same surface, so they re-export this module's types.
+//! `v4_7` has the same surface, so it re-exports this module's types.
 
 use crate::language_version::LanguageVersion;
 use crate::syntax::union as u;
@@ -48,7 +48,6 @@ crate::syntax::facade_support::facade_node!(DoBangExpr: DO_BANG_EXPR);
 crate::syntax::facade_support::facade_node!(DoExpr: DO_EXPR);
 crate::syntax::facade_support::facade_node!(DotGetExpr: DOT_GET_EXPR);
 crate::syntax::facade_support::facade_node!(DotIndexedGetExpr: DOT_INDEXED_GET_EXPR);
-crate::syntax::facade_support::facade_node!(DotLambdaExpr: DOT_LAMBDA_EXPR);
 crate::syntax::facade_support::facade_node!(DotMissingExpr: DOT_MISSING_EXPR);
 crate::syntax::facade_support::facade_node!(DowncastExpr: DOWNCAST_EXPR);
 crate::syntax::facade_support::facade_node!(DynamicExpr: DYNAMIC_EXPR);
@@ -72,7 +71,6 @@ crate::syntax::facade_support::facade_node!(IdentExpr: IDENT_EXPR);
 crate::syntax::facade_support::facade_node!(IfThenElseExpr: IF_THEN_ELSE_EXPR);
 crate::syntax::facade_support::facade_node!(ImplFile: IMPL_FILE);
 crate::syntax::facade_support::facade_node!(ImplicitCtor: IMPLICIT_CTOR);
-crate::syntax::facade_support::facade_node!(IndexFromEndExpr: INDEX_FROM_END_EXPR);
 crate::syntax::facade_support::facade_node!(IndexRangeExpr: INDEX_RANGE_EXPR);
 crate::syntax::facade_support::facade_node!(InferredDowncastExpr: INFERRED_DOWNCAST_EXPR);
 crate::syntax::facade_support::facade_node!(InferredUpcastExpr: INFERRED_UPCAST_EXPR);
@@ -80,7 +78,6 @@ crate::syntax::facade_support::facade_node!(InheritMember: INHERIT_MEMBER);
 crate::syntax::facade_support::facade_node!(InlineIlExpr: INLINE_IL_EXPR);
 crate::syntax::facade_support::facade_node!(InlineIlRepr: INLINE_IL_REPR);
 crate::syntax::facade_support::facade_node!(InterfaceImpl: INTERFACE_IMPL);
-crate::syntax::facade_support::facade_node!(InterpStringExpr: INTERP_STRING_EXPR);
 crate::syntax::facade_support::facade_node!(IsInstPat: IS_INST_PAT);
 crate::syntax::facade_support::facade_node!(JoinInExpr: JOIN_IN_EXPR);
 crate::syntax::facade_support::facade_node!(LazyExpr: LAZY_EXPR);
@@ -196,7 +193,6 @@ pub enum Expr {
     DoBang(DoBangExpr),
     DotGet(DotGetExpr),
     DotIndexedGet(DotIndexedGetExpr),
-    DotLambda(DotLambdaExpr),
     DotMissing(DotMissingExpr),
     Downcast(DowncastExpr),
     Dynamic(DynamicExpr),
@@ -206,12 +202,10 @@ pub enum Expr {
     Fun(FunExpr),
     Ident(IdentExpr),
     IfThenElse(IfThenElseExpr),
-    IndexFromEnd(IndexFromEndExpr),
     IndexRange(IndexRangeExpr),
     InferredDowncast(InferredDowncastExpr),
     InferredUpcast(InferredUpcastExpr),
     InlineIl(InlineIlExpr),
-    InterpString(InterpStringExpr),
     JoinIn(JoinInExpr),
     Lazy(LazyExpr),
     LetOrUse(LetOrUseExpr),
@@ -259,7 +253,6 @@ impl AstNode for Expr {
                 | SyntaxKind::DO_BANG_EXPR
                 | SyntaxKind::DOT_GET_EXPR
                 | SyntaxKind::DOT_INDEXED_GET_EXPR
-                | SyntaxKind::DOT_LAMBDA_EXPR
                 | SyntaxKind::DOT_MISSING_EXPR
                 | SyntaxKind::DOWNCAST_EXPR
                 | SyntaxKind::DYNAMIC_EXPR
@@ -269,12 +262,10 @@ impl AstNode for Expr {
                 | SyntaxKind::FUN_EXPR
                 | SyntaxKind::IDENT_EXPR
                 | SyntaxKind::IF_THEN_ELSE_EXPR
-                | SyntaxKind::INDEX_FROM_END_EXPR
                 | SyntaxKind::INDEX_RANGE_EXPR
                 | SyntaxKind::INFERRED_DOWNCAST_EXPR
                 | SyntaxKind::INFERRED_UPCAST_EXPR
                 | SyntaxKind::INLINE_IL_EXPR
-                | SyntaxKind::INTERP_STRING_EXPR
                 | SyntaxKind::JOIN_IN_EXPR
                 | SyntaxKind::LAZY_EXPR
                 | SyntaxKind::LET_OR_USE_EXPR
@@ -323,7 +314,6 @@ impl AstNode for Expr {
             SyntaxKind::DOT_INDEXED_GET_EXPR => {
                 DotIndexedGetExpr::cast(node).map(Expr::DotIndexedGet)
             }
-            SyntaxKind::DOT_LAMBDA_EXPR => DotLambdaExpr::cast(node).map(Expr::DotLambda),
             SyntaxKind::DOT_MISSING_EXPR => DotMissingExpr::cast(node).map(Expr::DotMissing),
             SyntaxKind::DOWNCAST_EXPR => DowncastExpr::cast(node).map(Expr::Downcast),
             SyntaxKind::DYNAMIC_EXPR => DynamicExpr::cast(node).map(Expr::Dynamic),
@@ -333,7 +323,6 @@ impl AstNode for Expr {
             SyntaxKind::FUN_EXPR => FunExpr::cast(node).map(Expr::Fun),
             SyntaxKind::IDENT_EXPR => IdentExpr::cast(node).map(Expr::Ident),
             SyntaxKind::IF_THEN_ELSE_EXPR => IfThenElseExpr::cast(node).map(Expr::IfThenElse),
-            SyntaxKind::INDEX_FROM_END_EXPR => IndexFromEndExpr::cast(node).map(Expr::IndexFromEnd),
             SyntaxKind::INDEX_RANGE_EXPR => IndexRangeExpr::cast(node).map(Expr::IndexRange),
             SyntaxKind::INFERRED_DOWNCAST_EXPR => {
                 InferredDowncastExpr::cast(node).map(Expr::InferredDowncast)
@@ -342,7 +331,6 @@ impl AstNode for Expr {
                 InferredUpcastExpr::cast(node).map(Expr::InferredUpcast)
             }
             SyntaxKind::INLINE_IL_EXPR => InlineIlExpr::cast(node).map(Expr::InlineIl),
-            SyntaxKind::INTERP_STRING_EXPR => InterpStringExpr::cast(node).map(Expr::InterpString),
             SyntaxKind::JOIN_IN_EXPR => JoinInExpr::cast(node).map(Expr::JoinIn),
             SyntaxKind::LAZY_EXPR => LazyExpr::cast(node).map(Expr::Lazy),
             SyntaxKind::LET_OR_USE_EXPR => LetOrUseExpr::cast(node).map(Expr::LetOrUse),
@@ -393,7 +381,6 @@ impl AstNode for Expr {
             Expr::DoBang(n) => n.syntax(),
             Expr::DotGet(n) => n.syntax(),
             Expr::DotIndexedGet(n) => n.syntax(),
-            Expr::DotLambda(n) => n.syntax(),
             Expr::DotMissing(n) => n.syntax(),
             Expr::Downcast(n) => n.syntax(),
             Expr::Dynamic(n) => n.syntax(),
@@ -403,12 +390,10 @@ impl AstNode for Expr {
             Expr::Fun(n) => n.syntax(),
             Expr::Ident(n) => n.syntax(),
             Expr::IfThenElse(n) => n.syntax(),
-            Expr::IndexFromEnd(n) => n.syntax(),
             Expr::IndexRange(n) => n.syntax(),
             Expr::InferredDowncast(n) => n.syntax(),
             Expr::InferredUpcast(n) => n.syntax(),
             Expr::InlineIl(n) => n.syntax(),
-            Expr::InterpString(n) => n.syntax(),
             Expr::JoinIn(n) => n.syntax(),
             Expr::Lazy(n) => n.syntax(),
             Expr::LetOrUse(n) => n.syntax(),
@@ -458,7 +443,6 @@ impl Expr {
             Expr::DoBang(n) => u::Expr::DoBang(n.to_union()),
             Expr::DotGet(n) => u::Expr::DotGet(n.to_union()),
             Expr::DotIndexedGet(n) => u::Expr::DotIndexedGet(n.to_union()),
-            Expr::DotLambda(n) => u::Expr::DotLambda(n.to_union()),
             Expr::DotMissing(n) => u::Expr::DotMissing(n.to_union()),
             Expr::Downcast(n) => u::Expr::Downcast(n.to_union()),
             Expr::Dynamic(n) => u::Expr::Dynamic(n.to_union()),
@@ -468,12 +452,10 @@ impl Expr {
             Expr::Fun(n) => u::Expr::Fun(n.to_union()),
             Expr::Ident(n) => u::Expr::Ident(n.to_union()),
             Expr::IfThenElse(n) => u::Expr::IfThenElse(n.to_union()),
-            Expr::IndexFromEnd(n) => u::Expr::IndexFromEnd(n.to_union()),
             Expr::IndexRange(n) => u::Expr::IndexRange(n.to_union()),
             Expr::InferredDowncast(n) => u::Expr::InferredDowncast(n.to_union()),
             Expr::InferredUpcast(n) => u::Expr::InferredUpcast(n.to_union()),
             Expr::InlineIl(n) => u::Expr::InlineIl(n.to_union()),
-            Expr::InterpString(n) => u::Expr::InterpString(n.to_union()),
             Expr::JoinIn(n) => u::Expr::JoinIn(n.to_union()),
             Expr::Lazy(n) => u::Expr::Lazy(n.to_union()),
             Expr::LetOrUse(n) => u::Expr::LetOrUse(n.to_union()),
@@ -1434,7 +1416,6 @@ impl Expr {
             u::Expr::DoBang(n) => Expr::DoBang(DoBangExpr(n)),
             u::Expr::DotGet(n) => Expr::DotGet(DotGetExpr(n)),
             u::Expr::DotIndexedGet(n) => Expr::DotIndexedGet(DotIndexedGetExpr(n)),
-            u::Expr::DotLambda(n) => Expr::DotLambda(DotLambdaExpr(n)),
             u::Expr::DotMissing(n) => Expr::DotMissing(DotMissingExpr(n)),
             u::Expr::Downcast(n) => Expr::Downcast(DowncastExpr(n)),
             u::Expr::Dynamic(n) => Expr::Dynamic(DynamicExpr(n)),
@@ -1444,12 +1425,10 @@ impl Expr {
             u::Expr::Fun(n) => Expr::Fun(FunExpr(n)),
             u::Expr::Ident(n) => Expr::Ident(IdentExpr(n)),
             u::Expr::IfThenElse(n) => Expr::IfThenElse(IfThenElseExpr(n)),
-            u::Expr::IndexFromEnd(n) => Expr::IndexFromEnd(IndexFromEndExpr(n)),
             u::Expr::IndexRange(n) => Expr::IndexRange(IndexRangeExpr(n)),
             u::Expr::InferredDowncast(n) => Expr::InferredDowncast(InferredDowncastExpr(n)),
             u::Expr::InferredUpcast(n) => Expr::InferredUpcast(InferredUpcastExpr(n)),
             u::Expr::InlineIl(n) => Expr::InlineIl(InlineIlExpr(n)),
-            u::Expr::InterpString(n) => Expr::InterpString(InterpStringExpr(n)),
             u::Expr::JoinIn(n) => Expr::JoinIn(JoinInExpr(n)),
             u::Expr::Lazy(n) => Expr::Lazy(LazyExpr(n)),
             u::Expr::LetOrUse(n) => Expr::LetOrUse(LetOrUseExpr(n)),
@@ -1500,18 +1479,6 @@ impl ExternCTypeSuffix {
             u::ExternCTypeSuffix::Byref(x0) => ExternCTypeSuffix::Byref(x0),
             u::ExternCTypeSuffix::Pointer(x0) => ExternCTypeSuffix::Pointer(x0),
         }
-    }
-}
-
-impl InterpStringPart {
-    pub(crate) fn from_union(value: u::InterpStringPart) -> Option<Self> {
-        Some(match value {
-            u::InterpStringPart::Fill { expr, qualifier } => InterpStringPart::Fill {
-                expr: Expr::from_union(expr)?,
-                qualifier,
-            },
-            u::InterpStringPart::Fragment(x0) => InterpStringPart::Fragment(x0),
-        })
     }
 }
 
@@ -2058,12 +2025,6 @@ impl DotIndexedGetExpr {
     }
 }
 
-impl DotLambdaExpr {
-    pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().and_then(Expr::from_union)
-    }
-}
-
 impl DotMissingExpr {
     pub fn receiver(&self) -> Option<Expr> {
         self.0.receiver().and_then(Expr::from_union)
@@ -2316,12 +2277,6 @@ impl ImplicitCtor {
     }
 }
 
-impl IndexFromEndExpr {
-    pub fn expr(&self) -> Option<Expr> {
-        self.0.expr().and_then(Expr::from_union)
-    }
-}
-
 impl IndexRangeExpr {
     pub fn lower(&self) -> Option<Expr> {
         self.0.lower().and_then(Expr::from_union)
@@ -2376,16 +2331,6 @@ impl InterfaceImpl {
     }
     pub fn members(&self) -> impl Iterator<Item = MemberDefn> + '_ {
         self.0.members().map(MemberDefn::from_union)
-    }
-}
-
-impl InterpStringExpr {
-    pub fn parts(&self) -> Vec<InterpStringPart> {
-        self.0
-            .parts()
-            .into_iter()
-            .filter_map(InterpStringPart::from_union)
-            .collect()
     }
 }
 
@@ -3393,11 +3338,5 @@ impl YieldExpr {
 impl crate::syntax::view::Sealed for ParsedInput {}
 
 impl crate::syntax::Facade for ParsedInput {
-    const VERSIONS: &'static [LanguageVersion] = &[
-        LanguageVersion::V4_6,
-        LanguageVersion::V4_7,
-        LanguageVersion::V5_0,
-        LanguageVersion::V6_0,
-        LanguageVersion::V7_0,
-    ];
+    const VERSIONS: &'static [LanguageVersion] = &[LanguageVersion::V4_6, LanguageVersion::V4_7];
 }
