@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
+use borzoi_cst::language_version::LanguageVersion;
 use serde_json::Value;
 
 use crate::common::{
@@ -173,5 +174,47 @@ fn every_langversion_switch_comes_from_the_one_builder() {
         "`--langversion:` switches are built at lines {builders:?} of {}; build every one \
          through `pinnedLangVersionArgs`",
         program.display()
+    );
+}
+
+/// `LanguageVersion::SUPPORTED_MIN` is the floor of the oracle's FCS: checked
+/// as an unmodified compiler checks (`file-batch`'s `supportCheck`), every
+/// version below it, and none from it up, is refused as out of support.
+///
+/// cst's `language_features` holds the constant to the `fsharp-src` compiler's
+/// source; this holds it to the FCS that runs, so an SDK or package bump that
+/// moves the floor fails here.
+#[test]
+fn the_support_floor_is_fcs_own() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut child = fcs_dump_batch_child("file-batch");
+    let mut refused = Vec::new();
+    for (i, lang) in LanguageVersion::ALL.into_iter().enumerate() {
+        // A file per version: the checker caches by file and options.
+        let file = dir.path().join(format!("V{i}.fs"));
+        std::fs::write(&file, "module M\nlet x = 1\n").expect("write fixture");
+        let request = serde_json::json!({
+            "kind": "types",
+            "path": file.display().to_string(),
+            "langversion": lang.to_string(),
+            "supportCheck": true,
+        })
+        .to_string();
+        let codes = file_codes(&parse("file-batch", &child.request(&request)));
+        if codes.contains(&OUT_OF_SUPPORT) {
+            refused.push(lang);
+        }
+    }
+    let below: Vec<LanguageVersion> = LanguageVersion::ALL
+        .into_iter()
+        .filter(|&v| v < LanguageVersion::SUPPORTED_MIN)
+        .collect();
+    assert_eq!(
+        refused,
+        below,
+        "FCS refuses (FS3880) exactly the versions on the left, and \
+         `LanguageVersion::SUPPORTED_MIN` ({}) says the right: move the constant to FCS's floor \
+         (the lowest version it checks without SKIP_VERSION_SUPPORTED_CHECK)",
+        LanguageVersion::SUPPORTED_MIN,
     );
 }

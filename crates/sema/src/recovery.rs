@@ -93,18 +93,24 @@ impl SyntaxRecovery {
     ///
     /// A guess landing on the wrong side of a version threshold can turn a
     /// rejected file into a clean-looking one, or change its tree: the
-    /// nested-type FS0058 fires at F# 10 and is silent below, a nullness
-    /// annotation is a recovery below F# 9, and strict indentation reshapes
-    /// offside code across F# 8. Reading the guess's empty error list as proof
-    /// would license exactly the commitment this type exists to withhold.
+    /// nested-type FS0058 fires at F# 10 and is silent below, and a nullness
+    /// annotation is a recovery below F# 9. Reading the guess's empty error
+    /// list as proof would license exactly the commitment this type exists to
+    /// withhold.
     ///
     /// So the source is asked whether its tree and its recovery diagnostics
     /// depend on the version at all
     /// ([`diagnostics_are_version_invariant`](borzoi_cst::parser::diagnostics_are_version_invariant),
-    /// which re-parses across the version ladder and is why this is not the
-    /// default constructor). The legality errors are no part of that question,
-    /// as [`of`](Self::of) reads none: `#elif` is an error at F# 10 and silent
-    /// at preview, over the same tree either way. Few files depend on the
+    /// which re-parses across the versions a supported compiler checks at and
+    /// is why this is not the default constructor). Those start at
+    /// [`LanguageVersion::SUPPORTED_MIN`](borzoi_cst::language_version::LanguageVersion::SUPPORTED_MIN):
+    /// FCS refuses anything older unless its process opts out of the check, so
+    /// a threshold below it (`member _.M`'s, F# 4.7) is no real build's and
+    /// moves no guess. A guess below the floor (`parse.lang`) is compared as
+    /// well, since the reading is the one taken there. The legality errors are
+    /// no part of that question, as [`of`](Self::of) reads none: `#elif` is an
+    /// error at F# 10 and silent at preview, over the same tree either way.
+    /// Few files depend on the
     /// version otherwise, which is what makes this a per-file question rather
     /// than a blanket [`Unretained`](Self::Unretained) for every guessed
     /// version: an orphan buffer is always a guess, so a blanket answer would
@@ -115,7 +121,9 @@ impl SyntaxRecovery {
         symbols: &HashSet<String>,
         file_kind: FileKind,
     ) -> Self {
-        if borzoi_cst::parser::diagnostics_are_version_invariant(source, symbols, file_kind) {
+        if borzoi_cst::parser::diagnostics_are_version_invariant(
+            source, symbols, file_kind, parse.lang,
+        ) {
             SyntaxRecovery::of(parse)
         } else {
             SyntaxRecovery::Unretained

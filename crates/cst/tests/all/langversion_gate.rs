@@ -202,12 +202,30 @@ mod diagnostics_version_dependence {
     use borzoi_cst::parser::{DiagnosticClass, FileKind, ParseOptions, parse_with_options};
     use std::collections::HashSet;
 
-    /// The verdict for a source, under the harness's fixed symbols/file kind.
+    /// The verdict a guess at preview reads (an orphan buffer's, so the
+    /// supported range), under the harness's fixed symbols/file kind.
     fn version_dependent(source: &str) -> bool {
+        dependent_at_a_guess_of(source, LanguageVersion::Preview)
+    }
+
+    /// The verdict a parse at `guess` reads.
+    fn dependent_at_a_guess_of(source: &str, guess: LanguageVersion) -> bool {
         !borzoi_cst::parser::diagnostics_are_version_invariant(
             source,
             &HashSet::new(),
             FileKind::Impl,
+            guess,
+        )
+    }
+
+    /// The verdict over the whole ladder, the support floor's lower side
+    /// included: the same comparison over a range with every shape band in it.
+    fn dependent_on_the_ladder(source: &str) -> bool {
+        !borzoi_cst::parser::diagnostics_are_invariant_over(
+            source,
+            &HashSet::new(),
+            FileKind::Impl,
+            LanguageVersion::MIN..=LanguageVersion::MAX,
         )
     }
 
@@ -273,7 +291,9 @@ mod diagnostics_version_dependence {
     /// A tree that moves with the version while the diagnostics do not: a
     /// closer dedented to its `let`'s column ends the `let` at the closer below
     /// F# 6 and at the next token from F# 6, silently on both sides. Comparing
-    /// diagnostics alone would call it invariant.
+    /// diagnostics alone would call it invariant. F# 6 lies below the support
+    /// floor, so a guessed version, which need only be right from the floor
+    /// up, reads the file as invariant.
     #[test]
     fn a_tree_that_moves_silently_is_version_dependent() {
         let source = "let x = (\n    1\n)\nlet y = 2\n";
@@ -288,7 +308,8 @@ mod diagnostics_version_dependence {
             (&hi.errors, &hi.warnings),
             "and the diagnostics must not"
         );
-        assert!(version_dependent(source));
+        assert!(dependent_on_the_ladder(source));
+        assert!(!version_dependent(source));
     }
 
     /// A diagnostic that is *suppressed* at the parsed version but appears at
@@ -312,7 +333,9 @@ mod diagnostics_version_dependence {
 
     /// A depth-limited parse collapses its diagnostics to one error — whose
     /// *span* still moves when version-sensitive layout changes where the breach
-    /// happens. The early return cannot claim invariance either.
+    /// happens. The early return cannot claim invariance either. The layout
+    /// that moves it changes below the support floor, so the ladder is the
+    /// range that holds it.
     #[test]
     fn a_depth_limited_parse_is_not_assumed_invariant() {
         let source = format!("module M\nif true then\nlet x =\n{}", "(".repeat(600));
@@ -322,7 +345,7 @@ mod diagnostics_version_dependence {
             lo.errors, hi.errors,
             "the depth error must actually move across this boundary"
         );
-        assert!(version_dependent(&source));
+        assert!(dependent_on_the_ladder(&source));
     }
 
     /// The common case, and the reason this is a flag rather than a blanket
@@ -361,12 +384,12 @@ mod diagnostics_version_dependence {
     /// A `_.`-rooted pattern, the member self-id `member _.M` above all, is a
     /// parse error below F# 4.7, from which FCS recovers to a different tree
     /// (`SingleUnderscorePattern`, a `Reshape` gate). Its error is a
-    /// `Recovery` one, so every file holding a `member _.M` is
-    /// version-dependent, and a guessed language version retains no
-    /// diagnostics for it: the LSP drops what it reads off a clean parse there
-    /// (hover's binder types in an orphan buffer).
+    /// `Recovery` one, so such a file depends on the version across the whole
+    /// ladder. F# 4.7 lies below the support floor, though, so a guessed
+    /// version keeps its reading: the LSP reads a clean parse of an orphan
+    /// buffer holding a `member _.M` as clean.
     #[test]
-    fn an_underscore_rooted_pattern_is_version_dependent() {
+    fn an_underscore_rooted_pattern_is_version_dependent_only_below_the_floor() {
         for source in [
             "module M\ntype T() =\n    member _.M = 1\n",
             "module M\nlet f x =\n    match x with\n    | _.M -> 1\n    | _ -> 2\n",
@@ -379,9 +402,36 @@ mod diagnostics_version_dependence {
                 lo.errors
             );
             assert!(
-                version_dependent(source),
-                "{source:?} must be version-dependent"
+                dependent_on_the_ladder(source),
+                "{source:?} must be version-dependent on the ladder"
+            );
+            assert!(
+                !version_dependent(source),
+                "{source:?} must be invariant from the support floor up"
             );
         }
+    }
+
+    /// A guess below the floor stretches the range down to it. An undented
+    /// body is a warning below F# 8 and an error from it (`StrictIndentation`),
+    /// so a parse at an untrusted pin of 7.0 reads differently from every
+    /// supported version's: the reading taken at 7.0 is no real build's, and
+    /// the verdict must withhold it, though the supported versions agree among
+    /// themselves.
+    #[test]
+    fn a_guess_below_the_floor_is_compared_too() {
+        let source = "module M\nlet f (x: 'a -> 'a) =\nx\n";
+        let below = parse_at(source, LanguageVersion::V7_0);
+        let floor = parse_at(source, LanguageVersion::SUPPORTED_MIN);
+        assert_ne!(
+            below.recovery_errors().collect::<Vec<_>>(),
+            floor.recovery_errors().collect::<Vec<_>>(),
+            "the gate must actually move a recovery error across the floor"
+        );
+        assert!(!version_dependent(source), "invariant from the floor up");
+        assert!(
+            dependent_at_a_guess_of(source, LanguageVersion::V7_0),
+            "but not from a guess of 7.0 up"
+        );
     }
 }

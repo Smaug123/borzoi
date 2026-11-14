@@ -4651,7 +4651,8 @@ mod tests {
     /// otherwise. The file must read `Unretained` instead. A legality error is
     /// different: `#elif` is an error below F# 11 over the tree FCS builds at
     /// every version, so a guess on either side reads that tree, and the file
-    /// keeps its reading.
+    /// keeps its reading. So does a recovery below the support floor (F# 8.0),
+    /// since no real build checks there, unless the guess itself is below it.
     #[test]
     fn a_version_gated_recovery_is_unretained_under_a_guessed_version() {
         use borzoi_cst::language_version::LanguageVersion;
@@ -4716,6 +4717,36 @@ mod tests {
             guess("module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n"),
             SyntaxRecovery::Reported([].into()),
             "a legality error leaves the reading as it is"
+        );
+        // A recovery whose threshold lies below the support floor moves no
+        // guess: `member _.M` is a recovery below F# 4.7, which no supported
+        // compiler checks at.
+        let self_id = "module M\ntype T() =\n    member _.M = 1\n";
+        assert!(
+            parse(self_id, LanguageVersion::MIN)
+                .errors
+                .iter()
+                .any(|e| e.is_recovery()),
+            "a recovery below the floor"
+        );
+        assert_eq!(
+            guess(self_id),
+            SyntaxRecovery::Reported([].into()),
+            "a recovery below the support floor leaves the reading as it is"
+        );
+        // But a guess below the floor is itself compared: an undented body
+        // reads differently at an untrusted pin of 7.0 than at any supported
+        // version, so the reading taken at 7.0 is withheld.
+        let undented = "module M\nlet f (x: 'a -> 'a) =\nx\n";
+        assert_eq!(
+            SyntaxRecovery::of_guessed_version(
+                &parse(undented, LanguageVersion::V7_0),
+                undented,
+                &HashSet::new(),
+                FileKind::Impl,
+            ),
+            SyntaxRecovery::Unretained,
+            "a guess below the floor proves nothing about the supported versions"
         );
         // The contrast: ordinary source is version-invariant, so a guess is
         // still proof and the feature stays on for it.

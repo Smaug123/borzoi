@@ -413,22 +413,55 @@ parses to the tree it parses to at the feature's version, with the same
 `Reshape` or `Severity` row's fixture moves across its version and never
 reports a `Legality` diagnostic naming its feature.
 
-### D10. Version invariance compares Recovery only
+### D10. Version invariance compares Recovery only, from the support floor up
 
-`SyntaxRecovery::of_guessed_version` (sema) keeps its full `[MIN, MAX]` range,
-and `SyntaxRecovery` reads only `Recovery` errors.
-`diagnostics_are_version_invariant` compares `Recovery` diagnostics at the two
-ends of the ladder and the tree: an unflagged
-`shape_depends_on_language_version` proves the tree the same everywhere, and a
-flagged one is compared at both ends and at every shape band between them. So a
-faithful legality gate (`#elif`, `_.M`, interpolated strings, `>|}`) does not
-make every file using the construct version-dependent. A `Reshape` gate
-(nullness below 9.0; `_.` patterns and `for _ =`, where FCS raises a parse
-error and recovers; `$$"""`, which FCS's lexer reads differently) is
-`Recovery` and stays version-dependent: every file holding a `member _.M` is
-one, so a guessed version retains no diagnostics for it. So does a tree the
-lex-filter reshapes with no diagnostic moving (a closer dedented to its
-`let`'s column, across F# 6).
+`SyntaxRecovery` reads only `Recovery` errors, and
+`SyntaxRecovery::of_guessed_version` (sema) retains a reading taken at a
+guessed version exactly when it is invariant across every version an
+unmodified, supported compiler checks at, `[SUPPORTED_MIN, MAX]`, and the
+guess itself: a guess below the floor (an untrusted pin to 7.0) stretches the
+range down to it, since the reading is the one taken there. An explicit
+version (a project's trusted `LangVersion`, a facade) is no guess and is
+unaffected.
+
+`LanguageVersion::SUPPORTED_MIN` (8.0) is FCS's support floor: below it
+`LanguageVersion.IsVersionSupported` refuses the version (FS3880) and FCS
+checks at its default instead, unless the process sets
+`SKIP_VERSION_SUPPORTED_CHECK`. It is a named constant, not read off the
+feature table, since the floor is support policy rather than any feature's
+version. Two tests pin it: cst's `language_features` reads it from the
+`fsharp-src` compiler's `IsVersionSupported`, and the `borzoi` crate's
+`fcs_dump_langversion_pin::the_support_floor_is_fcs_own` asks the oracle's FCS,
+checking without the variable (`file-batch`'s `supportCheck`), which versions it
+refuses. A compiler bump that moves the floor fails both until the constant
+moves.
+
+`diagnostics_are_version_invariant(…, guess)` is
+`diagnostics_are_invariant_over` that range. It compares `Recovery` diagnostics at the range's two ends, and the
+tree: an unflagged `shape_depends_on_language_version` proves the tree the
+same everywhere, and a flagged one is compared at both ends and at every shape
+band between them inside the range. Today there is no such band: every gate
+that shapes the token stream is at or below 8.0. The comparison is the same
+over any range, and the tests run it over the whole ladder too
+(`MIN..=MAX`), where the shape bands are, so the mechanism stays exercised.
+
+So a faithful legality gate (`#elif`, `_.M` lambdas, interpolated strings,
+`>|}`) does not make every file using the construct version-dependent, and
+neither does a
+`Reshape` or `Severity` gate below the floor: `_.` patterns (every
+`member _.M`) and `for _ =` at 4.7, the dotless `float32` literal at 5.0, a
+closer dedented to its `let`'s column across F# 6, and the 8.0 lexer and
+lex-filter changes, which every supported version has. The gates inside the
+range still do: nullness below 9.0, the `#nowarn` argument and scoping
+changes at 9.0 and 10.0, and the nested-type FS0058 at 10.0.
+
+The accepted boundary: a file outside any project on an out-of-support SDK,
+whose compiler checks below 8.0, may be given diagnostics that compiler would
+not produce, such as a clean reading of a `member _.M` its F# 4.6 rejects. The
+guessed version for such a file is already 8.0 or above, so the guess was
+wrong for it anyway. The untrusted-provenance project fold's shape gate
+(`crates/lsp/src/semantic.rs`) is a different decision: it refuses a fold
+rather than retaining a reading, and still compares every shape band.
 
 Two checks hold this:
 
@@ -453,11 +486,14 @@ Two checks hold this:
   moved tree, a moved `Recovery` diagnostic, a moved `Legality` diagnostic
   only, or no change, and every file that moves pinned in
   `tests/manifests/version_dependence_census.txt`. On the pinned corpus
-  691 files are version-dependent and 274 move only in `Legality`
-  diagnostics, so a guessed version keeps their reading. The census also
-  asserts that two versions agreeing on every `Recovery`-class feature parse
-  every file identically, and that `diagnostics_are_version_invariant` agrees with the
-  verdict read off all ten versions.
+  691 files are version-dependent somewhere on the ladder, only 143 of them
+  from the support floor up (the manifest's `(supported-from)` line), and 274
+  move only in `Legality` diagnostics; a guessed version keeps the reading of
+  all but the 143. The census also asserts that two versions agreeing on every
+  `Recovery`-class feature parse every file identically, and that
+  `diagnostics_are_invariant_over` agrees with the verdict read off all ten
+  versions, over the whole ladder and, as `diagnostics_are_version_invariant`,
+  over the columns from the floor up.
 
 ### D11. Feature flags and the remaining issue decisions
 
@@ -639,6 +675,11 @@ diagnostic for its feature" rather than "under a `Legality` one".
   `tools/ci/facade-lock-check.sh` in CI; the synthetic-feature test; node and
   dispatch-enum re-casts taken to be fallible, so a facade's code is a
   function of its own lock.
+- **The guessed-version floor** (D10): `LanguageVersion::SUPPORTED_MIN`,
+  pinned to the compiler source and to the oracle's FCS (`file-batch`'s
+  `supportCheck`); `diagnostics_are_invariant_over`, and
+  `diagnostics_are_version_invariant` over the supported range and the guess.
+  Every `tools/fcs-dump` oracle checks at its pin below 8.0 (#703).
 
 ## PR sequence
 
@@ -674,7 +715,8 @@ Everything in PR 8 above. Beyond them:
   `SingleUnderscorePattern`'s parse error; once the table transcribes a
   compiler with it, the row's `fcs_sites` empties, `language_features` says to
   make it a `check` row, and every `member _.M` file stops being
-  version-dependent.
+  version-dependent below the support floor too (from the floor up it
+  is not, D10).
 - **`display_name` is FSComp.txt's text as FCS returns it**: the quoted text
   after `String.Format` with no arguments, which is what FCS's resource
   generator applies (so `builder {{ }}` reads `builder { }`). For the gated

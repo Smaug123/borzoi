@@ -256,7 +256,8 @@ let private langVersionEnv () : string option =
 /// a project check's script resolution fails outright. An oracle must check at
 /// the version it was asked for, so a pin sets the variable. FCS reads it on
 /// every options parse, and an oracle process only ever checks at versions it
-/// was asked for, so leaving it set for the rest of the process is harmless.
+/// was asked for, so leaving it set for the rest of the process is harmless
+/// (`file-batch`'s `supportCheck` withdraws it for one request).
 let private pinnedLangVersionArgs (requested: string option) : string[] =
     match requested |> Option.map (fun s -> s.Trim()) with
     | Some s when s <> "" ->
@@ -7443,6 +7444,29 @@ let private errorRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnos
     |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
     |> Array.map (fun d -> {| Line = d.StartLine; Code = d.ErrorNumber; Message = d.Message |})
 
+/// The `--langversion` switch a `file-batch` request asks for
+/// ([`pinnedLangVersionArgs`]), unless the request sets `supportCheck`: then
+/// FCS's own refusal of an out-of-support version is restored for it, as an
+/// unmodified compiler runs it. `checker` keys its caches by the project
+/// options, which `supportCheck` leaves alone, so a request in the other mode
+/// than the last (`supportChecked`) drops them first.
+let private fileBatchLangVersionArgs
+    (checker: FSharpChecker)
+    (supportChecked: bool ref)
+    (root: JsonElement)
+    : string[] =
+    let args = pinnedLangVersionArgs (requestLangVersion root)
+    let supportCheck =
+        match root.TryGetProperty("supportCheck") with
+        | true, v -> v.ValueKind = JsonValueKind.True
+        | _ -> false
+    if supportCheck then
+        Environment.SetEnvironmentVariable("SKIP_VERSION_SUPPORTED_CHECK", null)
+    if supportCheck <> supportChecked.Value then
+        checker.InvalidateAll()
+        supportChecked.Value <- supportCheck
+    args
+
 /// Resident, multi-projection single-file oracle: the amortised-startup engine
 /// behind `sema`'s per-case differential loops (`resolve_diff`, `infer_*_diff`,
 /// `attr_resolution_diff`, `overloads_oracle`, …). Each of those otherwise spawns
@@ -7453,8 +7477,11 @@ let private errorRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnos
 /// fixture references and to fan several projections through one warm checker.
 ///
 /// Protocol: one JSON request per stdin line,
-/// `{ "kind": <projection>, "path": <abs .fs>, "refs": [<dll>…], "langversion": <token>? }`
-/// (`langversion` optional: the `<LangVersion>` to check at), and exactly
+/// `{ "kind": <projection>, "path": <abs .fs>, "refs": [<dll>…], "langversion": <token>?,
+/// "supportCheck": <bool>? }`
+/// (`langversion` optional: the `<LangVersion>` to check at; `supportCheck`
+/// optional: check as an unmodified compiler does, with FCS's own refusal of an
+/// out-of-support version, which [`pinnedLangVersionArgs`] otherwise lifts), and exactly
 /// one compact JSON response line — the SAME payload the matching one-shot
 /// `dumpXxx` emits. The one-shots serialise with `buildOptions ()`
 /// (`WriteIndented = true`); this uses `buildOptionsCompact ()` so the response
@@ -7473,6 +7500,10 @@ let private fileBatchCore () =
     // every request, is what makes the referenced-assembly reads warm.
     let checker = FSharpChecker.Create(keepAssemblyContents = true)
     let compact = buildOptionsCompact ()
+
+    // Whether the checker's caches hold results of `supportCheck` requests
+    // (see [`fileBatchLangVersionArgs`]).
+    let supportChecked = ref false
 
     // A required JSON string field, coerced to non-null: a missing or `null`
     // field is a malformed request, reported (via the enclosing `try`) as a
@@ -7522,7 +7553,7 @@ let private fileBatchCore () =
                 checker.GetProjectOptionsFromScript(
                     absolute, sourceText, assumeDotNetFramework = false, useSdkRefs = true)
                 |> Async.RunSynchronously
-            let langVersionArgs = pinnedLangVersionArgs (requestLangVersion root)
+            let langVersionArgs = fileBatchLangVersionArgs checker supportChecked root
             let scriptSwitches =
                 if Array.isEmpty langVersionArgs then opts0.OtherOptions
                 else

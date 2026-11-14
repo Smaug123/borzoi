@@ -14,9 +14,11 @@
 //!
 //! A file's verdict is one letter per numbered version, oldest first (the
 //! manifest's `(columns)` line names them). A verdict with an `S` or an `R` is
-//! a version-dependent file: a parse at a guessed version may not read as one
-//! at the real version would, and `diagnostics_are_version_invariant` must say
-//! so. One with only `L`s is a file whose newer constructs are faithfully
+//! a version-dependent file: a parse at one version may not read as one at
+//! another would. One with an `S` or an `R` from the support floor up (the
+//! manifest's `(supported-from)` line, [`LanguageVersion::SUPPORTED_MIN`]) is
+//! one a parse at a guessed version at or above the floor may misread, and
+//! `diagnostics_are_version_invariant` must say so. One with only `L`s is a file whose newer constructs are faithfully
 //! gated at older versions over an unchanged tree, and which a guess may read
 //! all the same. Every file whose verdict is not all `.` is listed in
 //! `tests/manifests/version_dependence_census.txt`, two-sided like the other
@@ -35,7 +37,9 @@
 //!   with the same recovery diagnostics, so no `Diagnose` gate moves either
 //!   corpus-wide;
 //! * `diagnostics_are_version_invariant`, which parses at two or three
-//!   versions only, agrees with the verdict read off all of them.
+//!   versions only, agrees with the verdict read off all of them, at every
+//!   guess: from the guess up when it is below the support floor (a guess at
+//!   4.6 is the whole ladder), and from the floor up otherwise.
 //!
 //! Symbols are empty, as in `parser_corpus`.
 
@@ -120,6 +124,26 @@ fn grade(p: &Parse, preview: &Parse) -> char {
     }
 }
 
+/// Whether a verdict moves the tree or a `Recovery` diagnostic at `from` or
+/// any later version (preview, the baseline, is one).
+fn dependent_from(verdict: &str, from: LanguageVersion) -> bool {
+    GRADED
+        .iter()
+        .zip(verdict.chars())
+        .any(|(&lang, c)| lang >= from && matches!(c, 'S' | 'R'))
+}
+
+/// Whether a verdict moves the tree or a `Recovery` diagnostic at any version.
+fn dependent(verdict: &str) -> bool {
+    dependent_from(verdict, LanguageVersion::MIN)
+}
+
+/// Whether a verdict moves the tree or a `Recovery` diagnostic at a version a
+/// supported compiler checks at.
+fn dependent_when_supported(verdict: &str) -> bool {
+    dependent_from(verdict, LanguageVersion::SUPPORTED_MIN)
+}
+
 fn census_file(path: &Path, src: &str, recovery_features: &[LanguageFeature]) -> Outcome {
     let file_kind = if path.extension().and_then(|s| s.to_str()) == Some("fsi") {
         FileKind::Sig
@@ -170,12 +194,23 @@ fn census_file(path: &Path, src: &str, recovery_features: &[LanguageFeature]) ->
         }
     }
     let verdict: String = graded.iter().map(|p| grade(p, preview)).collect();
-    let dependent = verdict.contains(['S', 'R']);
-    if diagnostics_are_version_invariant(src, &symbols, file_kind) == dependent {
-        breaches.push(format!(
-            "diagnostics_are_version_invariant says {}, but the verdict is {verdict}",
-            !dependent
-        ));
+    // Each guess at or below the floor names a range of its own, the lowest
+    // the whole ladder; preview stands for the guesses above the floor.
+    for guess in GRADED
+        .into_iter()
+        .filter(|&g| g <= LanguageVersion::SUPPORTED_MIN)
+        .chain([LanguageVersion::Preview])
+    {
+        let from = guess.min(LanguageVersion::SUPPORTED_MIN);
+        if diagnostics_are_version_invariant(src, &symbols, file_kind, guess)
+            == dependent_from(&verdict, from)
+        {
+            breaches.push(format!(
+                "diagnostics_are_version_invariant at a guess of {guess} says {}, but the \
+                 verdict is {verdict}",
+                !dependent_from(&verdict, from)
+            ));
+        }
     }
     Outcome::Graded { verdict, breaches }
 }
@@ -209,9 +244,14 @@ fn census() {
                 .collect::<Vec<_>>()
                 .join(" "),
         ),
+        (
+            "(supported-from)".to_string(),
+            LanguageVersion::SUPPORTED_MIN.to_string(),
+        ),
     ];
     let mut breaches = Vec::new();
-    let (mut dependent, mut legality_only) = (0usize, 0usize);
+    let (mut dependent_files, mut dependent_when_supported_files, mut legality_only) =
+        (0usize, 0usize, 0usize);
     for (path, outcome) in files.iter().zip(outcomes) {
         let key = corpus_relative(&root, path);
         match outcome {
@@ -221,10 +261,13 @@ fn census() {
                 breaches: found,
             } => {
                 breaches.extend(found.into_iter().map(|b| format!("{key}: {b}")));
-                if verdict.contains(['S', 'R']) {
-                    dependent += 1;
+                if dependent(&verdict) {
+                    dependent_files += 1;
                 } else if verdict.contains('L') {
                     legality_only += 1;
+                }
+                if dependent_when_supported(&verdict) {
+                    dependent_when_supported_files += 1;
                 }
                 if verdict.chars().any(|c| c != '.') {
                     entries.push((key, verdict));
@@ -233,9 +276,10 @@ fn census() {
         }
     }
     eprintln!(
-        "{} files | {dependent} version-dependent | {legality_only} differing in legality \
-         diagnostics only",
-        files.len()
+        "{} files | {dependent_files} version-dependent, {dependent_when_supported_files} of \
+         them from {} up | {legality_only} differing in legality diagnostics only",
+        files.len(),
+        LanguageVersion::SUPPORTED_MIN,
     );
     assert!(
         breaches.is_empty(),

@@ -58,15 +58,30 @@ impl LanguageVersion {
     /// The bottom of the ladder — the least surface this parser models.
     pub const MIN: LanguageVersion = LanguageVersion::V4_6;
 
+    /// The lowest version the bundled compiler checks without
+    /// `SKIP_VERSION_SUPPORTED_CHECK`. FCS calls every version below it out of
+    /// support (`LanguageVersion.IsVersionSupported`): it reports FS3880 and
+    /// checks at its default instead. So no unmodified, supported compiler
+    /// checks a file below this version, and a *guessed* version need only be
+    /// right within `SUPPORTED_MIN..=MAX`
+    /// ([`diagnostics_are_version_invariant`](crate::parser::diagnostics_are_version_invariant)).
+    ///
+    /// A named constant rather than a reading of the feature table: the floor
+    /// is the compiler's support policy, which no feature row records. cst's
+    /// `language_features` holds it to the `fsharp-src` compiler's source, and
+    /// the `borzoi` crate's `fcs_dump_langversion_pin::the_support_floor_is_fcs_own`
+    /// to the oracle's FCS.
+    pub const SUPPORTED_MIN: LanguageVersion = LanguageVersion::V8_0;
+
     /// The top of the ladder: every implemented feature on.
     ///
-    /// [`MIN`](Self::MIN) and `MAX` bracket every version-gated decision the
-    /// parser makes. Each such gate is a *monotone threshold* — a feature
+    /// Any two versions bracket every version-gated decision the parser makes
+    /// between them. Each such gate is a *monotone threshold* — a feature
     /// becomes available at some version and stays available — so a producer
-    /// that agrees at both ends agrees at every version between them. That is
-    /// what lets
-    /// [`diagnostics_are_version_invariant`](crate::parser::diagnostics_are_version_invariant)
-    /// be decided by two evaluations instead of nine.
+    /// that agrees at two versions agrees at every version between them. That
+    /// is what lets
+    /// [`diagnostics_are_invariant_over`](crate::parser::diagnostics_are_invariant_over)
+    /// decide a range by evaluating its two ends.
     pub const MAX: LanguageVersion = LanguageVersion::Preview;
 
     /// Whether `feature` is available at this version (FCS's
@@ -102,6 +117,20 @@ impl LanguageVersion {
             (true, true) => LanguageVersion::DEFAULT,
         }
     }
+
+    /// Every version, ascending, [`Preview`](LanguageVersion::Preview) last.
+    pub const ALL: [LanguageVersion; 10] = [
+        LanguageVersion::V4_6,
+        LanguageVersion::V4_7,
+        LanguageVersion::V5_0,
+        LanguageVersion::V6_0,
+        LanguageVersion::V7_0,
+        LanguageVersion::V8_0,
+        LanguageVersion::V9_0,
+        LanguageVersion::V10_0,
+        LanguageVersion::V11_0,
+        LanguageVersion::Preview,
+    ];
 
     /// Every numbered version, ascending. Excludes
     /// [`Preview`](LanguageVersion::Preview) (it is not a numbered surface).

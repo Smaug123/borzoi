@@ -89,6 +89,9 @@ struct FcsFeatures {
     ladder: Vec<String>,
     /// `defaultVersion`, spelt likewise.
     default: String,
+    /// The version `IsVersionSupported` compares against, spelt likewise: the
+    /// lowest one FCS checks without `SKIP_VERSION_SUPPORTED_CHECK`.
+    supported_min: String,
 }
 
 /// The table's spelling of an FCS decimal: `4.6m` → `4.6`, `9999m` →
@@ -164,6 +167,16 @@ fn read_fcs_features(src: &Path) -> FcsFeatures {
         .get("defaultVersion")
         .expect("LanguageFeatures.fs defines defaultVersion")
         .clone();
+    let supported_min = section(
+        &text,
+        "static member IsVersionSupported",
+        "/// Get a list of valid strings",
+    )
+    .into_iter()
+    .find_map(|l| l.trim().strip_prefix("langVersion >= "))
+    .and_then(|rest| constants.get(ident(rest)))
+    .expect("`IsVersionSupported` compares `langVersion >= <version>`; the test's reader needs updating")
+    .clone();
 
     let get_feature_string = section(
         &text,
@@ -187,6 +200,7 @@ fn read_fcs_features(src: &Path) -> FcsFeatures {
         resources,
         ladder,
         default,
+        supported_min,
     }
 }
 
@@ -418,6 +432,12 @@ fn every_fcs_feature_has_a_row_with_its_version() {
         LanguageVersion::DEFAULT.to_string(),
         "FCS's `defaultVersion` moved: update `LanguageVersion::DEFAULT` and \
          `from_lang_version_text`'s aliases",
+    );
+    assert_eq!(
+        fcs.supported_min,
+        LanguageVersion::SUPPORTED_MIN.to_string(),
+        "FCS's `IsVersionSupported` floor moved: update `LanguageVersion::SUPPORTED_MIN` (the \
+         `borzoi` crate's `the_support_floor_is_fcs_own` holds the oracle's FCS to it too)",
     );
 }
 
