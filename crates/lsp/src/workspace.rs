@@ -738,7 +738,11 @@ impl ImmutableRoots {
         let spelt = |path: &Path| spelt_as_components(path.as_os_str().as_encoded_bytes());
         // A path is placed among the roots by its bytes only when they are
         // all spelt as their components too.
-        let roots_spelt = self.dotnet.iter().chain(&self.nuget).all(|root| spelt(root));
+        let roots_spelt = self
+            .dotnet
+            .iter()
+            .chain(&self.nuget)
+            .all(|root| spelt(root));
         let aliases: Vec<PathBuf> = reads
             .into_iter()
             .filter_map(|read| {
