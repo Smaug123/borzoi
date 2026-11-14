@@ -151,7 +151,7 @@ fn a_cs_edit_and_its_event_rebuild_only_the_env_with_a_csharp_edge() {
     let source = csharp_dir.join("Lib.cs");
     let edited = format!(
         "{}\nnamespace BundledE2E.Edited\n{{\n    public sealed class Added {{ }}\n}}\n",
-        std::fs::read_to_string(&source)
+        crate::common::host_fs::read_to_string(&source)
             .expect("read Lib.cs")
             .replacen("namespace BundledE2E;", "namespace BundledE2E\n{", 1)
             + "}\n"

@@ -666,9 +666,63 @@ fn a_listing_with_a_failed_entry_is_asked_every_time() {
     );
 }
 
-/// A racy stamp never holds, in a generation or out of one, whatever the
-/// file now says: a same-size write within its tick leaves every field the
-/// same. The window is the `Vfs`'s.
+/// On the host: a racy stamp a whole-file read took holds while the file
+/// holds the bytes that read saw, in a generation or out of one, and not
+/// once a same-size rewrite within the window changes them. Once a read that
+/// finds them takes a stamp no longer racy, that stamp confirms the check
+/// by a `stat`, with no read, until a write moves it.
+#[test]
+fn a_racy_stamp_holds_while_its_bytes_do_on_the_host() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("A.dll");
+    std::fs::write(&path, b"abcd").unwrap();
+    let observer = borzoi_msbuild::observed::Observer::new();
+    borzoi_msbuild::observed::read_stamped(&observer, &path).unwrap();
+    let (reads, _) = observer.finish();
+    let check = Check::new(reads.reads()[0].clone());
+    assert!(check.read().observation.is_racy_stamp(), "precondition");
+    let mut checker: ReadChecks = ReadChecks::default();
+    assert!(checker.holds(&check), "outside a generation");
+    checker.begin_generation(Nanos(i128::MAX / 2));
+    assert!(checker.holds(&check), "inside a generation");
+    let racy = checker.end_generation();
+    assert_eq!(racy.opens, 1, "{racy:?}");
+
+    std::thread::sleep(RACY_WINDOW + std::time::Duration::from_millis(200));
+    checker.begin_generation(Nanos(i128::MAX / 2 + 1));
+    assert!(checker.holds(&check));
+    assert_eq!(checker.end_generation().opens, 1, "the read that takes a settled stamp");
+    checker.begin_generation(Nanos(i128::MAX / 2 + 2));
+    assert!(checker.holds(&check));
+    let settled = checker.end_generation();
+    assert_eq!(
+        (settled.opens, settled.stats),
+        (0, 1),
+        "a settled stamp confirms by a `stat`"
+    );
+
+    std::fs::write(&path, b"wxyz").unwrap();
+    checker.begin_generation(Nanos(i128::MAX / 2 + 3));
+    assert!(!checker.holds(&check), "a rewrite left it standing");
+    checker.end_generation();
+    std::fs::write(&path, b"abcd").unwrap();
+    checker.begin_generation(Nanos(i128::MAX / 2 + 4));
+    assert!(checker.holds(&check), "the same bytes written back are what it saw");
+    checker.end_generation();
+
+    // A same-size rewrite within the window, with no settled stamp to lean on.
+    let fresh = tmp.path().join("B.dll");
+    std::fs::write(&fresh, b"abcd").unwrap();
+    let observer = borzoi_msbuild::observed::Observer::new();
+    borzoi_msbuild::observed::read_stamped(&observer, &fresh).unwrap();
+    let check = Check::new(observer.finish().0.reads()[0].clone());
+    std::fs::write(&fresh, b"wxyz").unwrap();
+    assert!(!checker.holds(&check), "a same-size rewrite in the window held");
+}
+
+/// A racy stamp with no digest of what was read never holds, in a
+/// generation or out of one, whatever the file now says: a same-size write
+/// within its tick leaves every field the same. The window is the `Vfs`'s.
 #[test]
 fn a_racy_stamp_never_holds() {
     assert_eq!(
@@ -683,6 +737,7 @@ fn a_racy_stamp_never_holds() {
         mtime_ns: 0,
         ctime_ns: Some(0),
         racy: true,
+        digest: None,
     };
     let check = Check::new(Read {
         path: path(0),

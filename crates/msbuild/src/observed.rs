@@ -201,11 +201,17 @@ impl Read {
     /// Whether the query, asked of the host's file system now, gets the
     /// answer recorded.
     ///
-    /// A racy stamp ([`FileStamp::racy`]) never holds: the file may have
-    /// changed since within the same timestamp tick.
+    /// A racy stamp ([`FileStamp::racy`]) holds only while the file's bytes
+    /// are the ones the read that took it saw, which it carries a digest of
+    /// when a whole-file read took it; otherwise it never holds: the file
+    /// may have changed since within the same timestamp tick.
     pub fn still_holds(&self) -> bool {
-        !self.observation.is_racy_stamp()
-            && answer_now(&self.path, &self.observation) == self.observation
+        match &self.observation {
+            Observation::Stamp(Ok(stamp)) if stamp.racy => stamp
+                .digest
+                .is_some_and(|digest| racy_content_now(&self.path, digest).0),
+            _ => answer_now(&self.path, &self.observation) == self.observation,
+        }
     }
 }
 
@@ -322,8 +328,11 @@ pub const STAMP_RACY_WINDOW: std::time::Duration = std::time::Duration::from_sec
 /// Two writes of the same size within one timestamp tick leave every field
 /// the same, so a stamp taken within [`STAMP_RACY_WINDOW`] of the file's
 /// last change, or on a host with no change time, is `racy`: it speaks for
-/// the file only at the moment it was taken, and never holds again
-/// ([`Read::still_holds`]).
+/// the file only at the moment it was taken. A racy stamp a whole-file read
+/// took ([`read_stamped`]) carries a digest of the bytes the read saw, and
+/// holds again exactly while the file's bytes are those (git's rule for a
+/// racy index entry: compare the contents); any other racy stamp never
+/// holds again ([`Read::still_holds`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileStamp {
     pub dev: u64,
@@ -332,6 +341,10 @@ pub struct FileStamp {
     pub mtime_ns: i128,
     pub ctime_ns: Option<i128>,
     pub racy: bool,
+    /// A 128-bit hash of the bytes the read that took this stamp saw
+    /// ([`bytes_digest`]), recorded only for a racy stamp a whole-file read
+    /// took.
+    pub digest: Option<u128>,
 }
 
 impl FileStamp {
@@ -348,6 +361,7 @@ impl FileStamp {
             mtime_ns,
             ctime_ns,
             racy: racy(mtime_ns, ctime_ns),
+            digest: None,
         }
     }
 
@@ -365,8 +379,30 @@ impl FileStamp {
             mtime_ns,
             ctime_ns: None,
             racy: true,
+            digest: None,
         }
     }
+}
+
+/// A 128-bit hash of `bytes`, as [`TextDigest`] hashes a text: what a racy
+/// stamp's read saw ([`FileStamp::digest`]).
+pub fn bytes_digest(bytes: &[u8]) -> u128 {
+    let half = |salt: u8| {
+        let mut hasher = std::hash::DefaultHasher::new();
+        salt.hash(&mut hasher);
+        bytes.hash(&mut hasher);
+        hasher.finish()
+    };
+    (u128::from(half(0)) << 64) | u128::from(half(1))
+}
+
+/// Whether the file at `path`, read whole now, holds the bytes a racy stamp
+/// recorded as `digest` ([`FileStamp::digest`]), and the stamp the open file
+/// had before it was read: what a racy whole-file read is confirmed by.
+pub fn racy_content_now(path: &Path, digest: u128) -> (bool, Result<FileStamp, Failure>) {
+    let (stamp, bytes) = stamped_bytes(path);
+    let same = bytes.is_ok_and(|bytes| bytes_digest(&bytes) == digest);
+    (same, stamp)
 }
 
 /// Whether a file last changed at `mtime_ns` and `ctime_ns` is racy now:
@@ -667,12 +703,18 @@ pub fn stamp(observer: &Observer, path: &Path) -> Result<FileStamp, Failure> {
 /// read rather than as a digest of the bytes: for a large binary file that a
 /// caller reads whole and need not hash. A write that lands after the stamp
 /// moves it, so the stamp never speaks for bytes the read did not see. A
-/// read that fails after the stamp is recorded with its failure.
+/// racy stamp, which cannot speak for them, carries a digest of the bytes
+/// instead ([`FileStamp::digest`]). A read that fails after the stamp is
+/// recorded with its failure.
 pub fn read_stamped(observer: &Observer, path: &Path) -> Result<Vec<u8>, Failure> {
     let (stamp, bytes) = stamped_bytes(path);
-    let recorded = match (&stamp, &bytes) {
+    let recorded = match (stamp, &bytes) {
         (Ok(_), Err(failure)) => Err(failure.clone()),
-        _ => stamp,
+        (Ok(stamp), Ok(bytes)) if stamp.racy => Ok(FileStamp {
+            digest: Some(bytes_digest(bytes)),
+            ..stamp
+        }),
+        (stamp, _) => stamp,
     };
     observer.record_open(path, Observation::Stamp(recorded));
     bytes
@@ -780,6 +822,35 @@ mod tests {
         assert_eq!(reads.first_stale(), None);
         std::fs::write(&path, b"wxyz").unwrap();
         assert!(reads.first_stale().is_some_and(|read| read.path == path));
+    }
+
+    /// A racy stamp a whole-file read took carries a digest of the bytes it
+    /// saw, and holds exactly while the file holds them: through a rewrite of
+    /// the same bytes, and not through a same-size rewrite within the window,
+    /// which leaves every field a `stat` reports possibly the same.
+    #[test]
+    fn a_racy_whole_file_read_holds_while_its_bytes_do() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("A.dll");
+        std::fs::write(&path, b"abcd").unwrap();
+        let observer = Observer::new();
+        assert_eq!(read_stamped(&observer, &path).unwrap(), b"abcd");
+        let (reads, _) = observer.finish();
+        let [read] = reads.reads() else {
+            panic!("{reads:?}")
+        };
+        let Observation::Stamp(Ok(stamp)) = read.observation else {
+            panic!("{read:?}")
+        };
+        assert!(stamp.racy, "precondition: the stamp is racy");
+        assert_eq!(stamp.digest, Some(bytes_digest(b"abcd")));
+        assert!(read.still_holds(), "a racy read of unchanged bytes was stale");
+        std::fs::write(&path, b"abcd").unwrap();
+        assert!(read.still_holds(), "a rewrite of the same bytes made it stale");
+        std::fs::write(&path, b"wxyz").unwrap();
+        assert!(!read.still_holds(), "a same-size rewrite left it standing");
+        std::fs::remove_file(&path).unwrap();
+        assert!(!read.still_holds(), "a deletion left it standing");
     }
 
     /// Clippy reads only the nearest `clippy.toml`, so the crate's replaces

@@ -395,6 +395,7 @@ fn check_confirmed(world: &World, confirmed: &mut Confirmed) {
         let mut ws = Workspace::with_env(SdkDiscoveryEnv {
             dotnet_root: Some(root.join("no-dotnet")),
             nuget_packages_dir: Some(nuget.clone()),
+            home_dir: Some(root.join("home")),
             ..SdkDiscoveryEnv::default()
         });
         ws.begin_generation(Nanos(i128::MAX / 2));
@@ -402,11 +403,12 @@ fn check_confirmed(world: &World, confirmed: &mut Confirmed) {
         let mut semantic = SemanticState::new();
         let (dlls, _) = semantic.env_reference_dlls_for_project(&entry, Some(&dotnet), &tfm, &ws);
         let (reads, _) = semantic.env_reads_for_project(&entry, Some(&dotnet), &tfm, &ws);
-        let checks = semantic
-            .env_confirmed_reads_for_project(&entry, Some(&dotnet), &tfm, &ws)
-            .expect("an F#-only env is cached");
+        // An env a transient failure left incomplete is not cached, and
+        // confirms nothing: what it read is what it depends on.
+        let checks = semantic.env_confirmed_reads_for_project(&entry, Some(&dotnet), &tfm, &ws);
         ws.end_generation();
-        (dlls, reads.reads, checks)
+        let checks = checks.unwrap_or_else(|| reads.reads.reads().to_vec());
+        (dlls, reads.reads.clone(), checks)
     };
     let (_, reads, checks) = resolve();
     for read in reads.reads() {
@@ -431,9 +433,31 @@ fn check_confirmed(world: &World, confirmed: &mut Confirmed) {
             .collect();
         (dlls, checks)
     };
-    confirmed
-        .tally
-        .absorb(&sweep_with(&root.join("ws"), &compute, &[]));
+    // Installing a pack version is not an in-place change to an installed
+    // one: the listing that chose the version is confirmed, and must fail.
+    let newest = world
+        .pack_versions
+        .iter()
+        .map(|(v, _)| *v)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let install = Perturbation {
+        why: Why::Extra,
+        edits: vec![Edit::Write(
+            dotnet
+                .join("packs/Microsoft.NETCore.App.Ref")
+                .join(format!("{newest}.0.0/ref/{TFM}/System.Runtime.dll")),
+            b"dll".to_vec(),
+        )],
+    };
+    let tally = sweep_with(&root.join("ws"), &compute, &[install]);
+    assert_eq!(
+        tally.stale.get(&Why::Extra).copied().unwrap_or(0),
+        1,
+        "a pack version installed left what the env confirms standing: {tally:?}"
+    );
+    confirmed.tally.absorb(&tally);
 }
 
 proptest! {
@@ -523,7 +547,8 @@ fn the_generator_reaches_every_reference_kind_and_moves_the_resolution() {
 /// DLL or took its projection from the assembly cache. The pack's
 /// `System.Runtime.dll` is a real assembly, so the cache holds its
 /// projection after the first build and the second build is a hit. A
-/// stamp taken within the racy window of the DLL's last change never holds.
+/// stamp taken within the racy window of the DLL's last change holds only
+/// while the DLL holds the bytes the env read: a same-size rewrite fails it.
 #[test]
 fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
     let world = World {
@@ -560,12 +585,36 @@ fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
             (dlls, reads)
         };
         // Built straight after the fixture was written, every DLL's stamp is
-        // racy, and the read set holds no longer than it was taken.
+        // racy: it carries a digest of the bytes read, and holds while they
+        // stand, and no longer.
         let (_, racy) = run();
+        let racy_stamps = racy
+            .reads
+            .reads()
+            .iter()
+            .filter(|read| read.observation.is_racy_stamp())
+            .count();
+        assert!(racy_stamps > 0, "precondition: the DLLs' stamps are racy");
         assert!(
-            racy.reads.first_stale().is_some(),
-            "a read set of freshly written DLLs held (cached: {cached})"
+            racy.reads.reads().iter().all(|read| match &read.observation {
+                Observation::Stamp(Ok(stamp)) if stamp.racy => stamp.digest.is_some(),
+                _ => true,
+            }),
+            "a racy DLL stamp carries no digest of what was read (cached: {cached})"
         );
+        assert_eq!(racy.reads.first_stale(), None, "cached: {cached}");
+        let racy_pack = host_fs::read(&pack_dll).unwrap();
+        let mut same_size = racy_pack.clone();
+        same_size[0] ^= 0xff;
+        std::fs::write(&pack_dll, &same_size).unwrap();
+        assert!(
+            racy
+                .reads
+                .first_stale()
+                .is_some_and(|read| read.path == pack_dll),
+            "a same-size rewrite within the racy window left the read set standing (cached: {cached})"
+        );
+        std::fs::write(&pack_dll, &racy_pack).unwrap();
         std::thread::sleep(
             borzoi_msbuild::observed::STAMP_RACY_WINDOW + std::time::Duration::from_millis(200),
         );

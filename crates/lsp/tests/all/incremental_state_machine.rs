@@ -465,7 +465,9 @@ impl Content {
                     "version": 3,
                     "targets": { "net10.0": targets },
                     "libraries": libraries,
-                    "packageFolders": { "../../pkgs/": {} },
+                    // NuGet writes the folder absolute, and the resolver reads
+                    // it as written: [`Content::bytes`] puts the root in.
+                    "packageFolders": { format!("{ROOT}/pkgs/"): {} },
                     "project": {
                         "frameworks": {
                             "net10.0": { "frameworkReferences": { "Microsoft.NETCore.App": {} } }
@@ -483,8 +485,9 @@ impl Content {
         }
     }
 
-    /// The bytes written to disk for this content at `file`.
-    fn bytes(&self, file: FileId) -> Vec<u8> {
+    /// The bytes written to disk for this content at `file`, in the world
+    /// rooted at `root`.
+    fn bytes(&self, file: FileId, root: &Path) -> Vec<u8> {
         match self {
             Content::Dll => {
                 crate::common::host_fs::read(system_runtime_dll()).expect("read System.Runtime.dll")
@@ -493,10 +496,16 @@ impl Content {
                 crate::common::host_fs::read(system_console_dll()).expect("read System.Console.dll")
             }
             Content::LibDll(LibDll::Junk) => JUNK_DLL.to_vec(),
-            _ => self.render(file).into_bytes(),
+            _ => self
+                .render(file)
+                .replace(ROOT, root.to_str().expect("a UTF-8 world root"))
+                .into_bytes(),
         }
     }
 }
+
+/// Where an assets file names the world's root ([`Content::bytes`]).
+const ROOT: &str = "<root>";
 
 /// The real reference-pack `System.Runtime.dll` the stub framework pack copies.
 fn system_runtime_dll() -> &'static Path {
@@ -1993,7 +2002,7 @@ fn write_initial_disk(root: &Path, disk: &[(FileId, Content)]) {
     for (file, content) in disk {
         let path = root.join(file.rel());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, content.bytes(*file)).unwrap();
+        fs::write(&path, content.bytes(*file, root)).unwrap();
     }
 }
 
@@ -2088,7 +2097,7 @@ fn apply(
             world.write(*file, text.as_bytes());
         }
         Cmd::Write(file, content) => {
-            world.write(*file, &content.bytes(*file));
+            world.write(*file, &content.bytes(*file, &world.root.clone()));
         }
         Cmd::Install(rel, text) => {
             world.install(rel, text);

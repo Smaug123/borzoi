@@ -400,10 +400,10 @@ pub struct SemanticState {
     /// only what the edit touched. See [`PrevFold`] for the assembly-env
     /// [`Arc::ptr_eq`] precondition that keeps the reuse sound.
     ///
-    /// Cleared wholesale by [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`]
-    /// (a structural or referenced-assembly change): after those the env is a new
-    /// Arc anyway, so a stale entry could never be reused — clearing is for memory,
-    /// not correctness. `PrevFold::resolved` shares the same `Arc` as the matching
+    /// Cleared wholesale by [`Self::invalidate_all`], and per env when an env is
+    /// dropped (`Self::drop_env`): after those the env is a new Arc anyway, so
+    /// a stale entry could never be reused — clearing is for memory, not
+    /// correctness. `PrevFold::resolved` shares the same `Arc` as the matching
     /// `resolved_projects` entry, so the extra state is one `Vec<ImplFile>` of
     /// syntax handles per project.
     prev_resolved: HashMap<ProjectId, PrevFold>,
@@ -466,15 +466,15 @@ pub struct SemanticState {
     /// matches the DLL's debug directory, so it moves with the DLL. So no
     /// invalidation is needed for correctness, and [`Self::invalidate_all`]
     /// clears the map only to bound memory.
-    pdb_images: HashMap<PathBuf, (msbuild_observed::FileStamp, Option<Arc<[u8]>>)>,
+    pdb_images: HashMap<PathBuf, PdbImage>,
     /// What XML-documentation lookup caches: the parsed sidecar `.xml` files
     /// hover has read, each validated against the file's `(size, mtime)` on
     /// every use (see [`DocFileCache`](crate::xml_doc::lookup::DocFileCache)),
     /// and the per-assembly key censuses and env-wide ID indices, each
     /// validated by env identity — so correctness does not depend on any
     /// invalidation;
-    /// [`Self::invalidate_all`] / [`Self::invalidate_assembly_state`] clear
-    /// them only to bound memory, alongside the PDB images.
+    /// [`Self::invalidate_all`] clears them only to bound memory, alongside
+    /// the PDB images.
     xml_doc: DocSources,
     /// On-disk cache of each referenced DLL's projected entities, so a warm
     /// server restart skips the parse+project that dominates a cold env build.
@@ -709,6 +709,10 @@ impl SemanticState {
         for env in &unrecorded {
             self.drop_env(env);
         }
+        // An env built afresh for every request (a transient sidecar
+        // failure, never cached) may answer differently now, and an open
+        // buffer's tokens with it.
+        self.wants_refresh = true;
     }
 
     /// Watch events named `paths`: drop every assembly env that depends on
@@ -2167,6 +2171,10 @@ struct CachedAssemblyEnv {
     reads: Arc<EnvReads>,
 }
 
+/// A cached portable-PDB image ([`SemanticState::pdb_images`]): the DLL's
+/// stamp when it was read, and the image, or `None` for a DLL with none.
+type PdbImage = (msbuild_observed::FileStamp, Option<Arc<[u8]>>);
+
 /// One cached env and what it depends on
 /// ([`SemanticState::assembly_envs`]).
 #[derive(Debug)]
@@ -3619,18 +3627,29 @@ fn enumerate_dll_type_defs_cached(
     path: &Path,
     observer: &Observer,
 ) -> Result<ReferencedAssemblyProjection, SkipCause> {
-    // The env depends on the DLL as of this stamp, taken before the cache is
-    // asked: a cache hit is the projection of the DLL at the stamp the cache
-    // checks, and a write after this one moves the stamp recorded here.
-    let _ = msbuild_observed::stamp(observer, path);
+    // A cache hit depends on the DLL as of this stamp, taken before the cache
+    // is asked: the hit is the projection of the DLL at the stamp the cache
+    // checks, and a write after this one moves the stamp recorded here. A miss
+    // reads the DLL, and depends on the bytes that read saw, which it records
+    // with its own stamp (and, for a racy one, their digest); the stamp taken
+    // here would only add a racy stamp no digest confirms.
+    let before = Observer::new();
+    let _ = msbuild_observed::stamp(&before, path);
     let mut cause = None;
-    let hit = cache.get_or_populate(path, || match enumerate_dll_type_defs(path, observer) {
-        Ok(projection) => Some(projection),
-        Err(why) => {
-            cause = Some(why);
-            None
+    let mut read = false;
+    let hit = cache.get_or_populate(path, || {
+        read = true;
+        match enumerate_dll_type_defs(path, observer) {
+            Ok(projection) => Some(projection),
+            Err(why) => {
+                cause = Some(why);
+                None
+            }
         }
     });
+    if !read {
+        observer.absorb(before.finish());
+    }
     match hit {
         Some(projection) => Ok(projection),
         // A miss runs the closure, which sets `cause` on every failing path; a
@@ -5369,34 +5388,91 @@ mod tests {
         );
     }
 
+    /// The envs are keyed on neither trust opt-in, so turning either on or
+    /// off drops every env: one resolved without an on-demand restore must
+    /// not be served once a restore may run, nor the reverse.
     #[test]
-    fn invalidate_all_drops_assembly_env() {
-        // The contrast with `invalidate_project`: a `didChangeWatchedFiles`
-        // structural change must drop the assembly env (a `.fsproj` /
-        // `project.assets.json` edit can change the referenced set), so the
-        // next lookup rebuilds a fresh `Arc`.
+    fn a_trust_opt_in_change_drops_every_env() {
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");
         write(&proj, &fsproj(&[]));
-
+        let ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let before = sema.assembly_env_for_project(
-            &proj,
-            None,
-            &ServedTfm::NoneDeclared,
-            &Workspace::default(),
-        );
-        sema.invalidate_all();
-        let after = sema.assembly_env_for_project(
-            &proj,
-            None,
-            &ServedTfm::NoneDeclared,
-            &Workspace::default(),
-        );
+        let env = |sema: &mut SemanticState| {
+            sema.assembly_env_for_project(&proj, None, &ServedTfm::NoneDeclared, &ws)
+        };
+        let first = env(&mut sema);
+        assert!(Arc::ptr_eq(&first, &env(&mut sema)));
+        sema.set_on_demand_restore_enabled(true);
+        let restoring = env(&mut sema);
+        assert!(!Arc::ptr_eq(&first, &restoring), "the restore opt-in kept an env");
+        sema.set_csharp_project_references_enabled(true);
         assert!(
-            !Arc::ptr_eq(&before, &after),
-            "invalidate_all must drop the assembly env so it rebuilds"
+            !Arc::ptr_eq(&restoring, &env(&mut sema)),
+            "the C# opt-in kept an env"
         );
+    }
+
+    /// The broad invalidations — a structural watch event or a dropped
+    /// evaluation ([`SemanticState::invalidate_all`]), a referenced-assembly
+    /// watch event ([`SemanticState::invalidate_assembly_state`]) — drop an
+    /// env whose resolution consulted a reader that records nothing (here,
+    /// the C# sidecar for a C# reference), which nothing else covers, and keep
+    /// one whose reads are all recorded, which is confirmed against the disk
+    /// before it is served again.
+    #[test]
+    fn the_broad_invalidations_drop_only_an_env_with_an_unrecorded_reader() {
+        let tmp = TempDir::new().unwrap();
+        let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+        let fsharp_only = root.join("F/F.fsproj");
+        write(&fsharp_only, &fsproj(&[]));
+        let app = root.join("App/App.fsproj");
+        write(
+            &app,
+            "<Project><ItemGroup><ProjectReference Include=\"../Lib/Lib.csproj\" /></ItemGroup></Project>",
+        );
+        write(&root.join("Lib/Lib.csproj"), "<Project />");
+        write_app_assets(app.parent().unwrap(), false);
+        let dotnet = root.join("dotnet");
+        std::fs::create_dir_all(&dotnet).unwrap();
+
+        let ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        sema.set_csharp_project_references_enabled(true);
+        let env = |sema: &mut SemanticState, project: &Path| {
+            sema.assembly_env_for_project(project, Some(&dotnet), &ServedTfm::NoneDeclared, &ws)
+        };
+        env(&mut sema, &app);
+        let unrecorded = |sema: &mut SemanticState, project: &Path| {
+            sema.env_reads_for_project(project, Some(&dotnet), &ServedTfm::NoneDeclared, &ws)
+                .0
+                .unrecorded
+                .clone()
+        };
+        assert_eq!(unrecorded(&mut sema, &app), vec![UNRECORDED_CSHARP]);
+        assert!(unrecorded(&mut sema, &fsharp_only).is_empty());
+
+        type Invalidation = (&'static str, fn(&mut SemanticState));
+        let invalidations: [Invalidation; 2] = [
+            ("invalidate_all", SemanticState::invalidate_all),
+            (
+                "invalidate_assembly_state",
+                SemanticState::invalidate_assembly_state,
+            ),
+        ];
+        for (name, invalidate) in invalidations {
+            let app_before = env(&mut sema, &app);
+            let fsharp_only_before = env(&mut sema, &fsharp_only);
+            invalidate(&mut sema);
+            assert!(
+                !Arc::ptr_eq(&app_before, &env(&mut sema, &app)),
+                "{name} kept an env the C# sidecar answered part of"
+            );
+            assert!(
+                Arc::ptr_eq(&fsharp_only_before, &env(&mut sema, &fsharp_only)),
+                "{name} dropped an env whose reads are all recorded"
+            );
+        }
     }
 
     // ---- graph_ref_targets: graph-sourced reference edges ----
@@ -7872,12 +7948,13 @@ mod tests {
         );
     }
 
-    /// A referenced-assembly change ([`SemanticState::invalidate_assembly_state`])
-    /// drops the incremental base, so the next fold is cold — the env it would
-    /// reuse against is gone. Guards the `Arc::ptr_eq` env precondition at the
-    /// cache-lifecycle level.
+    /// A dropped env (here, by a watch event naming a file its resolution
+    /// read: [`SemanticState::hint_assembly_paths`]) drops the incremental
+    /// base, so the next fold is cold — the env it would reuse against is
+    /// gone. Guards the `Arc::ptr_eq` env precondition at the cache-lifecycle
+    /// level.
     #[test]
-    fn assembly_state_invalidation_forces_cold_refold() {
+    fn a_dropped_env_forces_a_cold_refold() {
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");
         write(&proj, &fsproj(&["Lib.fs"]));
@@ -7894,11 +7971,11 @@ mod tests {
             "the initial fold stores an incremental base"
         );
 
-        sema.invalidate_assembly_state();
+        sema.hint_assembly_paths(std::slice::from_ref(&proj));
         assert_eq!(
             sema.prev_resolved.len(),
             0,
-            "assembly invalidation clears the incremental base"
+            "dropping the env clears the incremental base"
         );
 
         let before = sema.incremental_fold_count();
@@ -8276,48 +8353,56 @@ mod tests {
         );
     }
 
+    /// The PDB image cache computes once per DLL stamp and caches a negative
+    /// result, recomputes once the DLL is rewritten, and caches nothing for a
+    /// DLL it cannot stamp, or whose stamp is racy.
     #[test]
-    fn pdb_image_cache_computes_once_and_caches_the_negative() {
+    fn pdb_image_cache_computes_once_per_stamp_and_caches_the_negative() {
+        let tmp = TempDir::new().unwrap();
+        let dll = tmp.path().join("A.dll");
+        let other = tmp.path().join("B.dll");
+        write(&dll, "a");
+        write(&other, "b");
         let mut s = SemanticState::default();
         let calls = std::cell::Cell::new(0);
-        let dll = Path::new("/pkg/A.dll");
         let img: Arc<[u8]> = Arc::from(vec![1u8, 2, 3]);
-
-        let first = s.pdb_image(dll, || {
-            calls.set(calls.get() + 1);
-            Some(img.clone())
-        });
-        assert_eq!(first.as_deref(), Some(&[1u8, 2, 3][..]));
-        // A second lookup is served from the cache — `compute` must not run.
-        let second = s.pdb_image(dll, || panic!("cache hit should not recompute"));
-        assert_eq!(second.as_deref(), Some(&[1u8, 2, 3][..]));
-        assert_eq!(calls.get(), 1);
-
-        // A DLL with no PDB caches the `None` so it isn't re-read each time.
-        let other = Path::new("/pkg/B.dll");
-        assert!(
-            s.pdb_image(other, || {
-                calls.set(calls.get() + 1);
-                None
-            })
-            .is_none()
-        );
-        assert!(
-            s.pdb_image(other, || panic!("negative result should be cached"))
-                .is_none()
-        );
-        assert_eq!(calls.get(), 2);
-
-        // `invalidate_all` (a restore / `.fsproj` change) drops the cache.
-        s.invalidate_all();
-        assert_eq!(
+        let count = |s: &mut SemanticState, dll: &Path, image: Option<Arc<[u8]>>| {
             s.pdb_image(dll, || {
                 calls.set(calls.get() + 1);
-                Some(img.clone())
+                image
             })
-            .as_deref(),
-            Some(&[1u8, 2, 3][..])
-        );
+        };
+
+        // Freshly written, the stamp is racy: nothing is cached.
+        count(&mut s, &dll, Some(img.clone()));
+        count(&mut s, &dll, Some(img.clone()));
+        assert_eq!(calls.get(), 2, "a racy stamp was cached under");
+
+        std::thread::sleep(msbuild_observed::STAMP_RACY_WINDOW + std::time::Duration::from_millis(200));
+        let first = count(&mut s, &dll, Some(img.clone()));
+        assert_eq!(first.as_deref(), Some(&[1u8, 2, 3][..]));
+        // A second lookup is served from the cache — `compute` must not run.
+        let second = s.pdb_image(&dll, || panic!("cache hit should not recompute"));
+        assert_eq!(second.as_deref(), Some(&[1u8, 2, 3][..]));
         assert_eq!(calls.get(), 3);
+
+        // A DLL with no PDB caches the `None` so it isn't re-read each time.
+        assert!(count(&mut s, &other, None).is_none());
+        assert!(
+            s.pdb_image(&other, || panic!("negative result should be cached"))
+                .is_none()
+        );
+        assert_eq!(calls.get(), 4);
+
+        // A rewritten DLL is a new stamp: computed again.
+        write(&dll, "a rebuilt dll");
+        count(&mut s, &dll, None);
+        assert_eq!(calls.get(), 5, "a rewritten DLL was served its old image");
+
+        // A DLL that cannot be stamped is never cached.
+        let missing = tmp.path().join("missing.dll");
+        count(&mut s, &missing, None);
+        count(&mut s, &missing, None);
+        assert_eq!(calls.get(), 7);
     }
 }

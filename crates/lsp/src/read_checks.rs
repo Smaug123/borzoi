@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use borzoi_msbuild::observed::EntryKind;
-use borzoi_msbuild::observed::{Failure, Listed, Observation, Read, ReadCounts};
+use borzoi_msbuild::observed::{FileStamp, Failure, Listed, Observation, Read, ReadCounts};
 
 use crate::observed::HostDisk;
 use crate::paths::lexically_normalize;
@@ -112,6 +112,12 @@ pub trait Probe: Disk {
     /// `query`'s query asked at `path` now, with its answer, as
     /// `borzoi_msbuild::observed` would record it.
     fn answer(&self, path: &Path, query: &Observation) -> Observation;
+    /// The file at `path`, read whole now: its stamp, taken before the read,
+    /// if its bytes are the ones `digest` names ([`FileStamp::digest`]), and
+    /// `None` otherwise. A disk that cannot say confirms nothing.
+    fn racy_content(&self, _path: &Path, _digest: u128) -> Option<FileStamp> {
+        None
+    }
 }
 
 /// One recorded read, and the witness that confirmed it last.
@@ -119,6 +125,11 @@ pub trait Probe: Disk {
 pub struct Check {
     read: Read,
     witness: RefCell<Option<Witness>>,
+    /// For a racy stamp a whole-file read took: a stamp of the file, not
+    /// racy, taken before a read that found the bytes the racy one saw.
+    /// While the file keeps it, the read holds with no read of the file
+    /// ([`ReadChecks::racy_stamp_holds`]).
+    confirmed: std::cell::Cell<Option<FileStamp>>,
 }
 
 impl Check {
@@ -126,6 +137,7 @@ impl Check {
         Check {
             read,
             witness: RefCell::new(None),
+            confirmed: std::cell::Cell::new(None),
         }
     }
 
@@ -256,9 +268,12 @@ impl<D: Probe> ReadChecks<D> {
     /// generation, the query is asked.
     pub fn holds(&self, check: &Check) -> bool {
         let read = &check.read;
-        // A racy stamp speaks for the file only when it was taken.
-        if read.observation.is_racy_stamp() {
-            return false;
+        // A racy stamp speaks for the file only when it was taken; what it
+        // saw is confirmed by the file's contents, when it says what they were.
+        if let Observation::Stamp(Ok(recorded)) = &read.observation
+            && recorded.racy
+        {
+            return self.racy_stamp_holds(check, recorded);
         }
         if let Observation::Text(recorded) = &read.observation {
             return self.files.text_answer(&read.path) == *recorded;
@@ -283,6 +298,42 @@ impl<D: Probe> ReadChecks<D> {
         let holds = self.ask(read) == read.observation;
         *check.witness.borrow_mut() = witness.filter(|_| holds);
         holds
+    }
+
+    /// Whether the file a racy stamp `recorded` was taken of still holds the
+    /// bytes the read that took it saw (git's rule for a racy index entry):
+    /// never, when the stamp carries no digest of them; otherwise, by a
+    /// stamp of the file confirmed so earlier (a `stat`), or by reading the
+    /// file again (an open). A read that finds them, under a stamp no longer
+    /// racy, leaves that stamp to confirm the next check by: a write after
+    /// it moves it.
+    fn racy_stamp_holds(&self, check: &Check, recorded: &FileStamp) -> bool {
+        let Some(digest) = recorded.digest else {
+            return false;
+        };
+        let path = &check.read.path;
+        let mut counts = self.counts.get();
+        if let Some(confirmed) = check.confirmed.get() {
+            counts.stats += 1;
+            self.counts.set(counts);
+            let now = self.files.disk().answer(path, &check.read.observation);
+            if now == Observation::Stamp(Ok(confirmed)) {
+                return true;
+            }
+            check.confirmed.set(None);
+        }
+        let mut counts = self.counts.get();
+        counts.opens += 1;
+        self.counts.set(counts);
+        match self.files.disk().racy_content(path, digest) {
+            Some(now) => {
+                if !now.racy {
+                    check.confirmed.set(Some(now));
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     /// List `dir` now, as a reader that will depend on the listing does,
@@ -319,6 +370,7 @@ impl<D: Probe> ReadChecks<D> {
         Check {
             read,
             witness: RefCell::new(witness),
+            confirmed: std::cell::Cell::new(None),
         }
     }
 

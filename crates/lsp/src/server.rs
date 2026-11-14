@@ -573,9 +573,10 @@ enum ChangeClass {
     Source,
     /// An input to the referenced-assembly layer: a `.dll` (a sibling
     /// project's rebuilt output, a package-cache write), or a `.cs`/`.csproj`
-    /// whose change alters what the C# sidecar would emit. The assembly envs
-    /// (and everything folded against them) may be stale; project evaluation
-    /// (defines, Compile order) is not.
+    /// whose change alters what the C# sidecar would emit. An env that reads
+    /// the path, and every env a reader that records nothing answered part
+    /// of, may be stale (and everything folded against them); project
+    /// evaluation (defines, Compile order) is not.
     AssemblyInput,
     /// Anything we don't react to.
     Ignored,

@@ -84,10 +84,10 @@ fn fixture() -> Fixture {
         )),
         &host_fs::read(&runtime).unwrap(),
     );
-    let foo = root.join("nuget/foo/1.0.0");
-    write(&foo.join(format!("lib/{TFM}/Foo.dll")), b"not an assembly");
-    write(&foo.join(".nupkg.metadata"), b"{}");
-    let foo_doc = foo.join(format!("lib/{TFM}/Foo.xml"));
+    let package = root.join("nuget/foo/1.0.0");
+    write(&package.join(format!("lib/{TFM}/Foo.dll")), b"not an assembly");
+    write(&package.join(".nupkg.metadata"), b"{}");
+    let foo_doc = package.join(format!("lib/{TFM}/Foo.xml"));
     write(&foo_doc, b"<doc />");
     let lib = root.join("Lib/Lib.fsproj");
     write(
@@ -142,6 +142,9 @@ fn state(fixture: &Fixture) -> State {
     state.workspace = Workspace::with_env(SdkDiscoveryEnv {
         dotnet_root: Some(fixture.root.join("dotnet")),
         nuget_packages_dir: Some(fixture.root.join("nuget")),
+        // NuGet's settings are read from the home directory; without one
+        // they cannot be said, and no package is trusted as installed.
+        home_dir: Some(fixture.root.join("home")),
         ..SdkDiscoveryEnv::default()
     });
     state.clock = Clock::HostAhead(RACY_WINDOW * 30);
@@ -220,7 +223,8 @@ fn a_watched_rebuild_rebuilds_only_the_env_that_reads_it() {
 /// The same rebuild with no watch event: in the next generation that reads
 /// them, `App`'s env is confirmed against the disk and built again, and
 /// `Other`'s is confirmed and kept. A generation with nothing changed builds
-/// no env, and confirms each by `stat`s alone.
+/// no env; once the first has asked each read again and taken its witnesses,
+/// one confirms each env by `stat`s alone.
 #[test]
 fn an_unwatched_rebuild_rebuilds_only_the_env_that_reads_it() {
     let fixture = fixture();
@@ -235,6 +239,9 @@ fn an_unwatched_rebuild_rebuilds_only_the_env_that_reads_it() {
     let (app, other, first) = generation(&mut state);
     assert_eq!(first.envs.built, 2, "{first:?}");
 
+    let (app_again, other_again, first_confirmation) = generation(&mut state);
+    assert!(Arc::ptr_eq(&app, &app_again) && Arc::ptr_eq(&other, &other_again));
+    assert_eq!(first_confirmation.envs.built, 0, "{first_confirmation:?}");
     let (app_again, other_again, unchanged) = generation(&mut state);
     assert!(Arc::ptr_eq(&app, &app_again) && Arc::ptr_eq(&other, &other_again));
     assert_eq!(unchanged.envs.built, 0, "{unchanged:?}");
@@ -292,4 +299,61 @@ fn a_watch_event_drops_only_the_envs_that_depend_on_its_path() {
     );
     assert!(Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
     state.end_generation();
+}
+
+/// What an env confirms by `stat` rather than trusts as installed: a
+/// package version's contents are trusted only once its `.nupkg.metadata`
+/// (which NuGet writes last) was there before the env was resolved, and a
+/// framework pack version's whenever a read inside it got an answer. A
+/// project's own files are always confirmed.
+#[test]
+fn an_env_trusts_a_package_only_once_it_was_committed() {
+    for committed in [true, false] {
+        let fixture = fixture();
+        let foo_dll = fixture.root.join(format!("nuget/foo/1.0.0/lib/{TFM}/Foo.dll"));
+        if !committed {
+            std::fs::remove_file(fixture.root.join("nuget/foo/1.0.0/.nupkg.metadata")).unwrap();
+        }
+        let mut state = state(&fixture);
+        outwait_racy_stamps();
+        state.begin_generation();
+        let root = state.workspace.dotnet_root_for_project(&fixture.app);
+        let tfm = state.workspace.served_tfm_for_project(&fixture.app);
+        let checks = state
+            .semantic
+            .env_confirmed_reads_for_project(&fixture.app, root.as_deref(), &tfm, &state.workspace)
+            .expect("App's env is cached");
+        state.end_generation();
+        let confirms = |path: &Path| checks.iter().any(|read| read.path == path);
+        assert_eq!(
+            confirms(&foo_dll),
+            !committed,
+            "a package committed: {committed}, confirmed: {}",
+            confirms(&foo_dll)
+        );
+        assert!(confirms(&fixture.lib_dll), "a project's output is confirmed");
+        assert!(
+            !checks.iter().any(|read| read
+                .path
+                .starts_with(fixture.root.join("dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0"))
+                && read.path != fixture.root.join("dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0")),
+            "the framework pack's contents are trusted: {checks:?}"
+        );
+    }
+}
+
+/// An env's checks are confirmed only through the workspace that made
+/// them: the witnesses name that checker's directories. A state whose
+/// workspace is replaced builds its envs again.
+#[test]
+fn an_env_made_under_another_workspace_is_built_again() {
+    let fixture = fixture();
+    let mut state = state(&fixture);
+    let other = env_of(&mut state, &fixture.other);
+    assert!(Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
+    state.workspace = Workspace::with_env(SdkDiscoveryEnv {
+        dotnet_root: Some(fixture.root.join("dotnet")),
+        ..SdkDiscoveryEnv::default()
+    });
+    assert!(!Arc::ptr_eq(&other, &env_of(&mut state, &fixture.other)));
 }

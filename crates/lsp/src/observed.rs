@@ -233,6 +233,17 @@ impl crate::read_checks::Probe for HostDisk {
     ) -> borzoi_msbuild::observed::Observation {
         borzoi_msbuild::observed::answer_now(path, query)
     }
+
+    fn racy_content(
+        &self,
+        path: &Path,
+        digest: u128,
+    ) -> Option<borzoi_msbuild::observed::FileStamp> {
+        match borzoi_msbuild::observed::racy_content_now(path, digest) {
+            (true, Ok(stamp)) => Some(stamp),
+            _ => None,
+        }
+    }
 }
 
 /// A reason a file-system observation is **not** counted: the reader it
