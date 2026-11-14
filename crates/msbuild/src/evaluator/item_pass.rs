@@ -238,7 +238,12 @@ pub(super) fn replay_deferred_item_groups(entry_doc: &Document<'_>, state: &mut 
     }
     // All items captured: collapse Include + Update into the effective set and
     // detect the versionless symptom on it (both need every item present).
+    #[cfg(any(test, feature = "test-support"))]
+    let causes_before = state.package_reference_uncertainties.len();
     finalize_package_references(state);
+    // Every cause the collapse records is about a `PackageReference`.
+    #[cfg(any(test, feature = "test-support"))]
+    state.attribute_package_causes(causes_before, PackageItemKind::PackageReference);
 }
 
 /// Resolve a deferred group's node in a (re-)parsed document, verifying it
@@ -768,7 +773,7 @@ enum ItemPlacement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageItemKind {
+pub(super) enum PackageItemKind {
     PackageReference,
     FrameworkReference,
     PackageVersion,
@@ -776,6 +781,18 @@ enum PackageItemKind {
 }
 
 fn walk_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
+    #[cfg(any(test, feature = "test-support"))]
+    let causes_before = state.package_reference_uncertainties.len();
+    walk_item_child_unattributed(node, state);
+    // What the package set's causes say about another dependency list is the
+    // probe's business only.
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(kind) = package_item_kind_for_element(node) {
+        state.attribute_package_causes(causes_before, kind);
+    }
+}
+
+fn walk_item_child_unattributed(node: Node<'_, '_>, state: &mut State<'_>) {
     // MSBuild's batch of `Update`s, followed for the types whose `Update`s the
     // walk models, before any condition: see [`update_strands_late`].
     let batched = match package_item_kind_for_element(node) {
@@ -994,6 +1011,8 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
             unmodelled_reference_metadata: project_reference_has_unmodelled_significant_metadata(
                 node, state,
             ),
+            #[cfg(any(test, feature = "test-support"))]
+            row: Some(read_exact_metadata_quietly(node, state)),
         },
         ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter => ItemMetadata {
             reference_output_assembly: ItemMetadataValue::ABSENT,
@@ -1001,6 +1020,8 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
             include_assets: ItemMetadataValue::ABSENT,
             private_assets: ItemMetadataValue::ABSENT,
             unmodelled_reference_metadata: false,
+            #[cfg(any(test, feature = "test-support"))]
+            row: None,
         },
     };
     // Substitute $(...) FIRST, then split on ';'. Property values are
@@ -1043,6 +1064,11 @@ struct ItemMetadata {
     include_assets: ItemMetadataValue,
     private_assets: ItemMetadataValue,
     unmodelled_reference_metadata: bool,
+    /// Every metadatum a `<ProjectReference>` declares, as an item table reads
+    /// it, for the reference's row (`OrderedResolvedItem::row`). `None` on a
+    /// Compile item.
+    #[cfg(any(test, feature = "test-support"))]
+    row: Option<GenericItemMetadata>,
 }
 
 /// `<ProjectReference>` metadata this evaluator does not model but the SDK's
@@ -2272,9 +2298,8 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
                 node.range(),
             );
         }
-        // MSBuild removes `Exclude`d identities from the `Include` set,
-        // case-insensitively (`excluded` is lowercased).
-        if excluded.contains(&id.to_ascii_lowercase()) {
+        // MSBuild removes `Exclude`d identities from the `Include` set.
+        if dependency_excluded(&excluded, &id, node, state) {
             continue;
         }
         // `Update="@(Helper)"` uses helper items only to select identities.
@@ -2631,13 +2656,20 @@ fn walk_package_version(node: Node<'_, '_>, state: &mut State<'_>) {
     };
     state.note_package_uncertain_from_sdk_property_taint(include);
     let local_version = read_item_metadata(node, "Version", state);
+    #[cfg(any(test, feature = "test-support"))]
+    let exact = read_exact_metadata_quietly(node, state);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let package_version_count_before = state.package_versions.len();
     let mut reported_helper_metadata_uncertainties = HashSet::new();
     for source in resolve_dependency_identity_sources(include, node, state) {
-        if excluded.contains(&source.identity.to_ascii_lowercase()) {
+        if dependency_excluded(&excluded, &source.identity, node, state) {
             continue;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let row = included_row(state, "PackageVersion", &source, &exact);
+            state.package_version_rows.push(row);
         }
         note_inherited_helper_version_uncertainties(
             &source.metadata_uncertainties,
@@ -2682,19 +2714,30 @@ fn walk_global_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     );
     let Some(include) = node.attribute("Include") else {
         if node.attribute("Remove").is_some() || node.attribute("Update").is_some() {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                state.global_package_references_mutated = true;
+            }
             state.mark_untracked_item_list("GlobalPackageReference");
         }
         return;
     };
     state.note_package_uncertain_from_sdk_property_taint(include);
     let local_metadata = read_package_metadata(node, state);
+    #[cfg(any(test, feature = "test-support"))]
+    let exact = read_exact_metadata_quietly(node, state);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let global_count_before = state.global_package_references.len();
     let mut reported_helper_metadata_uncertainties = HashSet::new();
     for source in resolve_dependency_identity_sources(include, node, state) {
-        if excluded.contains(&source.identity.to_ascii_lowercase()) {
+        if dependency_excluded(&excluded, &source.identity, node, state) {
             continue;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let row = included_row(state, "GlobalPackageReference", &source, &exact);
+            state.global_package_reference_rows.push(row);
         }
         note_inherited_helper_metadata_uncertainties(
             &source.metadata_uncertainties,
@@ -2848,7 +2891,7 @@ fn walk_framework_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     let span = state.effective_span(node.range());
     let framework_count_before = state.framework_references.len();
     for source in resolve_dependency_identity_sources(target, node, state) {
-        if excluded.contains(&source.identity.to_ascii_lowercase()) {
+        if dependency_excluded(&excluded, &source.identity, node, state) {
             continue;
         }
         #[cfg(any(test, feature = "test-support"))]
@@ -2898,18 +2941,17 @@ fn included_row(
 
 /// The identity set to remove from a package/framework reference's
 /// `Include`, from its `Exclude` attribute (MSBuild item semantics —
-/// `Include="A;B" Exclude="B"` yields only `A`). Identities are matched
-/// case-insensitively — MSBuild item identity comparison is `OrdinalIgnoreCase`,
-/// so `Exclude="b"` removes `B` — hence the set holds ASCII-lowercased ids and
-/// the include loops lowercase before testing membership. If the `Exclude`
-/// value carries a glob, an `@(…)`/`%(…)` reference, or a substitution issue —
-/// anything we can't reduce to a literal id set — the package set is marked
-/// uncertain and an empty set returned, so nothing is silently mis-excluded
-/// (and, crucially, nothing an `Exclude` would remove is left in as an
-/// over-resolution).
-fn resolve_exclude_set(node: Node<'_, '_>, state: &mut State<'_>) -> HashSet<String> {
+/// `Include="A;B" Exclude="B"` yields only `A`). MSBuild matches an `Exclude`
+/// as it matches a `Remove`, by normalised path and case-insensitively, so
+/// `Exclude="./b"` removes `B`: the set holds [`item_spec::comparison_key`]s.
+/// If the `Exclude` value carries a glob, an `@(…)`/`%(…)` reference, a
+/// substitution issue, or an identity outside that key's domain — anything we
+/// can't reduce to a set of keys — the package set is marked uncertain and an
+/// empty set returned, so nothing is silently mis-excluded (and, crucially,
+/// nothing an `Exclude` would remove is left in as an over-resolution).
+fn resolve_exclude_set(node: Node<'_, '_>, state: &mut State<'_>) -> ExcludeSet {
     let Some(raw) = node.attribute("Exclude") else {
-        return HashSet::new();
+        return ExcludeSet(HashSet::new());
     };
     state.note_package_uncertain_from_sdk_property_taint(raw);
     let expansion = state.expand(raw, node.range());
@@ -2927,7 +2969,7 @@ fn resolve_exclude_set(node: Node<'_, '_>, state: &mut State<'_>) -> HashSet<Str
             },
             node.range(),
         );
-        return HashSet::new();
+        return ExcludeSet(HashSet::new());
     }
     // The classifications above ran on escaped text (an escaped `%2a` is a
     // literal star, not a glob); the ids themselves are a point of use, and the
@@ -2935,10 +2977,44 @@ fn resolve_exclude_set(node: Node<'_, '_>, state: &mut State<'_>) -> HashSet<Str
     // captured them. Comparing escaped against decoded would silently retain a
     // package an `Exclude` names — a phantom dependency, the over-resolution
     // this set exists to prevent.
-    parts
+    let keys: Option<HashSet<String>> = parts
         .iter()
-        .map(|s| fragment_identity(s).to_ascii_lowercase())
-        .collect()
+        .map(|s| item_spec::comparison_key(&fragment_identity(s), &state.entry_project_dir))
+        .collect();
+    match keys {
+        Some(keys) => ExcludeSet(keys),
+        None => {
+            state.note_package_uncertain(
+                PackageReferenceUncertaintyCauseKind::UnsupportedExclude {
+                    value: raw.to_string(),
+                },
+                node.range(),
+            );
+            ExcludeSet(HashSet::new())
+        }
+    }
+}
+
+/// Whether a dependency item's `Exclude` removes `identity`. One it cannot
+/// compare is kept, and the package set marked uncertain.
+fn dependency_excluded(
+    excluded: &ExcludeSet,
+    identity: &str,
+    node: Node<'_, '_>,
+    state: &mut State<'_>,
+) -> bool {
+    match excluded.excludes(identity, &state.entry_project_dir) {
+        Some(excluded) => excluded,
+        None => {
+            state.note_package_uncertain(
+                PackageReferenceUncertaintyCauseKind::UnsupportedExclude {
+                    value: identity.to_string(),
+                },
+                node.range(),
+            );
+            false
+        }
+    }
 }
 
 /// Read one item metadata value — a `Name="..."` attribute or a
@@ -3170,7 +3246,14 @@ fn resolve_dependency_identity_sources(
     for entry in spec_fragments(&expansion.value) {
         if let Some(item_type) = exact_item_list_reference(entry) {
             let key = item_key(item_type);
-            if state.tainted_item_lists.contains(&key) || state.untracked_item_lists.contains(&key)
+            // A type this crate captures in its own bucket has no item table
+            // here: the copy would read it as empty, whatever its bucket holds
+            // and however certain that is.
+            let bucketed = modelled_item_kind_for_name(item_type).is_some()
+                || package_item_kind_for_name(item_type).is_some();
+            if bucketed
+                || state.tainted_item_lists.contains(&key)
+                || state.untracked_item_lists.contains(&key)
             {
                 state.note_package_uncertain(
                     PackageReferenceUncertaintyCauseKind::UnevaluableIdentity {
@@ -3886,6 +3969,15 @@ fn push_include_entry(
     // by MSBuild relative to `$(MSBuildProjectDirectory)`.
     // The scans above ran on escaped text; the identity is a point of use.
     let identity = fragment_identity(entry);
+    // A reference declared directly takes its type's definitions beneath its
+    // own metadata.
+    #[cfg(any(test, feature = "test-support"))]
+    let row = metadata.row.as_ref().map(|exact| {
+        let mut row = EvaluatedItem::bare(&identity);
+        row.exact_metadata = with_definitions(state, "ProjectReference", &row.exact_metadata);
+        row.definitions_applied = true;
+        row.with_metadata_applied(exact)
+    });
     let normalised = identity.replace('\\', "/");
     let path = state.entry_project_dir.join(normalised);
     let span = state.effective_span(node.range());
@@ -3904,6 +3996,10 @@ fn push_include_entry(
         },
         Some(identity),
     );
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(pushed) = bucket_for_placement(state, placement).last_mut() {
+        pushed.row = row;
+    }
 }
 
 fn bucket_for_placement<'s, 'r>(
@@ -3948,6 +4044,8 @@ fn push_resolved_item(
         order,
         item,
         identity,
+        #[cfg(any(test, feature = "test-support"))]
+        row: None,
     });
 }
 
@@ -4165,9 +4263,11 @@ fn record_helper_item_definition_defaults(node: Node<'_, '_>, state: &mut State<
     }
     for child in node.children().filter(Node::is_element) {
         // A dependency item type's defaults are recorded too, for the item
-        // table's rows ([`State::package_reference_rows`]). Quietly: the
-        // dependency capture judges its own defaults elsewhere.
-        let dependency = package_item_kind_for_element(child).is_some();
+        // table's rows ([`State::package_reference_rows`]), and
+        // `ProjectReference`'s. Quietly: their captures judge their own
+        // defaults elsewhere.
+        let dependency = package_item_kind_for_element(child).is_some()
+            || modelled_item_kind_for_element(child) == Some(ItemKind::ProjectReference);
         let item_type = match generic_helper_item_type(child) {
             Some(item_type) => item_type,
             // Only the item table's rows read these, and only the differential

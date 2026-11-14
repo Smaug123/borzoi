@@ -77,10 +77,6 @@ impl DottedOpacity {
 #[derive(Debug, Clone)]
 pub(super) struct ScopeEntry {
     pub(super) name: Name,
-    /// `name`'s text, which the frame's string-keyed reference index reads
-    /// under `interning-reference` in a debug build.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    text: String,
     pub(super) resolution: Resolution,
     /// `true` if an `open` brought this name into scope — an opened type's static
     /// member (`open type T`), or (a later slice) an opened module's value
@@ -207,22 +203,13 @@ impl ScopeEntry {
         resolution: Resolution,
         generation: usize,
     ) -> Self {
-        Self::binding_named(names, names.logical(name), resolution, generation)
+        Self::binding_named(names.logical(name), resolution, generation)
     }
 
     /// [`Self::binding`] of a name already interned: a [`Def`](crate::def::Def)'s.
-    pub(super) fn binding_named(
-        names: &NameTable,
-        name: Name,
-        resolution: Resolution,
-        generation: usize,
-    ) -> Self {
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = names;
+    pub(super) fn binding_named(name: Name, resolution: Resolution, generation: usize) -> Self {
         ScopeEntry {
             name,
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: names.text(name).to_string(),
             resolution,
             from_open: false,
             generation,
@@ -290,8 +277,6 @@ impl ScopeEntry {
     ) -> Self {
         ScopeEntry {
             name: names.logical(name),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: name.to_string(),
             resolution: Resolution::Deferred(DeferredReason::UnboundName),
             from_open: false,
             generation,
@@ -330,8 +315,6 @@ impl ScopeEntry {
     ) -> Self {
         ScopeEntry {
             name: names.logical(name),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: name.to_string(),
             resolution,
             from_open: true,
             generation,
@@ -361,8 +344,6 @@ impl ScopeEntry {
         );
         ScopeEntry {
             name: names.logical(name),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: name.to_string(),
             resolution,
             from_open: true,
             generation,
@@ -422,10 +403,6 @@ pub(super) struct Frame {
     entries: Vec<ScopeEntry>,
     /// Each name's positions in `entries`, ascending.
     by_name: HashMap<Name, Vec<usize>>,
-    /// The string-keyed index `by_name` replaced, held to it by every
-    /// [`Self::named_rev`] under `interning-reference` in a debug build.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    by_text: HashMap<String, Vec<usize>>,
 }
 
 impl Frame {
@@ -433,8 +410,6 @@ impl Frame {
         let mut frame = Frame {
             entries,
             by_name: HashMap::default(),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            by_text: HashMap::default(),
         };
         frame.reindex();
         frame
@@ -456,13 +431,6 @@ impl Frame {
         name: NameKey<'_>,
     ) -> impl Iterator<Item = &'a ScopeEntry> {
         let positions = name.id.and_then(|n| self.by_name.get(&n));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            positions,
-            self.by_text.get(name.text),
-            "a frame's name index disagrees with its reference at {:?}",
-            name.text
-        );
         positions
             .into_iter()
             .flat_map(|positions| positions.iter().rev())
@@ -477,8 +445,6 @@ impl Frame {
     /// File `entry`, at position `i`, under its name.
     fn index(&mut self, i: usize, entry: &ScopeEntry) {
         self.by_name.entry(entry.name).or_default().push(i);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.by_text.entry(entry.text.clone()).or_default().push(i);
     }
 
     pub(super) fn extend(&mut self, entries: impl IntoIterator<Item = ScopeEntry>) {
@@ -508,8 +474,6 @@ impl Frame {
 
     fn reindex(&mut self) {
         self.by_name.clear();
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.by_text.clear();
         let entries = std::mem::take(&mut self.entries);
         for (i, entry) in entries.iter().enumerate() {
             self.index(i, entry);

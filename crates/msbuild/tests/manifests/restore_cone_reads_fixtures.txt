@@ -23,8 +23,8 @@
 10.0.401 resolved cpm/app/App.fsproj reads item PackageDownload	MSBuild 0; ours none, tainted; the cone writes it
 10.0.401 resolved cpm/app/App.fsproj reads item PackageReference	MSBuild 1; ours 1, identities agree, tainted; the cone writes it
 10.0.401 resolved cpm/app/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours none, not exact; the cone writes it
-10.0.401 resolved cpm/app/App.fsproj reads item PackageVersion	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
-10.0.401 resolved cpm/app/App.fsproj reads item ProjectReference	MSBuild 1; ours a dedicated bucket of 1
+10.0.401 resolved cpm/app/App.fsproj reads item PackageVersion	MSBuild 1; ours 1, identities agree, tainted; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item ProjectReference	MSBuild 1; ours 1, identities agree, not exact
 10.0.401 resolved cpm/app/App.fsproj reads item PrunePackageReference	MSBuild 0; ours none, not exact; the cone writes it
 10.0.401 resolved cpm/app/App.fsproj reads item RestoreGraphProjectInputItems	MSBuild 0; ours none, not exact; the cone writes it
 10.0.401 resolved cpm/app/App.fsproj reads item TargetingPack	MSBuild 0; ours none, not exact; the cone writes it
@@ -232,6 +232,7 @@
 10.0.401 resolved cpm/app/App.fsproj reads property _TargetFrameworkToBeUsed	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
 10.0.401 resolved cpm/app/App.fsproj reads property _TargetFrameworkVersionWithoutV	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
 10.0.401 resolved cpm/app/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj retains its targets	0 as MSBuild ran them, 44 not exact
 10.0.401 resolved hooked/App.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
@@ -254,8 +255,8 @@
 10.0.401 resolved hooked/App.fsproj reads item PackageDownload	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item PackageReference	MSBuild 1; ours 1, identities agree, metadata agrees on 3 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved hooked/App.fsproj reads item PackageVersion	MSBuild 0; ours a dedicated bucket of 0; the cone writes it
-10.0.401 resolved hooked/App.fsproj reads item ProjectReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved hooked/App.fsproj reads item PackageVersion	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item ProjectReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved hooked/App.fsproj reads item PrunePackageReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item RestoreGraphProjectInputItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item _CurrentRestoreProjectPathItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
@@ -454,6 +455,7 @@
 10.0.401 resolved hooked/App.fsproj reads property _TargetFrameworkToBeUsed	unset agrees; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads property _TargetFrameworkVersionWithoutV	value agrees
 10.0.401 resolved hooked/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	value agrees
+10.0.401 resolved hooked/App.fsproj retains its targets	42 as MSBuild ran them, 0 not exact
 10.0.401 resolved net10/App.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
@@ -476,8 +478,8 @@
 10.0.401 resolved net10/App.fsproj reads item PackageDownload	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item PackageReference	MSBuild 2; ours 2, identities agree, metadata agrees on 4 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved net10/App.fsproj reads item PackageVersion	MSBuild 0; ours a dedicated bucket of 0; the cone writes it
-10.0.401 resolved net10/App.fsproj reads item ProjectReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved net10/App.fsproj reads item PackageVersion	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item ProjectReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved net10/App.fsproj reads item PrunePackageReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item RestoreGraphProjectInputItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item TargetingPack	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
@@ -680,3 +682,4 @@
 10.0.401 resolved net10/App.fsproj reads property _TargetFrameworkToBeUsed	unset agrees; the cone writes it
 10.0.401 resolved net10/App.fsproj reads property _TargetFrameworkVersionWithoutV	value agrees
 10.0.401 resolved net10/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	value agrees
+10.0.401 resolved net10/App.fsproj retains its targets	42 as MSBuild ran them, 0 not exact

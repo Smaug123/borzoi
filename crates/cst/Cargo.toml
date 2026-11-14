@@ -26,9 +26,18 @@ rowan-reference = ["dep:rowan"]
 # queue (`docs/token-pipeline-soa-plan.md`, D7).
 # Test-only, on for this crate's own tests through the self-reference below.
 token-reference = []
+# Exports the union typed facade (`syntax::{ImplFile, Expr, Pat, Type,
+# ModuleDecl, …}`) and the `syntax::v8` / `syntax::v9` facades that re-export
+# it. The union is the maximal, every-version surface and gains a variant
+# whenever a construct is modelled, so it carries no stability promise; without
+# this feature `syntax` exports only the untyped substrate (`SyntaxNode`,
+# `SyntaxKind`, `AstNode`, the `projection` gate). `borzoi-sema`, the LSP and
+# `borzoi-corpus-diff` turn it on, and this crate's own tests through the
+# self-reference below. CI's lint job builds the crate without it.
+unstable-union = []
 
 [dev-dependencies]
-borzoi-cst = { path = ".", features = ["accessor-trace", "rowan-reference", "token-reference"] }
+borzoi-cst = { path = ".", features = ["accessor-trace", "rowan-reference", "token-reference", "unstable-union"] }
 borzoi-oracle-harness.workspace = true
 # The metric-path walk the stats dashboard plots by, so a generator's
 # pinned metric namespace is read exactly as it is published.
@@ -37,7 +46,7 @@ proptest.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 tempfile.workspace = true
-# Parses `src/syntax/mod.rs` and the consumers' sources for the accessor
+# Parses `src/syntax/union.rs` and the consumers' sources for the accessor
 # coverage check (`tests/all/accessor_coverage.rs`).
 proc-macro2.workspace = true
 quote.workspace = true

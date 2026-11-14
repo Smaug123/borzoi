@@ -971,6 +971,10 @@ struct Filter<'a> {
     /// re-walking them, keeping the offside computation linear rather than
     /// quadratic in nesting depth. See [`Self::is_pure_skip`].
     undentation_skip: Vec<u32>,
+    /// The positions of the contexts FCS's `checkForInvalidDeclsInTypeDefn`
+    /// walk acts on ([`pushes::NestingMarks`]), maintained on push/pop beside
+    /// `undentation_skip`.
+    nesting_marks: pushes::NestingMarks,
     initialized: bool,
     eof_pulled: bool,
     /// The line of the last token boundary [`Self::pull_raw`] reached, over
@@ -1156,6 +1160,7 @@ impl<'a> Filter<'a> {
             delayed: Vec::new(),
             offside_stack: Vec::new(),
             undentation_skip: Vec::new(),
+            nesting_marks: pushes::NestingMarks::default(),
             initialized: false,
             eof_pulled: false,
             lines: lines.cursor(),
@@ -1968,6 +1973,7 @@ impl<'a> Filter<'a> {
         if let (Some(push), Some(pushes)) = (push, &mut self.pushes) {
             pushes.push(push);
         }
+        self.nesting_marks.push(&ctxt, self.offside_stack.len());
         self.offside_stack.push(ctxt);
         self.push_undentation_skip();
         true
@@ -2732,6 +2738,9 @@ impl<'a> Filter<'a> {
         let popped = self.offside_stack.pop();
         if popped.is_some() {
             self.undentation_skip.pop();
+        }
+        if let Some(ctxt) = &popped {
+            self.nesting_marks.pop(ctxt);
         }
         popped
     }

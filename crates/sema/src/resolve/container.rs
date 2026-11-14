@@ -24,9 +24,6 @@ pub(super) struct ContainerPath<'n> {
     /// `prefix_ids[k]` is `segments[..k]`'s id: one more entry than
     /// `segments`.
     prefix_ids: Vec<PathId>,
-    /// The per-walk interning this one replaced, held to it query by query.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    reference: reference::Lockstep,
 }
 
 impl Deref for ContainerPath<'_> {
@@ -44,8 +41,6 @@ impl<'n> ContainerPath<'n> {
             names,
             segments: Vec::new(),
             prefix_ids: vec![names.root()],
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            reference: reference::Lockstep::new(names.root()),
         }
     }
 
@@ -72,10 +67,7 @@ impl<'n> ContainerPath<'n> {
     /// keyed by [`PathId`]s holds the path; `Some` does not prove the walk
     /// entered it.
     pub(super) fn id_of(&self, path: &[String]) -> Option<PathId> {
-        let id = self.names.lookup_path(path);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.reference.check_id_of(path, id);
-        id
+        self.names.lookup_path(path)
     }
 
     /// What `map` holds for the container `path`: nothing when the walk has
@@ -93,8 +85,6 @@ impl<'n> ContainerPath<'n> {
         let id = self
             .names
             .intern_child(self.id(), self.names.logical(&segment));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.reference.push(&segment, id);
         self.segments.push(segment);
         self.prefix_ids.push(id);
     }
@@ -132,8 +122,6 @@ impl<'n> ContainerPath<'n> {
         );
         self.segments.truncate(len);
         self.prefix_ids.truncate(len + 1);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.reference.truncate(len);
     }
 }
 
@@ -142,90 +130,6 @@ impl<'n> ContainerPath<'n> {
 pub(super) struct ContainerMark {
     len: usize,
     id: PathId,
-}
-
-/// The per-walk container interning that [`PathId`]s replaced, kept under
-/// `interning-reference` in a debug build to hold them to it (a release build,
-/// which is what `sema_counts` measures, leaves it out even when the feature
-/// is on, since the feature reaches every target that links this crate's
-/// dev-dependencies): each container the walk enters
-/// gets a walk-local id, the first time, from a trie of its own.
-///
-/// What the walk's maps can tell apart is exactly what the reference ids can,
-/// so the lockstep asserts that the table's ids biject with the reference's
-/// over the containers the walk entered, and that a path the reference never
-/// entered has no id or one the walk never entered either.
-#[cfg(all(feature = "interning-reference", debug_assertions))]
-mod reference {
-    use crate::hash::HashMap;
-    use crate::names::PathId;
-
-    #[derive(Debug)]
-    pub(super) struct Lockstep {
-        /// Each entered container's local id by its parent's and its last
-        /// segment; the root is 0.
-        children: HashMap<u32, HashMap<String, u32>>,
-        /// The local id of each prefix of the current path.
-        prefix_ids: Vec<u32>,
-        /// Each entered container's [`PathId`], by local id, and back.
-        to_table: Vec<PathId>,
-        from_table: HashMap<PathId, u32>,
-    }
-
-    impl Lockstep {
-        pub(super) fn new(root: PathId) -> Self {
-            Lockstep {
-                children: HashMap::default(),
-                prefix_ids: vec![0],
-                to_table: vec![root],
-                from_table: std::iter::once((root, 0)).collect(),
-            }
-        }
-
-        pub(super) fn push(&mut self, segment: &str, table_id: PathId) {
-            let parent = *self.prefix_ids.last().expect("the root is always present");
-            let next = u32::try_from(self.to_table.len()).expect("fewer than 2^32 containers");
-            let local = *self
-                .children
-                .entry(parent)
-                .or_default()
-                .entry(segment.to_string())
-                .or_insert(next);
-            if local == next {
-                self.to_table.push(table_id);
-                assert!(
-                    self.from_table.insert(table_id, local).is_none(),
-                    "one PathId for two containers"
-                );
-            }
-            assert_eq!(
-                self.to_table[local as usize], table_id,
-                "two PathIds for one container"
-            );
-            self.prefix_ids.push(local);
-        }
-
-        pub(super) fn truncate(&mut self, len: usize) {
-            self.prefix_ids.truncate(len + 1);
-        }
-
-        pub(super) fn check_id_of(&self, path: &[String], table_id: Option<PathId>) {
-            let local = path.iter().try_fold(0, |parent, segment| {
-                self.children.get(&parent)?.get(segment).copied()
-            });
-            match local {
-                Some(local) => assert_eq!(
-                    table_id,
-                    Some(self.to_table[local as usize]),
-                    "an entered container's PathId moved: {path:?}"
-                ),
-                None => assert!(
-                    table_id.is_none_or(|id| !self.from_table.contains_key(&id)),
-                    "a container the walk never entered has an entered one's PathId: {path:?}"
-                ),
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -337,20 +241,6 @@ mod tests {
         assert_eq!(path.id_of(&["A".to_string(), "C".to_string()]), None);
         assert_eq!(path.id_of(&["B".to_string()]), None);
         assert!(path.id_of(&["A".to_string()]).is_some());
-    }
-
-    /// The lockstep catches an id the walk's maps would confuse with an
-    /// entered container's.
-    #[test]
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    #[should_panic(expected = "never entered")]
-    fn the_lockstep_rejects_an_unentered_path_with_an_entered_id() {
-        let names = NameTable::default();
-        let mut path = ContainerPath::new(&names);
-        path.set(vec!["A".to_string()]);
-        let entered = path.id();
-        path.reference
-            .check_id_of(&["B".to_string()], Some(entered));
     }
 
     #[test]

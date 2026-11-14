@@ -2276,7 +2276,7 @@ impl AssemblyEnv {
         let namespace = PathKey::of(names, namespace);
         let bucket = |name: &str| {
             self.types_by_namespace
-                .il_or_source_named(names, namespace, NameKey::of(names, name))
+                .il_or_source_named(namespace, NameKey::of(names, name))
         };
         let spelled = bucket(segment);
         let mangled_base = match segment.rsplit_once('`') {
@@ -2817,7 +2817,7 @@ impl AssemblyEnv {
         arity: usize,
     ) -> Option<EntityHandle> {
         self.types_by_namespace
-            .first_by_arity(self.names(), namespace, name, arity)
+            .first_by_arity(namespace, name, arity)
     }
 
     /// [`Self::lookup_type`], **paired with the namespace's drop marker** — the
@@ -4505,11 +4505,11 @@ impl AssemblyEnv {
     pub fn open_namespace_fold_surfaces(&self, namespace: &[String]) -> &[OpenFoldSurface] {
         let names = self.names();
         let key = PathKey::of(names, namespace);
-        match self.types_by_namespace.fold_memo(names, key) {
+        match self.types_by_namespace.fold_memo(key) {
             Some(memo) => memo.get_or_init(|| {
                 let direct: Vec<EntityHandle> = self
                     .types_by_namespace
-                    .types_in_namespace(names, key)
+                    .types_in_namespace(key)
                     .iter()
                     .copied()
                     .filter(|&h| self.is_public(h))
@@ -5240,9 +5240,8 @@ impl AssemblyEnv {
         tail: &[String],
     ) -> bool {
         let names = self.names();
-        prefix.check(names);
         let dropped = &self.namespaces_with_dropped_types;
-        let found = !dropped.is_empty() && {
+        !dropped.is_empty() && {
             let own_splits = match prefix.id {
                 Some(id) => std::iter::successors(Some(id), |&at| names.split(at).map(|(p, _)| p))
                     .map(Some)
@@ -5254,17 +5253,7 @@ impl AssemblyEnv {
                 .into_iter()
                 .chain(below.into_iter().skip(1))
                 .any(|id| dropped.contains_id(names, id))
-        };
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let full: Vec<String> = prefix.text.iter().chain(tail).cloned().collect();
-            assert_eq!(
-                found,
-                self.any_split_of_a_module_path_has_a_dropped_type(&full),
-                "the dropped-type splits disagree with their reference at {full:?}"
-            );
         }
-        found
     }
 
     /// **EX-1 — the name-keyed extension gate.** Whether any referenced-assembly
@@ -5396,7 +5385,7 @@ impl AssemblyEnv {
     fn types_in_namespace(&self, namespace: &[String]) -> &[EntityHandle] {
         let names = self.names();
         self.types_by_namespace
-            .types_in_namespace(names, PathKey::of(names, namespace))
+            .types_in_namespace(PathKey::of(names, namespace))
     }
 
     /// The top-level type handles at exactly `(namespace, source name)`, across
@@ -5408,8 +5397,7 @@ impl AssemblyEnv {
 
     /// [`Self::types_named`] by keys the caller already holds.
     fn types_named_at(&self, namespace: PathKey<'_>, name: NameKey<'_>) -> &[EntityHandle] {
-        self.types_by_namespace
-            .types_named(self.names(), namespace, name)
+        self.types_by_namespace.types_named(namespace, name)
     }
 
     /// The per-namespace half of [`Self::extension_named_in_scope`]: whether any
@@ -7994,6 +7982,56 @@ mod presence_table_tests {
                 qualified,
                 "qualified presence of {kind:?}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod dropped_type_split_tests {
+    use super::AssemblyEnv;
+    use crate::names::PathKey;
+    use proptest::prelude::*;
+
+    /// A small alphabet, so the dropped namespaces and the paths asked about
+    /// share prefixes.
+    fn path() -> impl Strategy<Value = Vec<String>> {
+        prop::collection::vec(prop::sample::select(vec!["A", "B", "C"]), 0..4)
+            .prop_map(|segments| segments.into_iter().map(str::to_string).collect())
+    }
+
+    proptest! {
+        /// The splits of `prefix ++ tail`, asked by id, are the splits of the
+        /// spelled path, whether or not the table holds the prefix, with
+        /// decoy paths in the table that no drop names.
+        #[test]
+        fn the_splits_by_id_are_the_splits_of_the_spelled_path(
+            dropped in prop::collection::vec(path(), 0..4),
+            decoys in prop::collection::vec(path(), 0..4),
+            asked in prop::collection::vec((path(), path()), 0..8),
+        ) {
+            let mut env = AssemblyEnv::default();
+            for decoy in &decoys {
+                env.names().intern_path(decoy);
+            }
+            for namespace in &dropped {
+                env.mark_namespace_dropped_type(namespace.clone());
+            }
+            let names = env.names();
+            for (prefix, tail) in &asked {
+                let full: Vec<String> = prefix.iter().chain(tail).cloned().collect();
+                let expected = env.any_split_of_a_module_path_has_a_dropped_type(&full);
+                prop_assert_eq!(
+                    expected,
+                    (0..=full.len()).any(|k| dropped.iter().any(|d| *d == full[..k])),
+                    "{:?}", full
+                );
+                let key = PathKey::of(names, prefix);
+                prop_assert_eq!(
+                    env.any_split_under_has_a_dropped_type(key, tail),
+                    expected,
+                    "{:?} ++ {:?}, prefix id {:?}", prefix, tail, key.id
+                );
+            }
         }
     }
 }
@@ -11632,7 +11670,7 @@ pub(crate) mod from_views_tests {
                     usize::from(surfaces.iter().any(|s| !s.contestant_names.is_empty()));
                 hits.residue_only += usize::from(
                     env.types_by_namespace
-                        .fold_memo(env.names(), crate::names::PathKey::of(env.names(), ns))
+                        .fold_memo(crate::names::PathKey::of(env.names(), ns))
                         .is_none()
                         && !surfaces.is_empty(),
                 );

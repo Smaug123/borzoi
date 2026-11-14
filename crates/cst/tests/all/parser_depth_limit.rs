@@ -463,3 +463,45 @@ fn a_breaching_parse_keeps_the_preprocessor_report() {
     );
     assert_eq!(report, want);
 }
+
+/// A declaration keyword after a deep chain of open `let` contexts: the lex
+/// filter's type-nesting check for `open`/`type`/`module`/`exception` walks the
+/// whole offside stack before the parser's depth guard runs, so the walk must
+/// not recurse per context, nor rescan the stack per keyword (many `open`s
+/// under one chain).
+#[test]
+fn declaration_keyword_under_deep_let_chain_breaches() {
+    for keyword in [
+        "open System",
+        "type T = int",
+        "module N = begin end",
+        "exception E",
+    ] {
+        assert_breaches(format!("{}{keyword}\n", "let x = ".repeat(100_000)));
+    }
+    let lets = "let x = ".repeat(50_000);
+    assert_breaches(format!("{lets}{}\n", "open System ".repeat(50_000)));
+    // Member heads with no type definition below them: the walk passes over
+    // them without visiting each.
+    let probe = probe_lsp_stack(format!(
+        "{}{}\n",
+        "public new ".repeat(50_000),
+        "open System ".repeat(50_000)
+    ));
+    assert!(
+        probe.roundtrip_ok,
+        "the member-head chain must stay lossless"
+    );
+    // Type definitions nested under parentheses on one line: the walk visits
+    // a bounded number of them per `open`.
+    let probe = probe_lsp_stack(format!(
+        "{}let x = {}{}\n",
+        "(type ".repeat(50_000),
+        "open System ".repeat(50_000),
+        ")".repeat(50_000)
+    ));
+    assert!(
+        probe.roundtrip_ok,
+        "the nested-type chain must stay lossless"
+    );
+}

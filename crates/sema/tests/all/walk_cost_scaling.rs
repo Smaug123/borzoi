@@ -492,7 +492,7 @@ fn every_nesting_walks_in_linear_time_in_its_height() {
     );
 }
 
-/// The most a resolution's working memory may grow from a layout-nested
+/// The most the memory a resolution holds may grow from a layout-nested
 /// shape's depth `d` to [`FACTOR`]` * d`. Unlike time, the bytes a walk holds
 /// are the same on every run and every machine, so the bound sits nearer
 /// linear (8) than the timing tests' [`MAX_RATIO`] does, and far below
@@ -620,14 +620,15 @@ fn memory_probe_child() {
 /// eighth of its tallest clean count and at that count, both parsing cleanly,
 /// so neither depth measures a recovered tail.
 ///
-/// What is held to the bound is the walk's working state, its peak beyond
-/// the result it returns. In a debug build the interning reference keeps each
-/// nested module's export declaration spelled out by its full qualified path,
-/// so an implementation file's result is quadratic in the nesting there, as
-/// `module_long_ident`'s is in a header's segments ([`EXEMPT`]); it is
-/// printed, not bounded. Under a named root ([`NAMED_NESTED_MODULES`]) the
-/// fold also derives the next file's indices from those declarations, which
-/// it holds by id, so that working state is bounded too.
+/// What is held to the bound is the most the walk holds at once, the result
+/// it returns included: each nested module's export declaration is held by
+/// its interned id, so the result is linear in the nesting too. Under a named
+/// root ([`NAMED_NESTED_MODULES`]) the fold also derives the next file's
+/// indices from those declarations, so that working state is bounded as
+/// well. The peak beyond the result is printed, not bounded on its own: the
+/// peak can come before the whole result is built, so the difference
+/// undercounts by up to the result's size, which a shallow nesting's few
+/// bytes feel most.
 #[test]
 fn nested_modules_resolve_in_linear_memory_in_their_depth() {
     for (name, _) in MEMORY_EXEMPT {
@@ -661,11 +662,13 @@ fn nested_modules_resolve_in_linear_memory_in_their_depth() {
             }
         };
         let (at_short, at_long) = (bytes(short), bytes(long));
-        let ratio = at_long.working() as f64 / at_short.working().max(1) as f64;
+        let ratio = at_long.peak as f64 / at_short.peak.max(1) as f64;
         println!(
-            "{:28} working {} B at {short} repeats -> {} B at {long} ({ratio:.1}x); \
-             result {} B -> {} B",
+            "{:28} peak {} B at {short} repeats -> {} B at {long} ({ratio:.1}x); \
+             working {} B -> {} B; result {} B -> {} B",
             shape.name,
+            at_short.peak,
+            at_long.peak,
             at_short.working(),
             at_long.working(),
             at_short.result,
@@ -674,22 +677,20 @@ fn nested_modules_resolve_in_linear_memory_in_their_depth() {
         let exempt = MEMORY_EXEMPT.iter().any(|&(name, _)| name == shape.name);
         if exempt && ratio <= MAX_MEMORY_RATIO {
             failures.push(format!(
-                "{}: exempt, yet its working memory grew only {ratio:.1}x: remove its \
+                "{}: exempt, yet its memory grew only {ratio:.1}x: remove its \
                  MEMORY_EXEMPT entry",
                 shape.name
             ));
         } else if !exempt && ratio > MAX_MEMORY_RATIO {
             failures.push(format!(
-                "{}: working {} B at {short} repeats and {} B at {long} ({ratio:.1}x)",
-                shape.name,
-                at_short.working(),
-                at_long.working(),
+                "{}: peak {} B at {short} repeats and {} B at {long} ({ratio:.1}x)",
+                shape.name, at_short.peak, at_long.peak,
             ));
         }
     }
     assert!(
         failures.is_empty(),
-        "resolution's working memory grew faster than {MAX_MEMORY_RATIO}x over {FACTOR}x the \
+        "resolution's memory grew faster than {MAX_MEMORY_RATIO}x over {FACTOR}x the \
          nesting:\n{}",
         failures.join("\n")
     );

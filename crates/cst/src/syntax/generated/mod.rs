@@ -20,5 +20,7 @@ pub mod union_types;
 // The frozen, published per-version facades (plan PR E / D4): projections of the
 // union that drop post-version nodes/variants. `v9` == the union today; `v8`
 // drops the F# 9.0 nullness `Type::WithNull`. Re-exported from `crate::syntax`.
+#[cfg(feature = "unstable-union")]
 pub mod v8;
+#[cfg(feature = "unstable-union")]
 pub mod v9;

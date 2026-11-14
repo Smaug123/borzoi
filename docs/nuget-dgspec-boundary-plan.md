@@ -1612,7 +1612,8 @@ The stages are:
    below.
 2. **A₁.3b, the evaluation's second output.** Behind the opt-in mode, the
    evaluation retains `<Target>` elements (name, attributes, file, order) and
-   exports the item tables instead of dropping them. Two checks:
+   exports the item tables instead of dropping them (landed; see the *A₁.3b*
+   sections below). Two checks:
    - an invariant test: `ParsedProject` is identical with the mode on and
      off over the corpus, which is what protects the LSP;
    - an oracle: the `itemsMeta` op, widened to any item type on SDK
@@ -1708,9 +1709,8 @@ So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
    discipline (landed; see *A₁.3b: every metadatum* below);
 2. expose the dedicated buckets as item lists the executor can read
-   (`PackageReference` and `FrameworkReference` landed; see *A₁.3b:
-   `PackageReference` rows* below; `PackageVersion` and `ProjectReference`
-   remain);
+   (every dependency type and `ProjectReference` landed; see the *A₁.3b*
+   sections below);
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
@@ -1841,6 +1841,112 @@ opacity, and package-id-shaped identities. Every fixture's reference agrees
 with MSBuild on every name. `PackageVersion` needs its own exactness first.
 Until central versions are applied, any `PackageVersion` marks the whole
 dependency set uncertain, so that flag cannot vouch for its rows.
+
+##### A₁.3b: `ProjectReference` rows — landed
+
+`ProjectReference` lives in the reference capture, which the LSP reads for
+its project graph. Each reference declared by a literal identity also
+carries its row, read the way `PackageReference`'s are: every metadatum,
+quietly, over its type's item-definition defaults. The probe takes the list
+as exact by the walk's own `@(ProjectReference)` view: no `Update` or
+unapplied `Remove` may have run, no `Include` was hidden from the walk, no
+item definition gives the type a default, and no identity keeps a
+backslash. So the rows add metadata to a list whose identities the capture
+already vouched for, and claim nothing it did not.
+
+`fsproj_generic_items_generative_diff` generates `ProjectReference` items
+like the other types. Dropping a row's metadata, or taking the list as exact
+without the view, fails it. The census reads the list on every cone, and an
+exact list whose identities are not MSBuild's panics there. Every corpus
+project and single-target fixture holds no reference, so each reads as an
+exact empty list. The one fixture with a reference, `cpm`, is a
+multi-targeting outer build, whose walk is opaque.
+
+##### A₁.3b: `PackageVersion` rows — landed
+
+`PackageVersion` takes the same rows as `PackageReference` (`included_row`),
+but not its certainty. Every `PackageVersion` marks the package set uncertain
+until central versions are applied, so that flag cannot vouch for the list.
+The list asks the set's recorded causes instead. Each cause raised while
+walking a dependency element is attributed to that element's type, and each
+raised while collapsing `PackageReference`s to `PackageReference`
+(`State::package_cause_owners`). The `PackageVersion` list is exact when
+every cause is attributed to another type or is a `PackageVersion`'s own
+existence, no `Update` or `Remove` of one ran, the
+walk is not opaque, and every identity has the package-id shape. A cause
+raised anywhere else declines: on a `PackageVersion`, an item group, an
+import, an item definition.
+
+Two rules of the dependency capture, for every dependency type, keep a
+cause attributed elsewhere from leaking into the list:
+- A copy of a list this crate keeps in its own bucket
+  (`Include="@(PackageReference)"`, `@(Compile)`, and so on) is unevaluable:
+  there is no item table to read it from.
+- An `Exclude` is matched by normalised path (`item_spec::comparison_key`),
+  as MSBuild matches it and a `Remove`, so `Exclude="./a"` removes `a`. An
+  identity outside that key's domain declines. Matching as lowercased text
+  would keep an excluded `PackageReference` as well.
+
+The attribution is sound only because every write of the package set's flag
+records a cause. `fsproj_generic_items_generative_diff` generates
+`PackageVersion` items like the other types. Counting every cause as
+attributed fails it. Ignoring an `Update` or `Remove` fails the soak and a
+unit test. On every single-target corpus project and fixture the list is
+exact (and empty), beside a `PackageReference` set that stays uncertain.
+`cpm` and `TypeEquality` are multi-targeting outer builds, whose walks are
+opaque.
+
+`GlobalPackageReference` is the same with its own marker: its list is exact
+when every cause is attributed to another type or is a
+`GlobalPackageReference`'s existence, no `Update` or `Remove` of one ran, the
+walk is not opaque, and every identity has the package-id shape. The
+generator writes it as well. Ignoring its `Update` or `Remove`, or a cause
+attributed to it that is not its marker, fails the soak. No cone the census
+runs reads it.
+
+##### A₁.3b: target definitions — landed
+
+The walk records every `<Target>` element it reaches: its `Name`, the file,
+and the element's byte range there (`State::target_definitions`, test builds
+only). The probe answers a target name with the last definition of it, as
+MSBuild keeps the last and drops the rest. The executor (A₁.3c) reads a
+target's XML from that file and range. The answer is exact only when:
+- the walk is not opaque, so no file it did not reach can define the name
+  later;
+- every `Directory.Build.*` file the walk spliced in itself stands for an
+  import an SDK chain really makes. The props splice must have first run at
+  `Microsoft.Common.props`'s import point, whose condition, decided before
+  the splice ran, is exactly true and names the file spliced. Every other
+  props import point the chain reaches, each of which the walk suppresses,
+  must decide exactly false: MSBuild imports nothing there. The targets
+  splice is a fallback the walk makes only when no chain reached its import
+  point first, which MSBuild never makes, so it always declines;
+- the name, and every name defined, is plain: printable ASCII, no `%`, no
+  whitespace. MSBuild compares names unescaped, untrimmed and
+  `OrdinalIgnoreCase`, which on plain names is ASCII case folding.
+
+
+None of this makes a read more exact than the walk's import graph, and that
+graph has known divergences from MSBuild's (#677: a re-import through a
+symlink alias, which the walk dedupes by canonical path and MSBuild by
+lexical path). They bound the property table equally. #677 proposes the
+systematic fix, a differential over generated SDK import graphs.
+
+The oracle's `evaluated` op reports where MSBuild's own target table keeps
+each definition (file, line, column).
+`fsproj_target_definitions_generative_diff` generates targets before and
+after imports that are taken, skipped or undecidable, a nested import, a
+`Directory.Build.*` file beside the project, and names that differ by case,
+escape, padding and non-ASCII case, and holds every exact read to that
+table. Its soak fails if any of the three conditions is dropped, or if the
+first definition wins.
+
+The census asks MSBuild's target table for every target MSBuild ran in the
+subject project and holds our exact reads to it. On SDK 10.0.401 every
+single-target corpus project and fixture retains every target of its cone
+that way (39 to 42 each). The two multi-targeting outer builds are opaque.
+No target in these cones is defined twice, so the override rule is held by
+the generator, not the census.
 
 #### A₁.4: the task leaves
 

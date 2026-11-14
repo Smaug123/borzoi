@@ -241,6 +241,17 @@ impl<'a> Filter<'a> {
             return Step::Emit(tt);
         }
 
+        // OPEN with any context (LexFilter.fs:2603): checked against an
+        // enclosing type definition, then passed through. It returns ahead of
+        // the catch-all below, so it pushes no CtxtVanilla: a declaration
+        // indented under it (`open System⏎ let x = 1`) is offside of no
+        // context of the `open`'s, as FCS has it.
+        if matches!(tt.token, TokenContent::Real(TokenKind::Open)) && !self.offside_stack.is_empty()
+        {
+            self.check_invalid_decl_in_type_defn(super::pushes::NestedDeclKeyword::Open, &tt);
+            return Step::Emit(tt);
+        }
+
         // Catch-all: an ordinary real token arriving with CtxtSeqBlock
         // on top pushes a CtxtVanilla anchored at the token's column,
         // then passes the token through. (LexFilter.fs:2617) Virtual

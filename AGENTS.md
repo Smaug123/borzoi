@@ -16,7 +16,16 @@ This is a Cargo workspace with nine members:
   that the raw token table rebuilds the full-trivia driver iterator's stream
   (`docs/token-pipeline-soa-plan.md`). Self-contained: depends only on `logos` and
   `text-size` (and, behind that test-only feature, `rowan`). Intended to be
-  reusable outside this repo.
+  reusable outside this repo, through its *substrate*: the untyped tree
+  (`SyntaxNode`, `SyntaxKind`, `AstNode`) and the version gate
+  (`syntax::projection`). The typed facade over it — the *union* of every
+  language version's surface (`ImplFile`, `Expr`, `Pat`, `Type`, `ModuleDecl`,
+  …, in `syntax/union.rs` and `syntax/generated/`) and the shallow `v8`/`v9`
+  facades that re-export it — gains a variant whenever a construct is
+  modelled, so it is exported, at unchanged `syntax::` paths, only under the
+  `unstable-union` feature. `borzoi-sema`, the LSP, `borzoi-corpus-diff` and
+  cst's own tests turn it on; workspace builds therefore always have it, so
+  CI's lint job also builds, lints and documents the crate without it.
 - `crates/msbuild/` — `borzoi-msbuild`. MSBuild `.fsproj` parser /
   evaluator: extracts the Compile order, expands `$(…)` substitution, evaluates
   the condition subset, detects/follows `Directory.Build.props|targets`,
@@ -104,6 +113,10 @@ This is a Cargo workspace with nine members:
   panics. Every other verdict (unset, inexact, untrusted, an item table's
   identities and taint, and their metadata) is pinned in
   `restore_cone_reads_*.txt`. That is the worklist for A₁.3's executor.
+  The probe also answers where each target the cone ran is defined, and an
+  exact answer that is not the definition MSBuild's target table keeps
+  panics. `fsproj_target_definitions_generative_diff` holds those answers to
+  the same table on generated import graphs.
   `fsproj_generic_items_generative_diff` holds the generic item tables the
   probe reads, metadata included, to the `itemsMeta` op on generated
   projects.
@@ -368,7 +381,7 @@ real F# Compiler Service by *differential* tests living in `crates/cst/tests/all
   (`fcs-dump tokens-lexfilter-internal-batch`, read with
   `parse_fcs_parser_stream`).
 - **What the currency must cover.** Eliding is only sound for detail no consumer
-  reads. Every public accessor in `crates/cst/src/syntax/mod.rs` opens with
+  reads. Every public accessor in `crates/cst/src/syntax/union.rs` opens with
   `accessor!("Type::method")`, which under the crate's `accessor-trace` feature
   (on for its own tests) records the call. `parser_corpus_diff` records what the
   projection reads on the files that match FCS and pins it in
@@ -536,6 +549,11 @@ doc-link breakages must be caught locally).
 `--document-private-items` is load-bearing: nearly every doc comment here hangs
 off a private item, so without it rustdoc never resolves their intra-doc links
 and a link to a since-renamed function stays green forever.
+
+Workspace-wide commands unify features, so they always build `borzoi-cst` with
+`unstable-union` on. After touching `crates/cst`, also run CI's featureless
+pair: `cargo clippy -p borzoi-cst --lib -- -D warnings` and
+`RUSTDOCFLAGS="-D warnings" cargo doc -p borzoi-cst --no-deps --document-private-items`.
 
 Note `oracle-harness`'s `batch_recovers_from_a_transient_wedge` hardcodes a
 300 ms child deadline and flakes on a loaded machine (e.g. sibling worktrees

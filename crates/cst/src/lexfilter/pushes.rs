@@ -8,14 +8,14 @@ use super::{
 use crate::lexer::TokenKind;
 
 /// A declaration keyword that must appear at module/namespace level, not nested
-/// inside a type — three of FCS's `checkForInvalidDeclsInTypeDefn` keywords.
-/// (`open` is deliberately excluded: the parser already emits its FS0058, see
-/// `decls_type.rs`'s `stray_open_in_type_body_span`.) Selects the message.
+/// inside a type — FCS's `checkForInvalidDeclsInTypeDefn` keywords. Selects
+/// the message.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum NestedDeclKeyword {
     Type,
     Module,
     Exception,
+    Open,
 }
 
 impl NestedDeclKeyword {
@@ -32,91 +32,195 @@ impl NestedDeclKeyword {
             NestedDeclKeyword::Exception => {
                 "Exceptions must be defined at module level, not inside types."
             }
+            NestedDeclKeyword::Open => {
+                "'open' declarations must appear at module level, not inside types."
+            }
         }
     }
 }
 
 /// Port of FCS's `checkForInvalidDeclsInTypeDefn` core predicate
-/// (`LexFilter.fs:1396-1454`): whether an incoming `type`/`module`/`exception`
+/// (`LexFilter.fs:1396-1454`): whether an incoming `type`/`module`/`exception`/`open`
 /// token starting at `tok` is *inappropriately* nested inside a `CtxtTypeDefns`.
 /// `stack` is the offside stack with the **top at the end** (`offside_stack`),
-/// so the recursion peels the top via `split_last`.
-fn is_invalid_decl_in_type_defn(stack: &[Context], tok: Pos) -> bool {
+/// and `marks` the positions of the contexts the walk acts on.
+fn is_invalid_decl_in_type_defn(stack: &[Context], marks: &NestingMarks, tok: Pos) -> bool {
     // Skip validation inside a paren context — avoids false positives with
     // inline IL, e.g. `(# "unbox.any !0" type ('T) x : 'T #)`.
     if has_paren_context(stack) {
         return false;
     }
-    check_nesting(stack, tok, false)
+    let nested = marks.check_nesting(stack, tok);
+    // The full walk cross-checks the marks in debug builds, on stacks shallow
+    // enough that doing so keeps the run linear.
+    debug_assert!(
+        stack.len() > 10_000
+            || marks.types.len() > MAX_NESTED_TYPE_MARKS
+            || nested == check_nesting(stack, tok, false),
+        "nesting marks out of step"
+    );
+    nested
+}
+
+/// The most type marks one check visits. Two type definitions stack with no
+/// module body between them only when the upper is nested in the lower, which
+/// is no valid F#: a walk that would go further is in a file already that
+/// broken this many times over, where one more FS0058 adds nothing. It bounds
+/// a check under adversarial nesting (`(type ` repeated) to a constant number
+/// of steps.
+const MAX_NESTED_TYPE_MARKS: usize = 64;
+
+/// The positions in the offside stack of the contexts [`check_nesting`] acts
+/// on, kept beside the stack on push and pop so the walk visits only them.
+/// Every other context is a no-op to it, so a keyword under a deep chain of
+/// other contexts costs no rescan.
+#[derive(Debug, Default)]
+pub(super) struct NestingMarks {
+    /// Module and namespace bodies, where the walk stops, and type
+    /// definitions, where it can answer: ascending stack positions.
+    types: Vec<usize>,
+    /// Member heads and bodies, which stop the walk only once it has passed a
+    /// type definition: ascending stack positions.
+    members: Vec<usize>,
+}
+
+impl NestingMarks {
+    /// Record `ctxt`, about to be pushed at stack position `at`.
+    pub(super) fn push(&mut self, ctxt: &Context, at: usize) {
+        match ctxt {
+            Context::ModuleBody { .. }
+            | Context::NamespaceBody { .. }
+            | Context::TypeDefns { .. } => {
+                self.types.push(at);
+            }
+            Context::MemberHead { .. } | Context::MemberBody { .. } => self.members.push(at),
+            _ => {}
+        }
+    }
+
+    /// Forget `ctxt`, just popped from the top of the stack.
+    pub(super) fn pop(&mut self, ctxt: &Context) {
+        match ctxt {
+            Context::ModuleBody { .. }
+            | Context::NamespaceBody { .. }
+            | Context::TypeDefns { .. } => {
+                self.types.pop();
+            }
+            Context::MemberHead { .. } | Context::MemberBody { .. } => {
+                self.members.pop();
+            }
+            _ => {}
+        }
+    }
+
+    /// [`check_nesting`] over the marked contexts alone. From the top, member
+    /// marks are no-ops until a type definition has been passed, and after
+    /// that one between two type marks ends the walk, which a binary search
+    /// finds; so the cost is the number of type definitions the keyword sits
+    /// in, not the stack's depth. That number is capped at
+    /// [`MAX_NESTED_TYPE_MARKS`].
+    fn check_nesting(&self, stack: &[Context], tok: Pos) -> bool {
+        // The stack position below which the walk has yet to look, once it has
+        // passed a type definition.
+        let mut passed: Option<usize> = None;
+        for &i in self.types.iter().rev().take(MAX_NESTED_TYPE_MARKS) {
+            if let Some(upper) = passed {
+                let first_above = self.members.partition_point(|&m| m <= i);
+                if self.members.get(first_above).is_some_and(|&m| m < upper) {
+                    return false;
+                }
+            }
+            match &stack[i] {
+                // Escaped to module/namespace level — constructs here are fine.
+                Context::ModuleBody { .. } | Context::NamespaceBody { .. } => return false,
+                Context::TypeDefns { pos: type_pos, .. } => {
+                    if tok.line > type_pos.line && tok.col > type_pos.col {
+                        return !is_in_member_context(&stack[..=i]);
+                    }
+                    passed = Some(i);
+                }
+                _ => unreachable!("only bodies and type definitions are type marks"),
+            }
+        }
+        false
+    }
 }
 
 /// FCS `hasParenContext`: a `CtxtParen` reachable through only transparent
-/// `CtxtSeqBlock`/`CtxtVanilla` from the top.
+/// `CtxtSeqBlock`/`CtxtVanilla` from the top. The walks here are iterative: the
+/// stack is as deep as the input nests, and they run before the parser's depth
+/// guard does.
 fn has_paren_context(stack: &[Context]) -> bool {
-    match stack.split_last() {
-        Some((Context::Paren { .. }, _)) => true,
-        Some((Context::SeqBlock { .. } | Context::Vanilla { .. }, rest)) => has_paren_context(rest),
-        _ => false,
+    for ctx in stack.iter().rev() {
+        match ctx {
+            Context::Paren { .. } => return true,
+            Context::SeqBlock { .. } | Context::Vanilla { .. } => {}
+            _ => return false,
+        }
     }
+    false
 }
 
 /// FCS `checkNesting`: walk down the stack for a `CtxtTypeDefns` the token is
 /// indented inside (a *later* line at a *greater* column — same-line/same-column
 /// declarations are sequential, not nested) and not in a member/augmentation
 /// context.
-fn check_nesting(stack: &[Context], tok: Pos, type_defns_seen: bool) -> bool {
-    match stack.split_last() {
-        None => false,
-        // Escaped to module/namespace level — constructs here are fine.
-        Some((Context::ModuleBody { .. } | Context::NamespaceBody { .. }, _)) => false,
-        Some((Context::TypeDefns { pos: type_pos, .. }, rest)) => {
-            if tok.line > type_pos.line && tok.col > type_pos.col {
-                // Indented inside the type — invalid unless in a member/augment
-                // context (checked from this `CtxtTypeDefns` node down).
-                !is_in_member_context(stack)
-            } else {
+fn check_nesting(stack: &[Context], tok: Pos, mut type_defns_seen: bool) -> bool {
+    for (i, ctx) in stack.iter().enumerate().rev() {
+        match ctx {
+            // Escaped to module/namespace level — constructs here are fine.
+            Context::ModuleBody { .. } | Context::NamespaceBody { .. } => return false,
+            Context::TypeDefns { pos: type_pos, .. } => {
+                if tok.line > type_pos.line && tok.col > type_pos.col {
+                    // Indented inside the type — invalid unless in a
+                    // member/augment context (checked from this
+                    // `CtxtTypeDefns` node down).
+                    return !is_in_member_context(&stack[..=i]);
+                }
                 // Same column or less — check deeper.
-                check_nesting(rest, tok, true)
+                type_defns_seen = true;
             }
+            Context::SeqBlock { .. } | Context::Vanilla { .. } | Context::Paren { .. } => {}
+            Context::MemberHead { .. } | Context::MemberBody { .. } if type_defns_seen => {
+                return false;
+            }
+            _ => {}
         }
-        Some((
-            Context::SeqBlock { .. } | Context::Vanilla { .. } | Context::Paren { .. },
-            rest,
-        )) => check_nesting(rest, tok, type_defns_seen),
-        Some((Context::MemberHead { .. } | Context::MemberBody { .. }, _)) if type_defns_seen => {
-            false
-        }
-        Some((_, rest)) => check_nesting(rest, tok, type_defns_seen),
     }
+    false
 }
 
 /// FCS `isInMemberContext`: a member head/body or type-augmentation `with`
 /// reachable through only transparent `CtxtSeqBlock`/`CtxtVanilla` from the top.
 fn is_in_member_context(stack: &[Context]) -> bool {
-    match stack.split_last() {
-        Some((
-            Context::MemberHead { .. } | Context::MemberBody { .. } | Context::WithAsAugment { .. },
-            _,
-        )) => true,
-        Some((Context::SeqBlock { .. } | Context::Vanilla { .. }, rest)) => {
-            is_in_member_context(rest)
+    for ctx in stack.iter().rev() {
+        match ctx {
+            Context::MemberHead { .. }
+            | Context::MemberBody { .. }
+            | Context::WithAsAugment { .. } => return true,
+            Context::SeqBlock { .. } | Context::Vanilla { .. } => {}
+            _ => return false,
         }
-        _ => false,
     }
+    false
 }
 
 impl<'a> Filter<'a> {
     /// FCS's `checkForInvalidDeclsInTypeDefn` (`LexFilter.fs:1392-1470`) for
-    /// `type`/`module`/`exception`: when the keyword is inappropriately nested
+    /// `type`/`module`/`exception`/`open`: when the keyword is inappropriately nested
     /// inside a type definition, record the FS0058 error (`errorR` in FCS —
     /// recoverable, so the token/context flow is unchanged; only the diagnostic
     /// is added). Gated on the F# 10 `ErrorOnInvalidDeclsInTypeDefinitions`
-    /// feature. (`open` is handled parser-side; see [`NestedDeclKeyword`].)
-    fn check_invalid_decl_in_type_defn(&mut self, keyword: NestedDeclKeyword, tok: &TokenTup) {
+    /// feature.
+    pub(super) fn check_invalid_decl_in_type_defn(
+        &mut self,
+        keyword: NestedDeclKeyword,
+        tok: &TokenTup,
+    ) {
         if !self.reports_invalid_decls_in_type {
             return;
         }
-        if is_invalid_decl_in_type_defn(&self.offside_stack, tok.start) {
+        if is_invalid_decl_in_type_defn(&self.offside_stack, &self.nesting_marks, tok.start) {
             self.diagnostics.push(OffsideDiagnostic {
                 message: keyword.message().to_string(),
                 span: tok.span.range(),

@@ -24,11 +24,6 @@ pub struct Def {
     name: Name,
     /// How the source spelled [`Self::name`].
     spelling: Spelling,
-    /// The spelling as the constructor received it, which every answer about
-    /// the name is checked against under `interning-reference` in a debug
-    /// build.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    reference: Box<str>,
     /// Source range of the defining identifier token, as a byte range into
     /// the file (a [`TextRange`]).
     pub range: TextRange,
@@ -290,17 +285,13 @@ impl Def {
         provisional: bool,
     ) -> Self {
         let logical = ident_name(spelling);
-        let def = Self {
+        Self {
             spelling: Spelling::of(spelling, &logical),
             name: names.logical(&logical),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            reference: spelling.into(),
             range,
             kind,
             provisional,
-        };
-        def.check(names);
-        def
+        }
     }
 
     /// Build a definite (non-provisional) `Def` from an identifier token and
@@ -363,44 +354,20 @@ impl Def {
     /// [`Self::spelling`], read from the table.
     pub(crate) fn spelling_in<'s>(&'s self, names: &'s NameTable) -> Cow<'s, str> {
         let text = names.text(self.name);
-        let spelled = match &self.spelling {
+        match &self.spelling {
             Spelling::AsName => Cow::Borrowed(text),
             Spelling::Quoted => Cow::Owned(format!("``{text}``")),
             Spelling::Verbatim(spelling) => Cow::Borrowed(&**spelling),
-        };
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            spelled, *self.reference,
-            "a Def's spelling is not the one it was made with"
-        );
-        spelled
-    }
-
-    /// Assert, under `interning-reference` in a debug build, that the name
-    /// and the spelling answer as the spelling the definition was made with.
-    fn check(&self, names: &NameTable) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            assert_eq!(
-                names.text(self.name),
-                ident_name(&self.reference),
-                "a Def's name is not the logical name of its spelling"
-            );
-            let _ = self.spelling_in(names);
         }
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = names;
     }
 
     /// This definition with its name interned in `to` rather than `from`.
     #[cfg(feature = "test-support")]
     pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
-        let def = Self {
+        Self {
             name: crate::names::rekey_name(from, to, self.name),
             ..self.clone()
-        };
-        def.check(to);
-        def
+        }
     }
 }
 

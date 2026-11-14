@@ -28,13 +28,10 @@
 //! equality — the same projection-to-a-shared-form discipline the parser
 //! differential uses.
 
-#[cfg(all(feature = "interning-reference", debug_assertions))]
-use std::sync::Arc;
-
 use crate::AssemblyEnv;
 use crate::names::{NameTable, PathId};
 
-#[cfg(any(test, all(feature = "interning-reference", debug_assertions)))]
+#[cfg(test)]
 pub(crate) mod reference;
 mod table;
 
@@ -133,62 +130,24 @@ impl TyVid {
 /// A path names a type only next to the env whose table issued it; read it
 /// back with [`Self::segments`]. Like the table's ids it has no `Ord`, since
 /// ids are handed out in interning order: ordered output sorts by text.
-///
-/// Under `interning-reference` in a debug build it also carries the segments
-/// it was built from, the string form it replaced, and reading it, comparing
-/// two, and rendering a type assert that the id agrees with them. The segments
-/// are shared (an `Arc`), so a clone copies none.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TyPath {
     id: PathId,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    text: Arc<[String]>,
-}
-
-impl PartialEq for TyPath {
-    fn eq(&self, other: &Self) -> bool {
-        let same = self.id == other.id;
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            same,
-            self.text == other.text,
-            "two type paths' ids disagree with their segments, {:?} and {:?}",
-            self.text,
-            other.text
-        );
-        same
-    }
-}
-
-impl Eq for TyPath {}
-
-impl std::hash::Hash for TyPath {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
 }
 
 impl std::fmt::Debug for TyPath {
-    /// The segments where the reference carries them, and the id otherwise:
-    /// with no table at hand, the id is all a path can show.
+    /// The id: with no table at hand, it is all a path can show.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        return self.text.fmt(f);
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        return f.debug_tuple("TyPath").field(&self.id).finish();
+        f.debug_tuple("TyPath").field(&self.id).finish()
     }
 }
 
 impl TyPath {
     /// `path`, interned in `names`.
     pub(crate) fn new<S: AsRef<str>>(names: &NameTable, path: &[S]) -> TyPath {
-        let ty_path = TyPath {
+        TyPath {
             id: names.intern_path(path),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: path.iter().map(|s| s.as_ref().to_owned()).collect(),
-        };
-        ty_path.check(names);
-        ty_path
+        }
     }
 
     /// The path `dotted` spells, segments split at each `.`, interned in
@@ -210,17 +169,7 @@ impl TyPath {
 
     /// [`Self::segments`], by the table.
     pub(crate) fn segments_in<'n>(&self, names: &'n NameTable) -> Vec<&'n str> {
-        let segments = names.segments(self.id);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert!(
-            segments
-                .iter()
-                .copied()
-                .eq(self.text.iter().map(String::as_str)),
-            "a type path's id spells {segments:?}, not {:?}",
-            self.text
-        );
-        segments
+        names.segments(self.id)
     }
 
     /// The path's segments as owned strings, for a query that takes them so.
@@ -233,50 +182,15 @@ impl TyPath {
 
     /// Whether the path's segments are exactly `path`.
     pub(crate) fn is(&self, names: &NameTable, path: &[&str]) -> bool {
-        let found = names.lookup_path(path) == Some(self.id);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.text
-                .iter()
-                .map(String::as_str)
-                .eq(path.iter().copied()),
-            "a type path compared with {path:?} at {:?}",
-            self.text
-        );
-        found
+        names.lookup_path(path) == Some(self.id)
     }
 
     /// The same path, as an id of `to`'s; `self` is `from`'s.
     #[cfg(feature = "test-support")]
     pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> TyPath {
-        let ty_path = TyPath {
+        TyPath {
             id: crate::names::rekey_path(from, to, self.id),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: Arc::clone(&self.text),
-        };
-        ty_path.check(to);
-        ty_path
-    }
-
-    /// The segments the path was built from: the reference's spelling.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    pub(crate) fn text(&self) -> &[String] {
-        &self.text
-    }
-
-    /// Assert, under `interning-reference` in a debug build, that the id
-    /// spells the segments the path was built from.
-    fn check(&self, names: &NameTable) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            names.lookup_path(&self.text),
-            Some(self.id),
-            "a type path's id does not spell {:?}",
-            self.text
-        );
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = names;
+        }
     }
 }
 
@@ -473,18 +387,7 @@ impl Ty {
 impl TyTable {
     /// [`Ty::render`], by the tables.
     pub(crate) fn render(&self, names: &NameTable, ty: Ty) -> String {
-        let rendered = self.render_canonical(names, ty);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            rendered,
-            reference::render(&reference::SpelledTy::carried(self, ty)),
-            "a type renders apart from its segments"
-        );
-        rendered
-    }
-
-    fn render_canonical(&self, names: &NameTable, ty: Ty) -> String {
-        let render = |t: Ty| self.render_canonical(names, t);
+        let render = |t: Ty| self.render(names, t);
         match self.kind(ty) {
             TyKind::Named { path, args } | TyKind::Project { path, args } => {
                 render_named(&path.segments_in(names).join("."), args, render)
@@ -513,18 +416,7 @@ impl TyTable {
 
     /// [`Ty::render_fsharp`], by the tables.
     pub(crate) fn render_fsharp(&self, names: &NameTable, ty: Ty) -> String {
-        let rendered = self.render_display(names, ty);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            rendered,
-            reference::render_fsharp(&reference::SpelledTy::carried(self, ty)),
-            "a type renders for display apart from its segments"
-        );
-        rendered
-    }
-
-    fn render_display(&self, names: &NameTable, ty: Ty) -> String {
-        let render = |t: Ty| self.render_display(names, t);
+        let render = |t: Ty| self.render_fsharp(names, t);
         match self.kind(ty) {
             TyKind::Named { path, args } => {
                 let path = path.segments_in(names);

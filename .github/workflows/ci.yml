@@ -123,6 +123,15 @@ jobs:
         run: |
           nix develop --command env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
 
+      # `borzoi-sema` and the LSP turn on `borzoi-cst`'s `unstable-union`, so
+      # every workspace-wide build above has it. A package-scoped `--lib` build
+      # resolves the crate's features alone, as a consumer outside the
+      # workspace sees it: the untyped substrate, with the union private.
+      - name: Lint and document borzoi-cst without unstable-union
+        run: |
+          nix develop --command cargo clippy -p borzoi-cst --lib -- -D warnings
+          nix develop --command env RUSTDOCFLAGS="-D warnings" cargo doc -p borzoi-cst --no-deps --document-private-items
+
       - name: Test change detection
         run: bash tools/ci/detect-changes.test.sh
 

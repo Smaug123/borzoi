@@ -45,24 +45,10 @@ pub(super) struct NamedTypes {
     first_by_arity: HashMap<usize, EntityHandle>,
 }
 
-/// The string-keyed index [`TypeIndex`] replaced, kept beside it under
-/// `interning-reference` in a debug build.
-#[cfg(all(feature = "interning-reference", debug_assertions))]
-#[derive(Debug, Default, Clone)]
-struct TextNamespaceTypes {
-    all: Vec<EntityHandle>,
-    by_source_name: HashMap<String, NamedTypes>,
-    by_il_or_source_name: HashMap<String, Vec<EntityHandle>>,
-}
-
-/// The top-level types of an env, by namespace and then by name. Under
-/// `interning-reference` in a debug build every query is answered by the
-/// string-keyed index this replaced too, and the two must agree.
+/// The top-level types of an env, by namespace and then by name.
 #[derive(Debug, Default, Clone)]
 pub(super) struct TypeIndex {
     namespaces: HashMap<PathId, NamespaceTypes>,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    reference: HashMap<Vec<String>, TextNamespaceTypes>,
 }
 
 impl TypeIndex {
@@ -97,24 +83,6 @@ impl TypeIndex {
             .or_default()
             .all
             .push(handle);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let types = self.reference.entry(namespace.to_vec()).or_default();
-            types.all.push(handle);
-            for name in std::iter::once(il_name).chain(distinct_source_name) {
-                types
-                    .by_il_or_source_name
-                    .entry(name.to_string())
-                    .or_default()
-                    .push(handle);
-            }
-            types
-                .by_source_name
-                .entry(key_name.to_string())
-                .or_default()
-                .all
-                .push(handle);
-        }
     }
 
     /// Fill the first-wins type-position slot at `(namespace, name, arity)`
@@ -136,68 +104,23 @@ impl TypeIndex {
             .get_mut(&names.lookup(name).expect("a type's name was interned"))
             .expect("type source name was indexed before its first-wins slot");
         bucket.first_by_arity.entry(arity).or_insert(handle);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.reference
-            .get_mut(namespace)
-            .expect("type namespace was indexed before its first-wins slot")
-            .by_source_name
-            .get_mut(name)
-            .expect("type source name was indexed before its first-wins slot")
-            .first_by_arity
-            .entry(arity)
-            .or_insert(handle);
     }
 
-    fn namespace(&self, names: &NameTable, namespace: PathKey<'_>) -> Option<&NamespaceTypes> {
-        namespace.check(names);
-        let found = namespace.id.and_then(|id| self.namespaces.get(&id));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let reference = self.reference.get(namespace.text);
-            assert_eq!(
-                found.map(|t| &t.all),
-                reference.map(|t| &t.all),
-                "the type index disagrees with its reference at namespace {:?}",
-                namespace.text
-            );
-        }
-        found
+    fn namespace(&self, namespace: PathKey<'_>) -> Option<&NamespaceTypes> {
+        namespace.id.and_then(|id| self.namespaces.get(&id))
     }
 
     /// The bucket at `(namespace, name)`.
-    fn named(
-        &self,
-        names: &NameTable,
-        namespace: PathKey<'_>,
-        name: NameKey<'_>,
-    ) -> Option<&NamedTypes> {
-        name.check(names);
-        let found = self
-            .namespace(names, namespace)
+    fn named(&self, namespace: PathKey<'_>, name: NameKey<'_>) -> Option<&NamedTypes> {
+        self.namespace(namespace)
             .zip(name.id)
-            .and_then(|(types, name)| types.by_source_name.get(&name));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.reference
-                .get(namespace.text)
-                .and_then(|t| t.by_source_name.get(name.text)),
-            "the type index disagrees with its reference at {:?}.{:?}",
-            namespace.text,
-            name.text
-        );
-        found
+            .and_then(|(types, name)| types.by_source_name.get(&name))
     }
 
     /// Every top-level type at `(namespace, source name)`, in interning
     /// order.
-    pub(super) fn types_named(
-        &self,
-        names: &NameTable,
-        namespace: PathKey<'_>,
-        name: NameKey<'_>,
-    ) -> &[EntityHandle] {
-        self.named(names, namespace, name)
+    pub(super) fn types_named(&self, namespace: PathKey<'_>, name: NameKey<'_>) -> &[EntityHandle] {
+        self.named(namespace, name)
             .map_or(&[], |types| types.all.as_slice())
     }
 
@@ -205,24 +128,19 @@ impl TypeIndex {
     /// arity)`.
     pub(super) fn first_by_arity(
         &self,
-        names: &NameTable,
         namespace: PathKey<'_>,
         name: NameKey<'_>,
         arity: usize,
     ) -> Option<EntityHandle> {
-        self.named(names, namespace, name)?
+        self.named(namespace, name)?
             .first_by_arity
             .get(&arity)
             .copied()
     }
 
     /// Every top-level type in `namespace`, in interning order.
-    pub(super) fn types_in_namespace(
-        &self,
-        names: &NameTable,
-        namespace: PathKey<'_>,
-    ) -> &[EntityHandle] {
-        self.namespace(names, namespace)
+    pub(super) fn types_in_namespace(&self, namespace: PathKey<'_>) -> &[EntityHandle] {
+        self.namespace(namespace)
             .map_or(&[], |types| types.all.as_slice())
     }
 
@@ -230,39 +148,22 @@ impl TypeIndex {
     /// name, in interning order.
     pub(super) fn il_or_source_named(
         &self,
-        names: &NameTable,
         namespace: PathKey<'_>,
         name: NameKey<'_>,
     ) -> &[EntityHandle] {
-        name.check(names);
-        let found = self
-            .namespace(names, namespace)
+        self.namespace(namespace)
             .zip(name.id)
             .and_then(|(types, name)| types.by_il_or_source_name.get(&name))
-            .map_or(&[][..], Vec::as_slice);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.reference
-                .get(namespace.text)
-                .and_then(|t| t.by_il_or_source_name.get(name.text))
-                .map_or(&[][..], Vec::as_slice),
-            "the logical-segment index disagrees with its reference at {:?}.{:?}",
-            namespace.text,
-            name.text
-        );
-        found
+            .map_or(&[][..], Vec::as_slice)
     }
 
     /// `namespace`'s memo of its fold surfaces, `None` when it holds no
     /// type.
     pub(super) fn fold_memo(
         &self,
-        names: &NameTable,
         namespace: PathKey<'_>,
     ) -> Option<&OnceLock<Vec<OpenFoldSurface>>> {
-        self.namespace(names, namespace)
-            .map(|types| &types.fold_surfaces)
+        self.namespace(namespace).map(|types| &types.fold_surfaces)
     }
 
     /// Drop every namespace's memoised fold surfaces.
@@ -290,11 +191,7 @@ impl TypeIndex {
                 )
             })
             .collect();
-        TypeIndex {
-            namespaces,
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            reference: self.reference.clone(),
-        }
+        TypeIndex { namespaces }
     }
 }
 
@@ -308,4 +205,126 @@ fn rekey_names<V: Clone>(
     map.iter()
         .map(|(&name, v)| (rekey_name(from, to, name), v.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// One namespace's types keyed by text: the index a [`TypeIndex`] is
+    /// held to, built from the same inserts.
+    #[derive(Default)]
+    struct TextNamespaceTypes {
+        all: Vec<EntityHandle>,
+        by_source_name: HashMap<String, (Vec<EntityHandle>, HashMap<usize, EntityHandle>)>,
+        by_il_or_source_name: HashMap<String, Vec<EntityHandle>>,
+    }
+
+    /// A small alphabet, so namespaces, names and their prefixes collide.
+    fn name() -> impl Strategy<Value = String> {
+        prop::sample::select(vec!["A", "B", "op_Addition", "C`1"]).prop_map(str::to_string)
+    }
+
+    fn namespace() -> impl Strategy<Value = Vec<String>> {
+        prop::collection::vec(name(), 0..3)
+    }
+
+    /// One type filed in the index: its namespace, IL name, distinct
+    /// source name, key name and arity.
+    fn insert() -> impl Strategy<Value = (Vec<String>, String, Option<String>, String, usize)> {
+        (
+            namespace(),
+            name(),
+            prop::option::of(name()),
+            name(),
+            0..3usize,
+        )
+    }
+
+    proptest! {
+        /// Every query of the index answers as the same query of the
+        /// string-keyed index built from the same inserts, by keys looked
+        /// up in a table that also holds decoy paths and names, and after
+        /// re-keying onto another table.
+        #[test]
+        fn the_type_index_answers_as_its_text_does(
+            decoys in prop::collection::vec(namespace(), 0..4),
+            inserts in prop::collection::vec(insert(), 0..16),
+            namespaces in prop::collection::vec(namespace(), 0..6),
+            probes in prop::collection::vec(name(), 0..6),
+        ) {
+            let names = NameTable::default();
+            for decoy in &decoys {
+                names.intern_path(&decoy.iter().rev().cloned().collect::<Vec<_>>());
+            }
+            let mut index = TypeIndex::default();
+            let mut model: HashMap<Vec<String>, TextNamespaceTypes> = HashMap::default();
+            for (i, (ns, il_name, source_name, key_name, arity)) in inserts.iter().enumerate() {
+                let handle = EntityHandle::new(i);
+                let distinct = source_name.as_deref().filter(|s| s != il_name);
+                index.insert(&names, ns, il_name, distinct, key_name, handle);
+                index.fill_first_slot(&names, ns, key_name, *arity, handle);
+                let types = model.entry(ns.clone()).or_default();
+                types.all.push(handle);
+                for n in std::iter::once(il_name.as_str()).chain(distinct) {
+                    types.by_il_or_source_name.entry(n.to_string()).or_default().push(handle);
+                }
+                let (all, first) = types.by_source_name.entry(key_name.clone()).or_default();
+                all.push(handle);
+                first.entry(*arity).or_insert(handle);
+            }
+            let fresh = NameTable::default();
+            for decoy in decoys.iter().rev() {
+                fresh.intern_path(decoy);
+            }
+            let rekeyed = index.rekey(&names, &fresh);
+            let asked: Vec<&Vec<String>> = namespaces
+                .iter()
+                .chain(inserts.iter().map(|(ns, ..)| ns))
+                .chain(&decoys)
+                .collect();
+            let names_asked: Vec<&String> = probes
+                .iter()
+                .chain(inserts.iter().flat_map(|(_, il, source, key, _)| {
+                    std::iter::once(il).chain(source).chain(std::iter::once(key))
+                }))
+                .collect();
+            for (table, index) in [(&names, &index), (&fresh, &rekeyed)] {
+                for &ns in &asked {
+                    let types = model.get(ns);
+                    let key = PathKey::of(table, ns);
+                    prop_assert_eq!(
+                        index.types_in_namespace(key),
+                        types.map_or(&[][..], |t| t.all.as_slice()),
+                        "{:?}", ns
+                    );
+                    prop_assert_eq!(index.fold_memo(key).is_some(), types.is_some(), "{:?}", ns);
+                    for &n in &names_asked {
+                        let name = NameKey::of(table, n);
+                        let named = types.and_then(|t| t.by_source_name.get(n));
+                        prop_assert_eq!(
+                            index.types_named(key, name),
+                            named.map_or(&[][..], |(all, _)| all.as_slice()),
+                            "{:?}.{:?}", ns, n
+                        );
+                        for arity in 0..3 {
+                            prop_assert_eq!(
+                                index.first_by_arity(key, name, arity),
+                                named.and_then(|(_, first)| first.get(&arity).copied()),
+                                "{:?}.{:?}`{}", ns, n, arity
+                            );
+                        }
+                        prop_assert_eq!(
+                            index.il_or_source_named(key, name),
+                            types
+                                .and_then(|t| t.by_il_or_source_name.get(n))
+                                .map_or(&[][..], Vec::as_slice),
+                            "{:?}.{:?}", ns, n
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

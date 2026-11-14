@@ -2,108 +2,46 @@
 //! [`PathId`] (`docs/sema-interning-plan.md`, Stage 6a); and [`ExportName`],
 //! the name an export publishes, as an interned [`Name`] (Stage 6c).
 
-#[cfg(all(feature = "interning-reference", debug_assertions))]
-use std::sync::Arc;
-
 use super::container::ContainerPath;
 use crate::names::{Name, NameTable, PathId, PathKey};
 
 /// The qualified path an [`ExportDecl`](super::model::ExportDecl) names, held
 /// by its id in the env's [`NameTable`], so a declaration and every index
-/// entry derived from it costs one integer, whatever the path's length.
-///
-/// Under `interning-reference` in a debug build it also carries the spelling
-/// the walk built it from, by the string operations the id replaced, and
-/// every operation below asserts that the id's answer agrees with that
-/// spelling's. The spelling is shared (an `Arc`), so a clone, such as each
-/// index entry [`ProjectItems::extend_with`](super::model::ProjectItems::extend_with)
-/// derives from a declaration, copies no segment.
-#[derive(Clone, Debug)]
+/// entry derived from it, such as each one
+/// [`ProjectItems::extend_with`](super::model::ProjectItems::extend_with)
+/// derives, costs one integer, whatever the path's length.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DeclPath {
     id: PathId,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    text: Arc<[String]>,
 }
-
-impl PartialEq for DeclPath {
-    fn eq(&self, other: &Self) -> bool {
-        let same = self.id == other.id;
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            same,
-            self.text == other.text,
-            "two declaration paths' ids disagree with their spellings, {:?} and {:?}",
-            self.text,
-            other.text
-        );
-        same
-    }
-}
-
-impl Eq for DeclPath {}
 
 impl DeclPath {
     /// `path`, interned.
     pub(super) fn new<S: AsRef<str>>(names: &NameTable, path: &[S]) -> Self {
-        let decl = DeclPath {
+        DeclPath {
             id: names.intern_path(path),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: path.iter().map(|s| s.as_ref().to_string()).collect(),
-        };
-        decl.check(names);
-        decl
+        }
     }
 
-    /// The path whose id is `id`, which `text` spells.
-    pub(super) fn interned(names: &NameTable, id: PathId, text: &[String]) -> Self {
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = text;
-        let decl = DeclPath {
-            id,
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: text.into(),
-        };
-        decl.check(names);
-        decl
+    /// The path whose id is `id`.
+    pub(super) fn interned(id: PathId) -> Self {
+        DeclPath { id }
     }
 
-    /// `container` extended by `segments`, interned. `container_text` spells
-    /// `container`; only the reference reads it.
+    /// `container` extended by `segments`, interned.
     pub(super) fn under<S: AsRef<str>>(
         names: &NameTable,
         container: PathId,
-        container_text: &[String],
         segments: &[S],
     ) -> Self {
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = container_text;
-        let decl = DeclPath {
+        DeclPath {
             id: names.intern_extension(container, segments),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: container_text
-                .iter()
-                .cloned()
-                .chain(segments.iter().map(|s| s.as_ref().to_string()))
-                .collect(),
-        };
-        decl.check(names);
-        decl
+        }
     }
 
     /// This path extended by `segments`, interned.
     pub(super) fn extended<S: AsRef<str>>(&self, names: &NameTable, segments: &[S]) -> Self {
-        let decl = DeclPath {
-            id: names.intern_extension(self.id, segments),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: self
-                .text
-                .iter()
-                .cloned()
-                .chain(segments.iter().map(|s| s.as_ref().to_string()))
-                .collect(),
-        };
-        decl.check(names);
-        decl
+        DeclPath::under(names, self.id, segments)
     }
 
     /// The same path, as an id of `to`'s; `self` is `from`'s.
@@ -111,8 +49,6 @@ impl DeclPath {
     pub(super) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
         DeclPath {
             id: crate::names::rekey_path(from, to, self.id),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: Arc::clone(&self.text),
         }
     }
 
@@ -123,143 +59,62 @@ impl DeclPath {
 
     /// The path without its last segment; `None` for the empty path.
     pub(super) fn parent(&self, names: &NameTable) -> Option<DeclPath> {
-        let parent = names.split(self.id).map(|(parent, _)| DeclPath {
-            id: parent,
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: self.text[..self.text.len().saturating_sub(1)].into(),
-        });
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            parent.is_some(),
-            !self.text.is_empty(),
-            "a declaration path's parent at {:?}",
-            self.text
-        );
-        if let Some(parent) = &parent {
-            parent.check(names);
-        }
-        parent
+        names
+            .split(self.id)
+            .map(|(parent, _)| DeclPath { id: parent })
     }
 
     /// The path's last segment; `None` for the empty path.
     pub(super) fn last<'n>(&self, names: &'n NameTable) -> Option<&'n str> {
-        let last = names.split(self.id).map(|(_, last)| names.text(last));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            last,
-            self.text.last().map(String::as_str),
-            "a declaration path's last segment at {:?}",
-            self.text
-        );
-        last
+        names.split(self.id).map(|(_, last)| names.text(last))
     }
 
     /// Whether the path's segments are exactly `path`.
     pub(super) fn spells(&self, names: &NameTable, path: &[String]) -> bool {
-        let found = names.lookup_path(path) == Some(self.id);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            *self.text == *path,
-            "a declaration path compared with {path:?} at {:?}",
-            self.text
-        );
-        found
+        names.lookup_path(path) == Some(self.id)
     }
 
     /// Whether `prefix` is a prefix of the path, the path itself and the
     /// empty prefix included.
     pub(super) fn starts_with(&self, names: &NameTable, prefix: &[String]) -> bool {
-        let found = names
+        names
             .lookup_path(prefix)
-            .is_some_and(|prefix| names.is_prefix(prefix, self.id));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.text.starts_with(prefix),
-            "a declaration path's prefix {prefix:?} at {:?}",
-            self.text
-        );
-        found
+            .is_some_and(|prefix| names.is_prefix(prefix, self.id))
     }
 
     /// Whether any of the path's segments is `segment`.
     pub(super) fn has_segment(&self, names: &NameTable, segment: &str) -> bool {
-        let found = names
+        names
             .lookup(segment)
-            .is_some_and(|segment| names.names_inward(self.id).any(|name| name == segment));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.text.iter().any(|s| s == segment),
-            "a declaration path's segment {segment:?} at {:?}",
-            self.text
-        );
-        found
+            .is_some_and(|segment| names.names_inward(self.id).any(|name| name == segment))
     }
 
     /// The path's segments.
     pub(super) fn spell(&self, names: &NameTable) -> Vec<String> {
-        let spelled: Vec<String> = names
+        names
             .segments(self.id)
             .into_iter()
             .map(str::to_string)
-            .collect();
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            *spelled, *self.text,
-            "a declaration path's id spells another path"
-        );
-        spelled
+            .collect()
     }
 
     /// Whether the path is exactly `path`.
-    pub(super) fn is(&self, names: &NameTable, path: PathKey<'_>) -> bool {
-        path.check(names);
-        let found = path.id == Some(self.id);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            *self.text == *path.text,
-            "a declaration path compared with {:?} at {:?}",
-            path.text,
-            self.text
-        );
-        found
+    pub(super) fn is(&self, path: PathKey<'_>) -> bool {
+        path.id == Some(self.id)
     }
 
     /// Whether the path is `parent` extended by one name.
     pub(super) fn is_child_of(&self, names: &NameTable, parent: PathKey<'_>) -> bool {
-        parent.check(names);
-        let found = parent
+        parent
             .id
-            .is_some_and(|parent| names.split(self.id).is_some_and(|(up, _)| up == parent));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.text.len() == parent.text.len() + 1 && self.text.starts_with(parent.text),
-            "a declaration path's parent {:?} at {:?}",
-            parent.text,
-            self.text
-        );
-        found
+            .is_some_and(|parent| names.split(self.id).is_some_and(|(up, _)| up == parent))
     }
 
     /// Whether `prefix` is a proper prefix of the path.
     pub(super) fn is_strictly_under(&self, names: &NameTable, prefix: PathKey<'_>) -> bool {
-        prefix.check(names);
-        let found = prefix
+        prefix
             .id
-            .is_some_and(|prefix| prefix != self.id && names.is_prefix(prefix, self.id));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.text.len() > prefix.text.len() && self.text.starts_with(prefix.text),
-            "a declaration path's proper prefix {:?} at {:?}",
-            prefix.text,
-            self.text
-        );
-        found
+            .is_some_and(|prefix| prefix != self.id && names.is_prefix(prefix, self.id))
     }
 
     /// Whether a use in `site` may see an export at this path whose access
@@ -276,7 +131,7 @@ impl DeclPath {
         access_root_len: Option<usize>,
         site: &ContainerPath<'_>,
     ) -> bool {
-        let found = access_root_len.is_none_or(|k| {
+        access_root_len.is_none_or(|k| {
             let depth = names.names_inward(self.id).count();
             assert!(
                 k <= depth,
@@ -289,122 +144,35 @@ impl DeclPath {
                     .0
             });
             site.prefix_ids().get(k) == Some(&root)
-        });
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            super::model::accessible_from(access_root_len, &self.text, site),
-            "a declaration path's access root {access_root_len:?} at {:?}, seen from {:?}",
-            self.text,
-            &**site
-        );
-        found
+        })
     }
-
-    /// The path's segments for the reference of an index keyed by its id:
-    /// the walk's own spelling where the reference is kept, so an index that
-    /// files the id under another path disagrees with its reference at its
-    /// next query.
-    pub(super) fn reference_text(&self, names: &NameTable) -> Vec<String> {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let _ = names;
-            self.text.to_vec()
-        }
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        self.spell(names)
-    }
-
-    /// Assert that the id spells the walk's spelling.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    fn check(&self, names: &NameTable) {
-        let spelled = names.segments(self.id);
-        assert!(
-            spelled
-                .iter()
-                .copied()
-                .eq(self.text.iter().map(String::as_str)),
-            "a declaration path's id spells {spelled:?}, not {:?}",
-            self.text
-        );
-    }
-
-    #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-    fn check(&self, _: &NameTable) {}
 }
 
 /// The name an [`ExportedItem`](super::model::ExportedItem) publishes, in the
 /// logical domain (`idText`: backticks stripped, a bare operator compiled),
 /// held by its id in the env's [`NameTable`].
-///
-/// Under `interning-reference` in a debug build it also carries the text the
-/// walk published it as, and reading it asserts that the id spells that
-/// text, so an export whose name was interned from another spelling, or
-/// carried across tables without re-keying, fails where it is read.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ExportName {
     name: Name,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    text: Arc<str>,
 }
-
-impl PartialEq for ExportName {
-    fn eq(&self, other: &Self) -> bool {
-        let same = self.name == other.name;
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            same,
-            self.text == other.text,
-            "two export names' ids disagree with their texts, {:?} and {:?}",
-            self.text,
-            other.text
-        );
-        same
-    }
-}
-
-impl Eq for ExportName {}
 
 impl ExportName {
-    /// `name`, which the walk spelled `text`.
-    pub(super) fn new(names: &NameTable, name: Name, text: &str) -> Self {
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = text;
-        let export = ExportName {
-            name,
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: text.into(),
-        };
-        export.check(names);
-        export
+    /// The export name `name`.
+    pub(super) fn new(name: Name) -> Self {
+        ExportName { name }
     }
 
     /// The name's text.
     pub(super) fn text<'n>(&self, names: &'n NameTable) -> &'n str {
-        let text = names.text(self.name);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(text, &*self.text, "an export name's id spells another name");
-        text
+        names.text(self.name)
     }
 
     /// The same name, as an id of `to`'s; `self` is `from`'s.
     #[cfg(feature = "test-support")]
     pub(super) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
-        let export = ExportName {
+        ExportName {
             name: crate::names::rekey_name(from, to, self.name),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            text: Arc::clone(&self.text),
-        };
-        export.check(to);
-        export
-    }
-
-    /// Assert that the id spells the walk's text.
-    fn check(&self, names: &NameTable) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        let _ = self.text(names);
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = names;
+        }
     }
 }
 
@@ -440,11 +208,10 @@ mod tests {
             }
             let text: Vec<String> = container.iter().chain(&tail).cloned().collect();
             let whole = DeclPath::new(&names, &text);
-            let under = DeclPath::under(&names, names.intern_path(&container), &container, &tail);
+            let under = DeclPath::under(&names, names.intern_path(&container), &tail);
             let extended = DeclPath::new(&names, &container).extended(&names, &tail);
             for decl in [&whole, &under, &extended] {
                 prop_assert_eq!(decl.spell(&names), text.clone());
-                prop_assert_eq!(decl.reference_text(&names), text.clone());
                 prop_assert_eq!(decl.last(&names), text.last().map(String::as_str));
                 prop_assert_eq!(
                     decl.parent(&names).map(|p| p.spell(&names)),
@@ -472,7 +239,7 @@ mod tests {
                 // each against the expression it replaced.
                 for probe in probes.iter().chain(&interned).chain([&container, &text]) {
                     let key = PathKey::of(&names, probe);
-                    prop_assert_eq!(decl.is(&names, key), *probe == text, "{:?}", probe);
+                    prop_assert_eq!(decl.is(key), *probe == text, "{:?}", probe);
                     prop_assert_eq!(
                         decl.is_child_of(&names, key),
                         text.len() == probe.len() + 1 && text.starts_with(probe),
@@ -510,9 +277,9 @@ mod tests {
             for name in &interned {
                 names.logical(name);
             }
-            let name = ExportName::new(&names, names.logical(&text), &text);
+            let name = ExportName::new(names.logical(&text));
             prop_assert_eq!(name.text(&names), text.as_str());
-            let other_name = ExportName::new(&names, names.logical(&other), &other);
+            let other_name = ExportName::new(names.logical(&other));
             prop_assert_eq!(name == other_name, text == other);
             let fresh = NameTable::default();
             for name in interned.iter().rev() {

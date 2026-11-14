@@ -9,7 +9,7 @@ publish = false
 borzoi.workspace = true
 # The parse tree the handler differential's perturbation finds comments and
 # strings in.
-borzoi-cst.workspace = true
+borzoi-cst = { workspace = true, features = ["unstable-union"] }
 borzoi-msbuild.workspace = true
 borzoi-sema = { workspace = true, features = ["test-support"] }
 # The bounded driver for the `fcs-dump` children this harness shells out to. A

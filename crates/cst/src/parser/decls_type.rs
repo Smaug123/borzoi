@@ -1521,28 +1521,6 @@ impl<'src> Parser<'src> {
             }
         }
 
-        // An `open` indented *inside* the type body is invalid F# (FCS's
-        // FS0058, "'open' declarations must appear at module level, not inside
-        // types."). The lex-filter leaves such an `open` inside the still-open
-        // body block — directly at the cursor (an object-model body, whose
-        // member loop just broke on it) or behind the body's `OBLOCKSEP` (a
-        // union/record/enum body, whose bare-member gate declined the
-        // non-member) — i.e. *before* the body-closing `OBLOCKEND`. A dedented
-        // module-level `open` instead arrives *after* that `OBLOCKEND` (the
-        // body has already closed), so it never reaches here. Flag it; recovery
-        // then leaves the stray `open` for the enclosing module loop — the same
-        // stray-item discipline `bare_trailing_member_follows` documents — so
-        // the tree is unchanged and only the diagnostic is added. (Other
-        // stray keywords the module loop already rejects on its own; `open` is
-        // special precisely because it is *also* a valid module-level decl.)
-        if opened_block && let Some(span) = self.stray_open_in_type_body_span() {
-            self.errors.push(ParseError {
-                message: "'open' declarations must appear at module level, not inside types."
-                    .to_string(),
-                span,
-            });
-        }
-
         // The explicit `class`/`struct`/`interface … end` form emits an extra
         // `OBLOCKSEP` (the indentation before `end`) inside the type-defn block,
         // appearing in the filtered stream *after* `end` and *before* the
@@ -1658,33 +1636,6 @@ impl<'src> Parser<'src> {
                 Virtual::Let | Virtual::InterfaceMember | Virtual::Do
             ))
         ) || self.classify_object_model_item_from_raw().is_some()
-    }
-
-    /// The byte span of an `open` keyword sitting *inside* a still-open type
-    /// body block, if the cursor is at one. Used by [`Self::parse_type_defn_repr`]
-    /// to flag FS0058 ("`open` … inside types"). The `open` is either directly at
-    /// the cursor (an object-model member loop just broke on it) or one
-    /// `OBLOCKSEP` ahead (a union/record/enum body left the separator when its
-    /// bare-member gate declined the non-member); in both cases the body-closing
-    /// `OBLOCKEND` is still ahead, which is exactly what tells a body-internal
-    /// `open` apart from a dedented module-level one (whose `OBLOCKEND` would
-    /// already have been consumed). Returns `None` for anything else (including
-    /// the legitimate body-close `OBLOCKEND`).
-    fn stray_open_in_type_body_span(&self) -> Option<Range<usize>> {
-        match self.peek() {
-            Some((Ok(FilteredToken::Raw(Token::Open)), span)) => Some(span.clone()),
-            // Behind the body's `OBLOCKSEP`: accept the filtered token after the
-            // separator only if it is the `open`.
-            Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _)) => self
-                .filtered
-                .tokens()
-                .get(self.filtered.pos() + 1)
-                .and_then(|(res, span)| match res {
-                    Ok(FilteredToken::Raw(Token::Open)) => Some(span),
-                    _ => None,
-                }),
-            _ => None,
-        }
     }
 
     /// Parse a type augmentation body `with member …` (phase 9.13a) — FCS's
