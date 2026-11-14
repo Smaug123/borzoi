@@ -662,3 +662,356 @@ fn single_file_requests_reuse_the_diagnostics_parse() {
         );
     }
 }
+
+/// A watch event a client sends after a save (`docs/incremental-lsp-plan.md`,
+/// Stage 7), and the change, if any, the save made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Saved {
+    /// Another project's `.fsproj`, which nothing of `P`'s reads, reported
+    /// changed without being written.
+    UnrelatedProject,
+    /// A source created beside the other project, reported created.
+    UnrelatedSource,
+    /// `P`'s own `.fsproj`, written back with the bytes it held.
+    OwnProjectUnchanged,
+    /// A Compile item no buffer holds, written back with the bytes it held.
+    SourceUnchanged,
+    /// `P`'s own `.fsproj`, given a define: the control, which must
+    /// evaluate it again.
+    OwnProjectChanged,
+}
+
+/// What a generation's work beyond confirming came to: MSBuild evaluations
+/// run, sources parsed, assembly envs built and Compile-order folds computed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Recomputed {
+    evaluated: u64,
+    parsed: u64,
+    envs_built: u64,
+    folds: u64,
+}
+
+/// Open two items of an `n`-item project `P` beside a one-item project `Q`,
+/// warm both documents' folds, make the save `saved` describes and send its
+/// watch event, then ask for both documents' semantic tokens (and, from a
+/// pull client, their diagnostics): what that recomputed.
+fn after_a_save(n: usize, edited: usize, other: usize, pull: bool, saved: Saved) -> Recomputed {
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("P");
+    let q = tmp.path().join("Q");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::create_dir_all(&q).unwrap();
+    let (items, texts) = project(&p, n);
+    std::fs::write(
+        q.join("Q.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"Q.fs\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    std::fs::write(q.join("Q.fs"), "module Q\n\nlet q = 0\n").unwrap();
+    let mut client = Client::start(tmp.path(), pull, settled());
+    let uri = |i: usize| Uri::from_file_path(&items[i]).unwrap();
+    for i in [edited, other] {
+        client.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": uri(i).as_str(), "languageId": "fsharp", "version": 0, "text": texts[i],
+            }}),
+        );
+    }
+    let requests = |client: &mut Client| {
+        for i in [edited, other] {
+            if pull {
+                client.request(
+                    "textDocument/diagnostic",
+                    json!({ "textDocument": { "uri": uri(i).as_str() } }),
+                );
+            }
+            let (result, _) = client.request(
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": uri(i).as_str() } }),
+            );
+            assert!(
+                result["data"].as_array().is_some_and(|d| !d.is_empty()),
+                "semantic tokens for item {i}: {result}"
+            );
+        }
+        client.settle();
+    };
+    requests(&mut client);
+
+    let rewrite = |path: &Path, bytes: &[u8]| std::fs::write(path, bytes).unwrap();
+    let fsproj = p.join("P.fsproj");
+    let closed = (0..n)
+        .find(|i| ![edited, other].contains(i))
+        .expect("a third item");
+    let (path, typ) = match saved {
+        Saved::UnrelatedProject => (q.join("Q.fsproj"), 2),
+        Saved::UnrelatedSource => {
+            std::fs::write(q.join("New.fs"), "module New\n").unwrap();
+            (q.join("New.fs"), 1)
+        }
+        Saved::OwnProjectUnchanged => {
+            rewrite(&fsproj, &crate::common::host_fs::read(&fsproj).unwrap());
+            (fsproj, 2)
+        }
+        Saved::SourceUnchanged => {
+            rewrite(&items[closed], texts[closed].as_bytes());
+            (items[closed].clone(), 2)
+        }
+        Saved::OwnProjectChanged => {
+            let text = crate::common::host_fs::read_to_string(&fsproj)
+                .unwrap()
+                .replace(
+                "<Project>\n",
+                "<Project>\n  <PropertyGroup><DefineConstants>SAVED</DefineConstants></PropertyGroup>\n",
+            );
+            rewrite(&fsproj, text.as_bytes());
+            (fsproj, 2)
+        }
+    };
+    let mark = client.generations().len();
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{
+            "uri": Uri::from_file_path(&path).unwrap().as_str(),
+            "type": typ,
+        }]}),
+    );
+    requests(&mut client);
+    let generations = &client.generations()[mark..];
+    let recomputed = Recomputed {
+        evaluated: generations.iter().map(|g| g.evaluations.evaluated).sum(),
+        parsed: generations.iter().map(|g| g.parses.parsed).sum(),
+        envs_built: generations.iter().map(|g| g.envs.built).sum(),
+        folds: generations.iter().map(|g| g.folds).sum(),
+    };
+    client.shut_down();
+    recomputed
+}
+
+fn saves() -> impl Strategy<Value = Saved> {
+    prop_oneof![
+        Just(Saved::UnrelatedProject),
+        Just(Saved::UnrelatedSource),
+        Just(Saved::OwnProjectUnchanged),
+        Just(Saved::SourceUnchanged),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+
+    /// A watch event names a path the disk moved at, and is a hint
+    /// (`docs/incremental-lsp-plan.md`, Stage 7): when nothing the project's
+    /// evaluation, env, parses or fold read has changed, the requests after
+    /// it evaluate nothing, parse nothing, build no env and fold nothing. An
+    /// event once dropped every evaluation and every fold (a project-file
+    /// event), or the folds of every project listing the file (a source
+    /// event), whether or not anything had moved.
+    #[test]
+    fn a_save_that_changes_no_input_recomputes_nothing(
+        (n, edited, other, pull) in cases(),
+        saved in saves(),
+    ) {
+        prop_assume!(n >= 3);
+        prop_assert_eq!(
+            after_a_save(n, edited, other, pull, saved),
+            Recomputed::default(),
+            "{:?}",
+            saved
+        );
+    }
+
+    /// The control: a save that gives `P` a define evaluates it again, once,
+    /// and folds it again, so the counts above are the inputs' to make and
+    /// not a server that never looks.
+    #[test]
+    fn a_save_that_changes_the_project_recomputes_it(
+        (n, edited, other, pull) in cases(),
+    ) {
+        let recomputed = after_a_save(n, edited, other, pull, Saved::OwnProjectChanged);
+        prop_assert_eq!(recomputed.evaluated, 1, "{:?}", recomputed);
+        prop_assert!(recomputed.folds >= 1, "{:?}", recomputed);
+    }
+}
+
+/// How many `workspace/semanticTokens/refresh` requests the server sent
+/// after each step, when the step is a keystroke in an open item and then a
+/// request for its tokens, or a closed item rewritten on disk with no watch
+/// event and then the same request.
+fn refreshes(n: usize, edited: usize, other: usize, pull: bool) -> (usize, usize, usize, usize) {
+    let tmp = TempDir::new().unwrap();
+    let (items, mut texts) = project(tmp.path(), n);
+    let mut client = Client::start(tmp.path(), pull, settled());
+    let uri = |i: usize| Uri::from_file_path(&items[i]).unwrap();
+    for i in [edited, other] {
+        client.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": uri(i).as_str(), "languageId": "fsharp", "version": 0, "text": texts[i],
+            }}),
+        );
+    }
+    let tokens = |client: &mut Client, i: usize| {
+        client
+            .request(
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": uri(i).as_str() } }),
+            )
+            .1
+    };
+    tokens(&mut client, edited);
+    tokens(&mut client, other);
+    client.settle();
+    // A barrier answers every refresh the server sent before it.
+    let barrier = |client: &mut Client| client.request("borzoi/test/barrier", Value::Null).1;
+
+    texts[edited].push_str("// typed");
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": uri(edited).as_str(), "version": 1 },
+            "contentChanges": [{ "text": texts[edited] }],
+        }),
+    );
+    let after_keystroke = barrier(&mut client);
+    let after_its_tokens = tokens(&mut client, edited) + barrier(&mut client);
+
+    let closed = (0..n)
+        .find(|i| ![edited, other].contains(i))
+        .expect("a third item");
+    std::fs::write(&items[closed], format!("{}// written\n", texts[closed])).unwrap();
+    let after_write = barrier(&mut client);
+    let after_write_tokens = tokens(&mut client, edited) + barrier(&mut client);
+    client.shut_down();
+    (
+        after_keystroke,
+        after_its_tokens,
+        after_write,
+        after_write_tokens,
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+
+    /// A keystroke owes one semantic-token refresh, at the keystroke, and
+    /// the request that then finds the fold stale owes none: the change was
+    /// announced. A closed item rewritten on disk with no watch event owes
+    /// one, from the request that finds it, since nothing announced it.
+    #[test]
+    fn each_change_owes_one_refresh((n, edited, other, pull) in cases()) {
+        prop_assume!(n >= 3);
+        prop_assert_eq!(refreshes(n, edited, other, pull), (1, 0, 0, 1));
+    }
+}
+
+/// The refreshes a stale fold owes in three cases Codex found: a watch event
+/// for a closed item that changed nothing, then the same item rewritten with
+/// no event; a keystroke in a source two cached projects compile, then a
+/// request on each project; and a watched write to a closed source both
+/// compile, a request on one project, then an unwatched write and a request
+/// on the other. A move to a buffer's text was announced by its sync; a move
+/// to disk text owes a refresh when it is found, so no unwatched write is
+/// taken for one the client was told of.
+#[test]
+fn a_stale_fold_owes_a_refresh_for_every_change_no_sync_announced() {
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("P");
+    let q = tmp.path().join("Q");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::create_dir_all(&q).unwrap();
+    let (items, mut texts) = project(&p, 4);
+    std::fs::write(
+        q.join("Q.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"../P/F0.fs\" />\n    <Compile Include=\"../P/F2.fs\" />\n    <Compile Include=\"Q.fs\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    let q_text = "module Q\n\nlet q = F0.v0 + 1\n";
+    std::fs::write(q.join("Q.fs"), q_text).unwrap();
+    let mut client = Client::start(tmp.path(), true, settled());
+    let open = |client: &Client, path: &Path, text: &str| {
+        client.notify(
+            "textDocument/didOpen",
+            json!({ "textDocument": {
+                "uri": Uri::from_file_path(path).unwrap().as_str(),
+                "languageId": "fsharp", "version": 0, "text": text,
+            }}),
+        );
+    };
+    let tokens = |client: &mut Client, path: &Path| {
+        let (result, answered) = client.request(
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": Uri::from_file_path(path).unwrap().as_str() } }),
+        );
+        assert!(
+            result["data"].as_array().is_some_and(|d| !d.is_empty()),
+            "semantic tokens for {}: {result}",
+            path.display()
+        );
+        answered
+    };
+    let barrier = |client: &mut Client| client.request("borzoi/test/barrier", Value::Null).1;
+    open(&client, &items[0], &texts[0]);
+    open(&client, &items[1], &texts[1]);
+    open(&client, &q.join("Q.fs"), q_text);
+    tokens(&mut client, &items[1]);
+    tokens(&mut client, &q.join("Q.fs"));
+    client.settle();
+
+    // A watch event for the closed `F3` that changed nothing owes its
+    // refresh; the request after it finds nothing moved.
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": Uri::from_file_path(&items[3]).unwrap().as_str(), "type": 2 }] }),
+    );
+    assert_eq!(barrier(&mut client), 1, "the event owes a refresh");
+    assert_eq!(tokens(&mut client, &items[1]) + barrier(&mut client), 0);
+    // `F3` rewritten with no event: the old announcement does not speak for it.
+    std::fs::write(&items[3], format!("{}// written\n", texts[3])).unwrap();
+    assert_eq!(
+        tokens(&mut client, &items[1]) + barrier(&mut client),
+        1,
+        "an unannounced change after an announcement owes a refresh"
+    );
+
+    // A keystroke in `F0`, which both projects compile: one refresh, and
+    // neither project's request owes another.
+    texts[0].push_str("// typed");
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": Uri::from_file_path(&items[0]).unwrap().as_str(), "version": 1 },
+            "contentChanges": [{ "text": texts[0] }],
+        }),
+    );
+    assert_eq!(barrier(&mut client), 1, "the keystroke owes a refresh");
+    assert_eq!(
+        tokens(&mut client, &items[1]) + barrier(&mut client),
+        0,
+        "P"
+    );
+    assert_eq!(
+        tokens(&mut client, &q.join("Q.fs")) + barrier(&mut client),
+        0,
+        "Q"
+    );
+
+    // A watched write to the closed `F2`, which both compile, and a request
+    // on `P` only; then `F2` rewritten with no event, and a request on `Q`.
+    std::fs::write(&items[2], format!("{}// watched\n", texts[2])).unwrap();
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": Uri::from_file_path(&items[2]).unwrap().as_str(), "type": 2 }] }),
+    );
+    barrier(&mut client);
+    tokens(&mut client, &items[1]);
+    barrier(&mut client);
+    std::fs::write(&items[2], format!("{}// unwatched\n", texts[2])).unwrap();
+    assert_eq!(
+        tokens(&mut client, &q.join("Q.fs")) + barrier(&mut client),
+        1,
+        "an unwatched write found by one project after a watched one found by another owes a refresh"
+    );
+    client.shut_down();
+}

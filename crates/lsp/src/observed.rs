@@ -41,9 +41,10 @@ use crate::vfs::{Disk, Nanos, Stamp};
 /// [`ReadCounts`] (`opens`, `stats`), its [`EvaluationCounts`]
 /// (`evaluated`, and the validation's `v_opens`, `v_stats`, `v_listings` and
 /// `v_canonicalizations`), its [`Generation::ownership`] (`o_listings`,
-/// `o_stats`), its parses (`parsed`, `parses_reused`), and its
+/// `o_stats`), its parses (`parsed`, `parses_reused`), its
 /// [`EnvCounts`] (`envs_built`, and the validation's `av_opens`,
-/// `av_stats`, `av_listings` and `av_canonicalizations`).
+/// `av_stats`, `av_listings` and `av_canonicalizations`), and its
+/// [`Generation::folds`] (`folded`).
 ///
 /// A test reads [`crate::vfs::Vfs::log_generations`] instead. `tracing`
 /// caches each callsite's interest for the whole process, and while one
@@ -142,6 +143,10 @@ pub struct Generation {
     pub parses: crate::parses::ParseCounts,
     /// The assembly envs built, and what confirming the cached ones cost.
     pub envs: EnvCounts,
+    /// The Compile-order folds computed, cold or incremental
+    /// (`crate::semantic::SemanticState::resolved_prefix_and_env_for`): a
+    /// request the cached fold answers computes none.
+    pub folds: u64,
 }
 
 /// What reading assembly envs cost one generation: the envs it built, and
@@ -270,11 +275,6 @@ pub enum Unobserved {
     /// reads). No stage routes them: the diagnostics are computed afresh for
     /// every request, so nothing they read is cached.
     FsprojDiagnostics,
-    /// What the assembly env cache is keyed by, computed afresh on every
-    /// lookup: the dotnet root a project with no SDK falls back to, and the
-    /// root's canonical spelling. Stage 6b, which validates an env against
-    /// the read set of its resolution, decides what remains of the key.
-    EnvKey,
     /// The on-disk assembly cache: its entries, the stamps it keys and
     /// brackets them with, and the running binary's. No stage routes it: an
     /// entry answers for the DLL stamp the env's resolution records
@@ -384,6 +384,10 @@ pub(crate) mod host_fs {
 
     pub fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
         std::fs::canonicalize(path)
+    }
+
+    pub fn metadata(path: impl AsRef<Path>) -> std::io::Result<std::fs::Metadata> {
+        std::fs::metadata(path)
     }
 
     pub fn open_with(

@@ -146,9 +146,9 @@ pub fn diagnostics_for(
 /// [`crate::workspace::Workspace`]'s project cache.
 ///
 /// Both properties are load-bearing. The buffer may be unsaved, so disk would
-/// describe a different project; and the workspace cache has no unconditional
-/// file-watch invalidation, so a read through it from a `.fsproj` text-sync
-/// pins the evaluation for the server's lifetime
+/// describe a different project; and the workspace cache's evaluation is of
+/// the disk, so a read through it from a `.fsproj` text-sync would describe
+/// the saved project, not the buffer
 /// (`server::tests::fsproj_sync_does_not_pin_the_project_cache`).
 ///
 /// `disc` is the project's SDK discovery, or `None` if it failed, in which

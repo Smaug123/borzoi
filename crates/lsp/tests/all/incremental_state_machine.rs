@@ -563,7 +563,9 @@ enum Cmd {
     /// Write a file outside the model's [`FILES`] (a stub SDK's `Sdk.props`,
     /// a `global.json`), relative to the world's root, queueing its watch
     /// event as an [`InputClass::ProjectFiles`] write: every such file is an
-    /// input to project evaluation. Only pinned scripts use it.
+    /// input to project evaluation. A rewrite inside an installed SDK
+    /// version is [`InputClass::InstalledVersionContents`] instead
+    /// ([`World::install`]). Only pinned scripts use it.
     Install(&'static str, String),
 }
 
@@ -976,6 +978,31 @@ fn unwatched_assembly_cmd_strategy() -> impl Strategy<Value = Cmd> {
     ]
 }
 
+/// Every write the server is meant to notice on its own, behind its back,
+/// and no [`Cmd::Flush`]: sources, project files, projects created and
+/// deleted beside the sources, the assets files and the package DLL. Only
+/// sources are opened, as for [`unwatched_project_cmd_strategy`], and the
+/// framework pack's DLL is never written: both would make the pending events
+/// unwitnessed and suspend every comparison.
+fn unflushed_cmd_strategy() -> impl Strategy<Value = Cmd> {
+    prop_oneof![
+        3 => source_file_strategy().prop_map(Cmd::Open),
+        4 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Edit(f, c)),
+        2 => source_file_strategy().prop_map(Cmd::Close),
+        2 => source_file_strategy().prop_map(Cmd::Save),
+        3 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        1 => source_file_strategy().prop_map(Cmd::Delete),
+        3 => with_content(project_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        1 => project_file_strategy().prop_map(Cmd::Delete),
+        2 => with_content(Just(FileId::Proj(Proj::O))).prop_map(|(f, c)| Cmd::Write(f, c)),
+        1 => Just(Cmd::Delete(FileId::Proj(Proj::O))),
+        2 => with_content(assembly_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        1 => assembly_file_strategy().prop_map(Cmd::Delete),
+        5 => Just(Cmd::Check),
+        3 => src_strategy().prop_map(Cmd::Peek),
+    ]
+}
+
 fn case_strategy() -> impl Strategy<Value = Case> {
     case_strategy_with(cmd_strategy().boxed(), buffer_file_strategy().boxed())
 }
@@ -1366,10 +1393,11 @@ enum InputClass {
     /// it.
     ReferenceResolution,
     /// The framework pack's DLL, rewritten or deleted in place inside an
-    /// installed pack version. What an installed version holds is immutable
-    /// at its path (`docs/incremental-lsp-plan.md`, D3), so an env trusts
-    /// what it read there without confirming it: a watch event naming the
-    /// file is what covers a change, and nothing else is meant to.
+    /// installed pack version, or a file of an installed SDK version
+    /// rewritten in place. What an installed version holds is immutable at
+    /// its path (`docs/incremental-lsp-plan.md`, D3), so an env or an
+    /// evaluation trusts what it read there without confirming it: a watch
+    /// event is what covers a change, and nothing else is meant to.
     InstalledVersionContents,
 }
 
@@ -1495,10 +1523,22 @@ impl World {
         });
     }
 
-    /// Write `text` at `rel` under the root, outside the model's files.
+    /// Write `text` at `rel` under the root, outside the model's files. A
+    /// rewrite of a file inside an installed SDK version
+    /// (`dotnet/sdk/<version>/…`) changes what that version holds in place,
+    /// [`InputClass::InstalledVersionContents`]; anything else is an input
+    /// to project evaluation.
     fn install(&mut self, rel: &str, text: &str) {
         let path = self.root.join(rel);
         let existed = path.host_exists();
+        let inside_a_version = rel
+            .strip_prefix("dotnet/sdk/")
+            .is_some_and(|rest| rest.contains('/'));
+        let class = if existed && inside_a_version {
+            InputClass::InstalledVersionContents
+        } else {
+            self.seen_by_an_open_fsproj(InputClass::ProjectFiles)
+        };
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, text).unwrap();
         let uri = Uri::from_file_path(&path)
@@ -1506,7 +1546,7 @@ impl World {
             .to_string();
         self.pending.push(Pending {
             event: json!({ "uri": uri, "type": if existed { 2 } else { 1 } }),
-            class: self.seen_by_an_open_fsproj(InputClass::ProjectFiles),
+            class,
         });
     }
 
@@ -2460,6 +2500,49 @@ fn unwatched_assembly_writes_agree_with_a_fresh_session() {
     );
 }
 
+/// For all generated scripts that make every kind of write the server is
+/// meant to notice on its own (sources, project files, projects created and
+/// deleted, assets files, the package DLL) and never deliver a watch event,
+/// every answer agrees with fresh sessions at every comparison, and so does
+/// what the client displays: every witnessable input class is [`WITNESSED`]
+/// (`docs/incremental-lsp-plan.md`, Stage 7), so the server needs no watch
+/// event to be correct. `CSharpSources` is outside the claim by name: the
+/// world has no C# project. So is [`InputClass::InstalledVersionContents`],
+/// which no script here writes, and [`InputClass::FsprojBufferInputs`]: no
+/// script opens a project file.
+#[test]
+fn unflushed_runs_agree_with_a_fresh_session() {
+    let cases = env_u64("BORZOI_LSP_STATE_MACHINE_CASES").map_or(DEFAULT_CASES, |n| n as u32);
+    let seed = env_u64("BORZOI_LSP_STATE_MACHINE_SEED").unwrap_or(DEFAULT_SEED);
+    let coverage = RefCell::new(Coverage::default());
+    let strategy = case_strategy_with(
+        unflushed_cmd_strategy().boxed(),
+        source_file_strategy().boxed(),
+    );
+    let result = runner(cases, seed).run(&strategy, |case| run_case(&case, &coverage));
+    let coverage = coverage.into_inner();
+    eprintln!("seed {seed}: {coverage:#?}");
+    match result {
+        Ok(()) => {}
+        Err(TestError::Fail(_, case)) => {
+            let (case, message) = minimise(case);
+            panic!("seed {seed}: {message}\n\nminimal script: {case:?}");
+        }
+        Err(err) => panic!("seed {seed}: {err}"),
+    }
+    // Non-vacuity: comparisons were made with a write of each witnessed
+    // kind still unannounced, and they compared real answers.
+    assert!(
+        coverage.unflushed_checks > 0
+            && coverage.unflushed_project_checks > 0
+            && coverage.unflushed_ownership_checks > 0
+            && coverage.unflushed_assembly_checks > 0
+            && coverage.cross_file_definitions > 0
+            && coverage.nonempty_diagnostics > 0,
+        "the generated cases left some witnessed kind of write uncompared: {coverage:#?}"
+    );
+}
+
 /// The reference must be a function of the world, or the property above is
 /// noise: a session that has just opened every buffer — with no history but
 /// that — agrees with the per-group fresh sessions, even though it answers every
@@ -2820,6 +2903,31 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                         pin_sdk("10.0.200"),
                         Cmd::Check,
                     ])
+                    .collect(),
+            },
+        ),
+        (
+            // An installed SDK version's `Sdk.props` rewritten in place to
+            // define `FOO`, with its watch event: the evaluation trusts what
+            // an installed version holds without confirming it (D3), and the
+            // event is what covers a change there. Once every structural
+            // event dropped every evaluation; now it makes the next
+            // confirmation of each cover what it trusts.
+            "a watched in-place rewrite of an installed SDK reaches the projects that resolve it",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), sdk_project(vec![Src::A])),
+                    (
+                        FileId::Src(Src::A),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                ],
+                cmds: install_sdk("10.0.100", None)
+                    .into_iter()
+                    .chain([Cmd::Flush, Cmd::Open(FileId::Src(Src::A)), Cmd::Check])
+                    .chain(install_sdk("10.0.100", Some(Sym::Foo)))
+                    .chain([Cmd::Flush, Cmd::Check])
                     .collect(),
             },
         ),

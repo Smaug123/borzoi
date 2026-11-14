@@ -570,10 +570,11 @@ fn cross_file_definition_prefers_open_buffer_uri() {
 }
 
 /// Stage 5 codex review (Finding 2): a single source file in two projects'
-/// compile lists. A `didChange` on that file must invalidate the parses for
-/// **both** cached projects, not just the one `owning_project` would pick.
+/// compile lists. A `didChange` on that file must reach the parses of
+/// **both** cached projects, not just the one `owning_project` would pick:
+/// each confirms its Compile items' texts when read.
 #[test]
-fn invalidate_owning_project_clears_every_project_containing_the_file() {
+fn a_source_sync_reaches_every_project_containing_the_file() {
     use borzoi::semantic::SemanticState;
 
     let tmp = TempDir::new().unwrap();
@@ -638,13 +639,13 @@ fn invalidate_owning_project_clears_every_project_containing_the_file() {
     }
 
     // A `.fs` text-sync against the shared file: per codex finding 2, the
-    // invalidation walks the cache and drops every project listing the file.
+    // next read of every project listing the file confirms its text.
     let shared_uri = Uri::from_file_path(&shared).unwrap();
-    state.invalidate_owning_project(&shared_uri);
+    state.note_source_sync(&shared_uri);
 
     // Surgical probe: simulate a new buffer overlay and ensure both
     // projects' parses reflect it on the next lookup (they would not if the
-    // invalidation only cleared one). Re-borrow `semantic` between the two
+    // validation reached only one). Re-borrow `semantic` between the two
     // calls so each `parses_for_project` returns and drops its borrow before
     // the next one starts.
     state
@@ -659,7 +660,7 @@ fn invalidate_owning_project_clears_every_project_containing_the_file() {
         } = &mut state;
         let parses_a = semantic
             .parses_for_project(&proj_a, workspace, docs)
-            .expect("A parses after invalidation")
+            .expect("A parses after the sync")
             .clone();
         assert!(parses_a.texts[0].contains("after"), "A stale");
     }
@@ -672,7 +673,7 @@ fn invalidate_owning_project_clears_every_project_containing_the_file() {
         } = &mut state;
         let parses_b = semantic
             .parses_for_project(&proj_b, workspace, docs)
-            .expect("B parses after invalidation")
+            .expect("B parses after the sync")
             .clone();
         assert!(parses_b.texts[0].contains("after"), "B stale");
     }

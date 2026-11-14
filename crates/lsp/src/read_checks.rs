@@ -164,6 +164,9 @@ struct Witness {
     /// Each directory as its index in [`ReadChecks::dirs`], and its stamp.
     dirs: Vec<(usize, Stamp)>,
     taken: Nanos,
+    /// The checker's [`ReadChecks::hints`] when it was taken: a directory
+    /// hinted since ([`Dir::hinted`]) speaks for nothing it witnessed.
+    hints: u64,
 }
 
 /// One directory a witness names: its path, and its stamp (or `None` where
@@ -174,6 +177,9 @@ struct Dir {
     path: PathBuf,
     stamp: Option<Stamp>,
     checked: u64,
+    /// The [`ReadChecks::hints`] count of the last watch event that named
+    /// this directory or an entry of it, 0 if none has.
+    hinted: u64,
 }
 
 /// The identity the next [`ReadChecks`] gets.
@@ -196,6 +202,8 @@ pub struct ReadChecks<D: Probe = HostDisk> {
     dir_ids: RefCell<HashMap<PathBuf, usize>>,
     /// The queries asked this generation beyond `files`' reads.
     counts: Cell<ReadCounts>,
+    /// How many watch events have hinted the checker ([`Self::hint`]).
+    hints: Cell<u64>,
 }
 
 impl<D: Probe + Default> Default for ReadChecks<D> {
@@ -212,6 +220,7 @@ impl<D: Probe> ReadChecks<D> {
             dirs: RefCell::new(Vec::new()),
             dir_ids: RefCell::new(HashMap::new()),
             counts: Cell::new(ReadCounts::default()),
+            hints: Cell::new(0),
         }
     }
 
@@ -270,9 +279,59 @@ impl<D: Probe> ReadChecks<D> {
     }
 
     /// Watch events named `paths`: forget what the files there held, so the
-    /// next check reads them again whatever their stamps say.
+    /// next check reads them again whatever their stamps say, and stop
+    /// trusting every witness taken before now that names one of the paths
+    /// or the directory holding it, so the next check of each such read asks
+    /// its query again.
+    ///
+    /// That is what covers a file system whose stamps do not move (D1's "not
+    /// covered") for the paths an event names: a file there is read again
+    /// and compared, and what a path names, whether it is there, its
+    /// canonical spelling and its directory's listing are asked again. A
+    /// witness names a directory by the spelling its read used, which may
+    /// lead through a symlink, so a named directory is matched by spelling
+    /// ([`crate::paths::path_dedup_key`]) and by identity: the device and
+    /// inode a `stat` of it finds now, against those its last stamp held. A
+    /// directory that can no longer be `stat`ed under a witness's spelling
+    /// fails that witness anyway.
     pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
-        self.files.hint(paths);
+        let paths: Vec<&Path> = paths.into_iter().collect();
+        self.files.hint(paths.iter().copied());
+        let named: Vec<PathBuf> = paths
+            .iter()
+            .flat_map(|path| {
+                let path = lexically_normalize(path);
+                let parent = path.parent().map(Path::to_path_buf);
+                std::iter::once(path).chain(parent)
+            })
+            .collect();
+        if named.is_empty() {
+            return;
+        }
+        let spellings: std::collections::HashSet<String> = named
+            .iter()
+            .map(|path| crate::paths::path_dedup_key(path))
+            .collect();
+        let identities: std::collections::HashSet<(u64, u64)> = named
+            .iter()
+            .filter_map(|path| {
+                let mut counts = self.counts.get();
+                counts.stats += 1;
+                self.counts.set(counts);
+                self.files.disk().stat(path).ok()
+            })
+            .map(|stamp| (stamp.dev, stamp.ino))
+            .collect();
+        let hints = self.hints.get() + 1;
+        self.hints.set(hints);
+        for dir in self.dirs.borrow_mut().iter_mut() {
+            let by_identity = dir
+                .stamp
+                .is_some_and(|stamp| identities.contains(&(stamp.dev, stamp.ino)));
+            if by_identity || spellings.contains(&crate::paths::path_dedup_key(&dir.path)) {
+                dir.hinted = hints;
+            }
+        }
     }
 
     /// Whether `check`'s read gets the answer recorded, now. Outside a
@@ -320,7 +379,11 @@ impl<D: Probe> ReadChecks<D> {
                     self.dir_stamp(id, generation).map(|stamp| (id, stamp))
                 })
                 .collect::<Option<Vec<_>>>()
-                .map(|dirs| Witness { dirs, taken: now })
+                .map(|dirs| Witness {
+                    dirs,
+                    taken: now,
+                    hints: self.hints.get(),
+                })
         });
         let holds = self.ask(read) == read.observation;
         *check.witness.borrow_mut() = witness.filter(|_| holds);
@@ -393,6 +456,7 @@ impl<D: Probe> ReadChecks<D> {
             .map(|(id, stamp, taken)| Witness {
                 dirs: vec![(id, stamp)],
                 taken,
+                hints: self.hints.get(),
             });
         Check {
             read,
@@ -402,16 +466,26 @@ impl<D: Probe> ReadChecks<D> {
     }
 
     /// Whether `check`'s witness, taken in an earlier generation, still holds:
-    /// none of its stamps is racy, and every directory's stamp is unchanged.
+    /// none of its stamps is racy, no watch event has named one of its
+    /// directories or an entry of one since it was taken ([`Self::hint`]),
+    /// and every directory's stamp is unchanged.
     fn witnessed(&self, check: &Check, generation: u64) -> bool {
         let witness = check.witness.borrow();
         let Some(witness) = &*witness else {
             return false;
         };
-        !witness
-            .dirs
-            .iter()
-            .any(|(_, stamp)| stamp.is_racy(witness.taken))
+        let hinted = {
+            let dirs = self.dirs.borrow();
+            witness
+                .dirs
+                .iter()
+                .any(|(id, _)| dirs[*id].hinted > witness.hints)
+        };
+        !hinted
+            && !witness
+                .dirs
+                .iter()
+                .any(|(_, stamp)| stamp.is_racy(witness.taken))
             && witness
                 .dirs
                 .iter()
@@ -547,6 +621,7 @@ impl<D: Probe> ReadChecks<D> {
             path: dir,
             stamp: None,
             checked: 0,
+            hinted: 0,
         });
         id
     }

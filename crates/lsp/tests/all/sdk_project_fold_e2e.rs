@@ -336,7 +336,8 @@ fn a_language_version_refusal_names_the_condition_it_rests_on() {
             .is_none(),
         "the straddling file under an untrusted LangVersion must refuse the fold"
     );
-    let outcome = sema.fold_outcome(&ProjectId::new(&fsproj));
+    let project = ProjectId::new(&fsproj);
+    let outcome = sema.fold_outcome(&project, workspace.evaluation_id(&project));
     let message = deferral_message(
         &fsproj,
         &deferrals(workspace.project_evaluation(&fsproj), outcome),

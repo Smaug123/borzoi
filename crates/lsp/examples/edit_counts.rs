@@ -108,6 +108,10 @@
 //!   answers, and the event is all the server is told. Each round is then
 //!   followed by the keystroke's requests, and its rows report what the
 //!   measured project paid for a change it does not depend on.
+//!   `own-save` saves the measured project's own `.fsproj` without changing
+//!   it, as an editor's save of an unmodified buffer does: it writes the
+//!   file's bytes back in place (no truncation, so a concurrent reader of
+//!   the shared corpus never sees it short) and reports the write.
 //! * `EDIT_COUNTS_UNRELATED`: the other project for those scripts. Default:
 //!   `WoofWare.Incremental.Test` beside the default project, which references
 //!   it rather than the other way round.
@@ -117,6 +121,9 @@
 //! **av.open**, **av.stat**, **av.list** and **av.canon** what confirming the
 //! cached envs cost (`borzoi::workspace::Workspace::confirm_env`), from each
 //! [`GENERATION_EVENT`].
+//!
+//! The **f.new** column counts the Compile-order folds the message computed
+//! (cold or incremental): a request the cached fold answers computes none.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -288,9 +295,10 @@ const ENV_RESOLUTION_FIELDS: [&str; 6] = [
 /// canonicalisations), what finding the projects that own files cost it
 /// (listings and stats), what the parse memo did (sources parsed, and
 /// parses reused), and what confirming cached envs cost it (opens, stats,
-/// listings and canonicalisations).
-static VALIDATION: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
-const VALIDATION_FIELDS: [&str; 12] = [
+/// listings and canonicalisations), and how many Compile-order folds it
+/// computed.
+static VALIDATION: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
+const VALIDATION_FIELDS: [&str; 13] = [
     "v_opens",
     "v_stats",
     "v_listings",
@@ -303,6 +311,7 @@ const VALIDATION_FIELDS: [&str; 12] = [
     "av_stats",
     "av_listings",
     "av_canonicalizations",
+    "folded",
 ];
 
 /// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
@@ -351,7 +360,7 @@ impl tracing::field::Visit for ProjectField {
 struct ReadFields {
     opens: Option<u64>,
     stats: Option<u64>,
-    validation: [Option<u64>; 12],
+    validation: [Option<u64>; 13],
 }
 
 impl tracing::field::Visit for ReadFields {
@@ -513,7 +522,7 @@ struct Cost {
     env: [u64; 6],
     /// The validations' and the ownership walks' counts, in
     /// [`VALIDATION_FIELDS`] order.
-    validation: [u64; 12],
+    validation: [u64; 13],
     /// Envs built ([`ENV_BUILD_SPAN`]).
     env_builds: u64,
 }
@@ -551,7 +560,7 @@ struct Reading {
     stats: u64,
     evaluation: [u64; 5],
     env: [u64; 6],
-    validation: [u64; 12],
+    validation: [u64; 13],
     env_builds: u64,
 }
 
@@ -861,12 +870,14 @@ enum Script {
     UnrelatedBuild,
     /// Report another project's `.fsproj` changed, as a save of it does.
     UnrelatedSave,
+    /// Write the measured project's `.fsproj` back unchanged, and report it.
+    OwnSave,
 }
 
 /// The files a round of `script` reports changed in the project at
 /// `unrelated`: its `bin` and `obj` output DLLs under the Debug
 /// configuration, or its `.fsproj`.
-fn unrelated_changes(script: Script, unrelated: &Path) -> Vec<PathBuf> {
+fn unrelated_changes(script: Script, unrelated: &Path, project: &Path) -> Vec<PathBuf> {
     let dir = unrelated.parent().expect("a project directory");
     let name = unrelated
         .file_stem()
@@ -876,6 +887,7 @@ fn unrelated_changes(script: Script, unrelated: &Path) -> Vec<PathBuf> {
     match script {
         Script::Keystroke => Vec::new(),
         Script::UnrelatedSave => vec![unrelated.to_path_buf()],
+        Script::OwnSave => vec![project.to_path_buf()],
         Script::UnrelatedBuild => {
             let tfm = Workspace::new()
                 .target_framework_for_project(unrelated)
@@ -981,6 +993,16 @@ mod client_fs {
         std::fs::metadata(path).map_or(0, |m| m.len())
     }
 
+    /// Write the file's bytes back over themselves: a save that changes
+    /// nothing. Opened without truncation, so the file never reads short.
+    pub fn rewrite_in_place(path: &Path) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let bytes = std::fs::read(path)?;
+        let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    }
+
     /// The file's text as a client holds it: without a byte-order mark.
     pub fn read_text(path: &Path) -> std::io::Result<String> {
         std::fs::read_to_string(path).map(borzoi::disk_text::without_bom)
@@ -1027,17 +1049,18 @@ fn columns(cost: &Cost) -> String {
         av_stats,
         av_listings,
         av_canon,
+        folded,
     ] = cost.validation;
     let [a_opens, a_stats, a_listings, a_canon, a_reads, a_unrecorded] = cost.env;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7} {:>7} {av_opens:>7} {av_stats:>7} {av_listings:>7} {av_canon:>7}",
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7} {:>7} {av_opens:>7} {av_stats:>7} {av_listings:>7} {av_canon:>7} {folded:>7}",
         cost.allocations, cost.allocated_bytes, cost.opens, cost.stats, cost.env_builds,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "message",
         "instructions",
         "allocs",
@@ -1067,7 +1090,8 @@ fn header() -> String {
         "av.open",
         "av.stat",
         "av.list",
-        "av.canon"
+        "av.canon",
+        "f.new"
     )
 }
 
@@ -1114,8 +1138,9 @@ fn main() {
         Ok("keystroke") | Err(_) => Script::Keystroke,
         Ok("unrelated-build") => Script::UnrelatedBuild,
         Ok("unrelated-save") => Script::UnrelatedSave,
+        Ok("own-save") => Script::OwnSave,
         Ok(other) => panic!(
-            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build` or `unrelated-save`, not {other:?}"
+            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build`, `unrelated-save` or `own-save`, not {other:?}"
         ),
     };
 
@@ -1184,10 +1209,11 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("WoofWare.Incremental.Test/WoofWare.Incremental.Test.fsproj"));
     let unrelated = std::path::absolute(&unrelated).expect("an absolute project path");
-    let changes = unrelated_changes(script, &unrelated);
+    let changes = unrelated_changes(script, &unrelated, &project);
     if script != Script::Keystroke {
+        // `own-save` touches only the measured project.
         assert!(
-            client_fs::is_file(&unrelated),
+            script == Script::OwnSave || client_fs::is_file(&unrelated),
             "{} does not exist (set EDIT_COUNTS_UNRELATED)",
             unrelated.display()
         );
@@ -1287,7 +1313,10 @@ fn main() {
             Script::Keystroke => {
                 next(&mut client, "didChange E", did_change(&e, k as i32 + 1));
             }
-            Script::UnrelatedBuild | Script::UnrelatedSave => {
+            Script::UnrelatedBuild | Script::UnrelatedSave | Script::OwnSave => {
+                if script == Script::OwnSave {
+                    client_fs::rewrite_in_place(&project).expect("rewrite the project file");
+                }
                 next(
                     &mut client,
                     "didChangeWatchedFiles",

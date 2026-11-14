@@ -385,8 +385,10 @@ mod tests {
     }
 
     /// The load-bearing test: changing the owning project's `DefineConstants` on
-    /// disk (then invalidating via a watched change) changes the resolved
-    /// symbols, so the same source is no longer cached.
+    /// disk (then delivering its watched change) changes the resolved
+    /// symbols, so the same source is no longer cached. Each message runs in
+    /// a generation, as the dispatch loop runs it: a cached evaluation is
+    /// confirmed only inside one.
     #[test]
     fn project_defines_change_busts_the_cache() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -397,9 +399,15 @@ mod tests {
         let uri = Uri::from_file_path(&file).unwrap();
 
         let mut state = State::default();
-        let id = full_result_id(&handle(&mut state, params(uri.clone())));
+        let in_generation = |state: &mut State, params| {
+            state.begin_generation();
+            let report = handle(state, params);
+            state.end_generation();
+            report
+        };
+        let id = full_result_id(&in_generation(&mut state, params(uri.clone())));
         // Unchanged while nothing has changed.
-        assert!(is_unchanged(&handle(
+        assert!(is_unchanged(&in_generation(
             &mut state,
             params_with(uri.clone(), Some(id.clone()))
         )));
@@ -407,12 +415,14 @@ mod tests {
         // Change the defines on disk and deliver the watched change, so the next
         // resolve re-evaluates the project and sees BAR instead of FOO.
         std::fs::write(&proj, fsproj_define("BAR")).unwrap();
+        state.begin_generation();
         state.apply_watched_changes(&[FileEvent {
             uri: Uri::from_file_path(&proj).unwrap(),
             typ: FileChangeType::CHANGED,
         }]);
+        state.end_generation();
 
-        let after = handle(&mut state, params_with(uri, Some(id)));
+        let after = in_generation(&mut state, params_with(uri, Some(id)));
         assert!(
             !is_unchanged(&after),
             "a defines change must bust the cache: {after:?}"

@@ -1165,9 +1165,18 @@ mod tests {
             write_tree(tmp.path(), &before);
             let mut state = State::default();
             state.set_workspace_roots(vec![tmp.path().to_path_buf()]);
+            // Each step, and the event, in a generation of its own, as the
+            // dispatch loop runs them: a cached evaluation is confirmed only
+            // inside one.
+            let step = |state: &mut State, sweep: Sweep| {
+                state.begin_generation();
+                let stepped = sweep.step(state);
+                state.end_generation();
+                stepped
+            };
             let mut sweep = Sweep::new(&state, params());
             for _ in 0..at {
-                match sweep.step(&mut state) {
+                match step(&mut state, sweep) {
                     Step::Pending(next) => sweep = next,
                     // Finished before the change: nothing was in flight.
                     Step::Done(_) => return Ok(()),
@@ -1178,12 +1187,14 @@ mod tests {
             fs::create_dir(tmp.path()).unwrap();
             write_tree(tmp.path(), &after);
             let changed = tmp.path().join("P.fsproj");
+            state.begin_generation();
             state.apply_watched_changes(&[lsp_types::FileEvent {
                 uri: <lsp_types::Uri as crate::uri::UriExt>::from_file_path(&changed).unwrap(),
                 typ: lsp_types::FileChangeType::CHANGED,
             }]);
+            state.end_generation();
             let report = loop {
-                match sweep.step(&mut state) {
+                match step(&mut state, sweep) {
                     Step::Pending(next) => sweep = next,
                     Step::Done(report) => break report,
                 }

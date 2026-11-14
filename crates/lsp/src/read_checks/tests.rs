@@ -202,6 +202,20 @@ impl Model {
             Op::InterleaveAtStat(op) => self.interleaved_at_stat = Some((**op).clone()),
             Op::Unreadable(on) => self.unreadable_entry = *on,
             Op::Generation => {}
+            Op::Stealth(op) => {
+                let stamps: BTreeMap<PathBuf, (i128, i128)> = self
+                    .entries
+                    .iter()
+                    .map(|(p, e)| (p.clone(), (e.mtime, e.ctime)))
+                    .collect();
+                self.apply(op);
+                for (p, entry) in &mut self.entries {
+                    if let Some(&(mtime, ctime)) = stamps.get(p) {
+                        entry.mtime = mtime;
+                        entry.ctime = ctime;
+                    }
+                }
+            }
         }
     }
 
@@ -394,6 +408,26 @@ enum Op {
     Unreadable(bool),
     /// Begin a generation at the clock's time and check every read.
     Generation,
+    /// Make this change on a file system whose stamps do not move (D1's
+    /// "not covered"): every entry that was there keeps its stamps. Then
+    /// hint the checker with the paths it changed, as a watch event naming
+    /// them does ([`ReadChecks::hint`]).
+    Stealth(Box<Op>),
+}
+
+impl Op {
+    /// The paths a watch event for this change names: what it created,
+    /// removed, wrote or moved.
+    fn named(&self) -> Vec<PathBuf> {
+        match self {
+            Op::File(p) | Op::Dir(p) | Op::Link(p, _) | Op::Remove(p) | Op::Write(p) => {
+                vec![path(*p)]
+            }
+            Op::Rename(from, to) => vec![path(*from), path(*to)],
+            Op::MoveAndLink(from) => vec![path(*from), PathBuf::from("/w/z")],
+            _ => Vec::new(),
+        }
+    }
 }
 
 fn change() -> impl Strategy<Value = Op> {
@@ -415,6 +449,7 @@ fn op() -> impl Strategy<Value = Op> {
         6 => change(),
         1 => change().prop_map(|op| Op::Interleave(Box::new(op))),
         1 => change().prop_map(|op| Op::InterleaveAtStat(Box::new(op))),
+        2 => change().prop_map(|op| Op::Stealth(Box::new(op))),
         4 => Just(Op::Generation),
     ]
 }
@@ -437,6 +472,9 @@ struct Seen {
     /// Listings [`ReadChecks::list`] made that a later generation found
     /// moved.
     born_moved: usize,
+    /// Checks that found their answer moved in the first generation after a
+    /// change no stamp saw ([`Op::Stealth`]): only the hint can have told.
+    hinted_moved: usize,
 }
 
 /// Every non-text query at every path, recorded against the model as it is.
@@ -470,11 +508,26 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
     // does (`ReadChecks::list`): one more per generation, held to the same
     // property in every later generation.
     let mut born: Vec<Check> = Vec::new();
+    // Whether a change no stamp saw has been made since the last
+    // generation, and whether any other change has.
+    let (mut stealthy, mut seen_by_stamps) = (false, false);
     for op in ops {
+        if let Op::Stealth(change) = op {
+            model.borrow_mut().apply(op);
+            checker.hint(change.named().iter().map(PathBuf::as_path));
+            stealthy = true;
+            continue;
+        }
         if !matches!(op, Op::Generation) {
+            seen_by_stamps |= !matches!(op, Op::Advance(_));
             model.borrow_mut().apply(op);
             continue;
         }
+        let (stealthy_since, seen_since) = (
+            std::mem::take(&mut stealthy),
+            std::mem::take(&mut seen_by_stamps),
+        );
+        let after_stealth = stealthy_since && !seen_since;
         let now = model.borrow().clock;
         // What every read answered as the generation began: a change the
         // generation makes (an interleaved one) may be seen or not within
@@ -505,6 +558,9 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
                 );
             } else {
                 seen.moved += 1;
+                if after_stealth {
+                    seen.hinted_moved += 1;
+                }
             }
         }
         let counts = checker.end_generation();
@@ -587,7 +643,11 @@ fn the_generator_reaches_witnessed_and_moved_checks() {
         run(granularity, &setup, &ops, &mut seen).unwrap();
     }
     assert!(
-        seen.witnessed > 50 && seen.moved > 50 && seen.born_witnessed > 50 && seen.born_moved > 50,
+        seen.witnessed > 50
+            && seen.moved > 50
+            && seen.born_witnessed > 50
+            && seen.born_moved > 50
+            && seen.hinted_moved > 50,
         "{seen:?}"
     );
 }

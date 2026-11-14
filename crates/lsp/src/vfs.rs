@@ -574,20 +574,23 @@ impl<D: Disk> Vfs<D> {
             borzoi_msbuild::observed::ReadCounts::default(),
             ParseCounts::default(),
             EnvCounts::default(),
+            0,
         )
     }
 
     /// End the current generation, in which reading project evaluations
     /// cost `evaluations`, finding the projects that own files cost
-    /// `ownership`, the parse memo did `parses` and reading assembly envs
-    /// cost `envs`: send it to the log, if one is attached, emit its counts
-    /// as [`GENERATION_EVENT`], and return it.
+    /// `ownership`, the parse memo did `parses`, reading assembly envs
+    /// cost `envs` and `folds` Compile-order folds were computed: send it to
+    /// the log, if one is attached, emit its counts as [`GENERATION_EVENT`],
+    /// and return it.
     pub fn end_generation_with(
         &mut self,
         evaluations: EvaluationCounts,
         ownership: borzoi_msbuild::observed::ReadCounts,
         parses: ParseCounts,
         envs: EnvCounts,
+        folds: u64,
     ) -> Generation {
         let (number, counts) = self.disk.end_generation();
         let generation = Generation {
@@ -597,6 +600,7 @@ impl<D: Disk> Vfs<D> {
             ownership,
             parses,
             envs,
+            folds,
         };
         if let Some(log) = &self.log
             && log.send(generation).is_err()
@@ -624,6 +628,7 @@ impl<D: Disk> Vfs<D> {
             av_stats = envs.validation.stats,
             av_listings = envs.validation.listings,
             av_canonicalizations = envs.validation.canonicalizations,
+            folded = folds,
         );
         generation
     }
