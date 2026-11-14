@@ -5,9 +5,9 @@
 //! [`InferTable`] hands out fresh inference variables ([`TyVid`]), unifies two
 //! [`Ty`] terms (mutating the table so they become equal, with an occurs check
 //! that forbids infinite types), and resolves a term against the solved
-//! substitution. Generation (in [`crate::infer`]) produces an inert
-//! `Vec<Constraint>`; the solver replays each equality through
-//! [`InferTable::unify_atomic`] (so a rejected constraint leaves no trace).
+//! substitution. Inference (in [`crate::infer`]) unifies each equality where
+//! its walk generates it, through [`InferTable::unify_atomic`] (so a rejected
+//! equality leaves no trace).
 //! The terms are ids of the inference session's [`TyTable`], which the
 //! table borrows and builds resolved terms in.
 //!

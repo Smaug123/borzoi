@@ -27,12 +27,14 @@
 //! (`crates/sema/tests/all/infer_literals_diff.rs`), which exercises both the sound
 //! positions (must agree) and the unsound ones (must stay silent).
 //!
-//! **The generate→solve pipeline.** Inference is structured as
-//! the plan's [D8] generate→solve: a pure fold produces an inert
-//! `Vec<Constraint>` over inference variables, the [`InferTable`] substrate
-//! solves them by unification, and each expression's type is read back by
-//! resolving its variable — emitted only when it is fully [`ground`](TyTable::is_ground)
-//! (D5: silence otherwise).
+//! **Unification as the walk goes, suspension where it cannot.** Per the
+//! plan's [D8], a fold over each binding unifies every equality it generates
+//! in the [`InferTable`] substrate at the point it generates it ([`Gen::eq`]),
+//! and suspends the relations it cannot decide there — a member access and an
+//! argument check ([`Constraint`]) — for a solve that decides them mid-walk
+//! ([`Gen::settle`]) or at the binding's end ([`Gen::solve`]). Each
+//! expression's type is read back by resolving its variable — emitted only
+//! when it is fully [`ground`](TyTable::is_ground) (D5: silence otherwise).
 //!
 //! **Value-reference propagation.** Generation consults name resolution
 //! ([`crate::resolve_file`]) to connect a value *use* to its binder:
@@ -188,7 +190,7 @@
 //! synthesized ([`Gen::infer_callee`]) but records **no** node — FCS emits a typed
 //! node only at the whole application, never at the bare function-position use
 //! (probed against the `types` oracle) — then fresh domain `d` and result `r`
-//! variables are created and `Eq(tf, Fun(d, r))` is pushed. That equality is
+//! variables are created and `Eq(tf, Fun(d, r))` is unified. That equality is
 //! **genuinely true**: applying an in-file value forces a function shape (an
 //! in-file binder cannot be a method group). The `App` node emits `r` in synth
 //! positions (D5-safe: `r` is fixed by the `Eq` against the function's *own* type,
@@ -214,10 +216,10 @@
 //!   so generation emits the receiver at its own range (synth: a member access
 //!   never coerces its receiver) and the whole access at the node range.
 //! - **The worklist.** `Constraint` holds a suspended
-//!   [`Constraint::HasMember`] `{ recv, name, result }`. [`Gen::solve`] discharges
-//!   the eager `Eq`s, then fixpoints: wake each parked member whose `recv`
-//!   resolves to a concrete head ([`Gen::wake_member`]), discharge the
-//!   `Eq(result, member_ty)` a wake produces, repeat until none fires (each fires
+//!   [`Constraint::HasMember`] `{ recv, name, result }`. [`Gen::solve`]
+//!   fixpoints: wake each parked member whose `recv`
+//!   resolves to a concrete head ([`Gen::wake_member`]), unify `result` with
+//!   the member's type, repeat until none fires (each fires
 //!   at most once; a wake can ground a later chained member's receiver). A
 //!   `Named` head is looked up; an `Array`/`Tuple`/`Fun`/`Param` head is dropped
 //!   (arrays' `.Length` is intrinsic, out of scope); an unresolved receiver stays
@@ -994,9 +996,9 @@ struct ModuleBinder {
 /// a function of the parsed file, its resolution, and the assembly env (values
 /// in — the env is read, never mutated).
 ///
-/// Structured as generate→solve (the plan's D8): a pure `walk` fold builds an
-/// inert constraint set over inference variables, `solve` discharges it — the
-/// eager `Eq`s first, then a worklist waking each suspended `HasMember` once its
+/// Structured per the plan's D8: the `walk` unifies each equality where it
+/// generates it and suspends what it cannot decide there, `solve` decides the
+/// suspensions — a worklist waking each suspended `HasMember` once its
 /// receiver's head is concrete — and each recorded expression's type is read back
 /// from its variable, emitted only when fully ground (no inference variable
 /// left in it).

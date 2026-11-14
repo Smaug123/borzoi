@@ -2,16 +2,12 @@
 
 use super::*;
 
-/// A type constraint produced by generation and discharged by the solver.
-/// `Eq` (type equality) is the eager equality; `HasMember` is the **suspended**
-/// member constraint added in Stage 3.3a, which the [`Gen::solve`] loop wakes
-/// when its receiver's head becomes concrete (turning the straight-line loop
-/// into a worklist). Neither carries an origin span yet — those arrive with
-/// Phase 4 diagnostics, the first consumer that needs them.
+/// A **suspended** type constraint: one that generation does not decide where
+/// it meets it, so the solver ([`Gen::settle`], [`Gen::solve`]) decides it
+/// later. An equality is never one: it is unified where it is generated
+/// ([`Gen::eq`]).
 #[derive(Debug, Clone)]
 pub(super) enum Constraint {
-    /// The two types must be equal.
-    Eq(Ty, Ty),
     /// The receiver `recv` has an instance member named `name` — of [`kind`] a data
     /// member (field / non-indexer property, Stage 3.3a) *or* a method (a
     /// single-candidate method **call**, Stage 3.3d) — whose type is `result`.
@@ -19,7 +15,7 @@ pub(super) enum Constraint {
     /// [`TyKind::Named`] head, at which point the member is looked up against the
     /// [`AssemblyEnv`] (dispatched on `kind`: `instance_data_member` vs
     /// `instance_method`) and its type — a data member's type, or a method's
-    /// **return** type — bridged to a [`Ty`], pushing `Eq(result, member_ty)`. A
+    /// **return** type — bridged to a [`Ty`] and unified with `result`. A
     /// failed / ambiguous / unmodelled lookup silently drops the constraint (D5:
     /// `result` stays open, so the access defers). Each fires at most once.
     ///
@@ -72,7 +68,7 @@ pub(super) struct ArgCheck {
 }
 
 /// The inference variables and what relates them: the unification table and
-/// its snapshots, the inert constraint set, and the provenance of the
+/// its snapshots, the suspended constraints, and the provenance of the
 /// variables an instantiation made. Of what one file's walk accumulates, the
 /// only state a later answer is computed from besides [`BinderEnv`].
 ///
@@ -86,7 +82,11 @@ pub(super) struct Solver<'a> {
     /// published type, a scheme — is read through an instantiation
     /// ([`Self::instantiate`]).
     pub(super) tys: &'a TyTable,
+    /// The unification table. Every equality the walk generates is already
+    /// in it ([`Gen::eq`]).
     pub(super) table: InferTable<'a>,
+    /// The suspended constraints still pending, except the argument checks a
+    /// settle parked ([`Self::settled_args`]).
     pub(super) constraints: Vec<Constraint>,
     /// The argument checks a mid-walk [`Gen::settle`] parked, in the order
     /// it met them: they stand ahead of every argument check in
@@ -117,10 +117,6 @@ impl<'a> Solver<'a> {
             settled_args: Vec::new(),
             scheme_inst_vars: HashSet::default(),
         }
-    }
-
-    pub(super) fn eq(&mut self, a: Ty, b: Ty) {
-        self.constraints.push(Constraint::Eq(a, b));
     }
 
     /// Instantiate a scheme body with a **fresh** inference variable per distinct
@@ -227,6 +223,28 @@ impl<'a> Solver<'a> {
         let mut vars = HashSet::default();
         collect_var_roots(self.tys, ty, &mut vars);
         vars.into_iter().map(|v| self.table.root(v)).collect()
+    }
+}
+
+impl<'a> Gen<'a> {
+    /// Relate `a` and `b` by equality, unifying them now, where the walk
+    /// generates the relation: what the walk reads of the table afterwards,
+    /// mid-binding, already has it applied, as FCS has applied a relation by
+    /// the time its checking order moves past it.
+    ///
+    /// The unification is atomic ([`InferTable::unify_atomic`]): one that
+    /// fails binds nothing, and counts in [`Scope::eq_failures`]. Between two
+    /// ground types that is what FCS does too. Where either side holds an
+    /// open variable FCS's unification is not atomic — it may have bound part
+    /// of the variable before it met the conflict — so after a failure the
+    /// table may hold less than FCS's. A binding with a failure fires no
+    /// argument check ([`Gen::verified`]) and keeps no declared type variable
+    /// ([`Gen::rigid_under_every_relation`]), and a match clause whose pattern
+    /// failed declines.
+    pub(super) fn eq(&mut self, scope: &mut Scope, a: Ty, b: Ty) {
+        if self.solver.table.unify_atomic(a, b).is_err() {
+            scope.eq_failures += 1;
+        }
     }
 }
 

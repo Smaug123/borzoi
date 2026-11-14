@@ -55,10 +55,10 @@ impl<'a> Gen<'a> {
                 if self.facts.own_union_cases.contains(&id)
                     || self.facts.preceding.case(id).is_some() =>
             {
-                return self.case_use(at);
+                return self.case_use(scope, at);
             }
             Some(Resolution::Local(_)) if self.facts.own_union_case_at(at) => {
-                return self.case_use(at);
+                return self.case_use(scope, at);
             }
             Some(Resolution::Item(id)) if !self.facts.resolved.owns_item(id) => {
                 let ty = *self
@@ -68,7 +68,7 @@ impl<'a> Gen<'a> {
                     .map_err(Incomplete::PrecedingValue)?;
                 return Ok(self.scheme_use(scope, self.facts.env.types(), ty));
             }
-            Some(Resolution::UnionCase { .. }) => return self.case_use(at),
+            Some(Resolution::UnionCase { .. }) => return self.case_use(scope, at),
             _ => return Err(Incomplete::NotInFileValue),
         };
         let scheme = match self.facts.env.member_at(parent, idx) {
@@ -90,12 +90,12 @@ impl<'a> Gen<'a> {
     /// coercion (`TcExprsWithFlexes`), which an application's argument check
     /// reproduces — as `infer_union_case_diff`'s unsealed and many-field rows
     /// hold it to.
-    fn case_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
+    fn case_use(&mut self, scope: &mut Scope, at: TextRange) -> Result<TyVid, Incomplete> {
         let (_, scheme) = self.facts.case_at(at)?;
         let env_tys = self.facts.env.types();
         let ty = self.solver.instantiate(env_tys, scheme.value_ty(env_tys));
         let uv = self.solver.table.fresh();
-        self.solver.eq(self.solver.tys.var(uv), ty);
+        self.eq(scope, self.solver.tys.var(uv), ty);
         Ok(uv)
     }
 
@@ -123,7 +123,7 @@ impl<'a> Gen<'a> {
         }
         let ty = self.loosened(scope, body).unwrap_or(body);
         let uv = self.solver.table.fresh();
-        self.solver.eq(self.solver.tys.var(uv), ty);
+        self.eq(scope, self.solver.tys.var(uv), ty);
         uv
     }
 
@@ -134,7 +134,7 @@ impl<'a> Gen<'a> {
         let body = self.solver.instantiate(from, scheme);
         let ty = self.loosened(scope, body).unwrap_or(body);
         let uv = self.solver.table.fresh();
-        self.solver.eq(self.solver.tys.var(uv), ty);
+        self.eq(scope, self.solver.tys.var(uv), ty);
         uv
     }
 
@@ -247,7 +247,7 @@ impl<'a> Gen<'a> {
         match self.loosened(scope, known) {
             Some(ty) => {
                 let uv = self.solver.table.fresh();
-                self.solver.eq(self.solver.tys.var(uv), ty);
+                self.eq(scope, self.solver.tys.var(uv), ty);
                 uv
             }
             None => dv,

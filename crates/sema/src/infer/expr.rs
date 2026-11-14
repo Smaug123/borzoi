@@ -114,7 +114,7 @@ impl<'a> Gen<'a> {
                     return None;
                 };
                 let v = self.solver.table.fresh();
-                self.solver.eq(self.solver.tys.var(v), ty);
+                self.eq(scope, self.solver.tys.var(v), ty);
                 // The literal *token*'s range, not the `ConstExpr` node's: in a
                 // tuple element (`(1, "hi")`) the node range swallows the leading
                 // ` ` trivia after the comma, but FCS's node spans only the
@@ -212,8 +212,7 @@ impl<'a> Gen<'a> {
                     return None;
                 }
                 let tv = self.solver.table.fresh();
-                self.solver
-                    .eq(self.solver.tys.var(tv), self.solver.tys.tuple(elems));
+                self.eq(scope, self.solver.tys.var(tv), self.solver.tys.tuple(elems));
                 self.emit(self.facts.node_span(t.syntax()), tv, expected);
                 Some(tv)
             }
@@ -387,7 +386,7 @@ impl<'a> Gen<'a> {
                         scope.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
                     }
-                    self.solver.eq(self.solver.tys.var(sv), pt);
+                    self.eq(scope, self.solver.tys.var(sv), pt);
                     // The pattern's names are typed before the clause's uses
                     // of them are walked, so a use reads a known type
                     // ([`Self::value_use`]).
@@ -694,7 +693,7 @@ impl<'a> Gen<'a> {
             return;
         }
         if let Some(rhs_var) = rhs_var {
-            self.solver.eq(pat_ty, self.solver.tys.var(rhs_var));
+            self.eq(scope, pat_ty, self.solver.tys.var(rhs_var));
         }
         self.settle(scope);
         let agrees = rhs_var.is_some_and(|v| {
@@ -817,7 +816,8 @@ impl<'a> Gen<'a> {
                 // type variable is reachable through every other mention of
                 // it too (`(y: 'a) (x: 'a)`), so no occurrence of its own is
                 // provably the first constraint on it. Read off the head, not
-                // the table: nothing is solved while the body is walked.
+                // the table, which says so only once the body has met another
+                // mention.
                 let shares_typar = ident
                     .ident()
                     .and_then(|tok| self.facts.def_at(tok.text_range()))
@@ -831,7 +831,8 @@ impl<'a> Gen<'a> {
                             .ident()
                             .is_some_and(|tok| self.is_first_occurrence(scope, &tok)) =>
                     {
-                        self.solver.eq(
+                        self.eq(
+                            scope,
                             self.solver.tys.var(slot),
                             self.solver
                                 .tys

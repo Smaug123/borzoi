@@ -74,37 +74,37 @@ struct WorklistOutcome {
 }
 
 impl<'a> Gen<'a> {
-    /// Discharge the constraint set into the table by unification (the solve
-    /// half of D8), now a **worklist** (Stage 3.3a) with two suspended clients
-    /// (`HasMember`, and the Stage-3.3c `ArgCheck`). Best-effort (D5): any
-    /// constraint that fails to unify is *skipped* — discharged through
-    /// [`InferTable::unify_atomic`], so a failed constraint rolls back whole and
+    /// Decide the binding's suspended constraints at its end, by a
+    /// **worklist** over its two suspended kinds. Every equality the binding
+    /// generated is already in the table ([`Self::eq`]). Best-effort (D5): a
+    /// relation that fails to unify is *skipped* — unified through
+    /// [`InferTable::unify_atomic`], so a failed one rolls back whole and
     /// leaves no partial binding to leak into read-off. Its variables stay
     /// unresolved, so read-off stays silent rather than guessing.
     ///
-    /// Three constraint kinds:
-    /// - **`Eq`** is discharged eagerly.
-    /// - **`HasMember`** is *suspended*: it fires only once its receiver resolves
+    /// The two suspended kinds:
+    /// - **`HasMember`** fires only once its receiver resolves
     ///   to a concrete [`TyKind::Named`] head, at which point an unambiguous public
     ///   instance data member is looked up ([`Self::wake_member`]) and its type is
-    ///   unified with the result (a new `Eq`). A concrete non-`Named` head
+    ///   unified with the result. A concrete non-`Named` head
     ///   (`Array` / `Tuple` / `Fun` / `Param`) drops the constraint (defer — those
     ///   intrinsic members are out of scope). An unresolved receiver keeps it
     ///   pending.
-    /// - **`ArgCheck`** (Stage 3.3c) is *suspended*: it fires once the enclosing
+    /// - **`ArgCheck`** fires once the enclosing
     ///   binding is walk-complete **and** its domain `dom` resolves to a
     ///   [no-subsumption](Self::no_subsumption_domain) type or a
-    ///   [function type](Solver::function_domain), discharging `Eq(arg, dom)`. An
-    ///   `ArgCheck` that never fires, or whose `Eq` fails, is **undischarged**
-    ///   and — after the fixpoint — poisons `arg`, `dom`, and the application
-    ///   result `r`, so an unwoken arg relation never generalises.
+    ///   [function type](Solver::function_domain), unifying `arg` with `dom`. An
+    ///   `ArgCheck` that never fires, or whose unification fails, is
+    ///   **undischarged** and — after the fixpoint — poisons `arg`, `dom`, and
+    ///   the application result `r`, so an unwoken arg relation never
+    ///   generalises.
     ///
-    /// The loop fixpoints: discharge every pending `Eq`, then scan the suspended
-    /// lists — a member/arg wake pushes a new `Eq` (discharged next iteration) and
-    /// may ground a *later* suspension's watched variable (a chained member
-    /// `s.A.B`, or an `ArgCheck` whose `dom` a prior wake grounds). Each suspension
-    /// fires at most once, so termination is by count. Members that never wake are
-    /// dropped; `ArgCheck`s that never fire are poisoned (see above).
+    /// The loop fixpoints: it scans the suspended lists, and a member/arg wake
+    /// unifies at once, which may ground a *later* suspension's watched
+    /// variable (a chained member `s.A.B`, or an `ArgCheck` whose `dom` a prior
+    /// wake grounds). Each suspension fires at most once, so termination is by
+    /// count. Members that never wake are dropped; `ArgCheck`s that never fire
+    /// are poisoned (see above).
     ///
     /// **The solve is speculative.** FCS checks a body in source order: the
     /// first relation to fix a variable wins and a later conflicting one is
@@ -374,17 +374,15 @@ impl<'a> Gen<'a> {
     }
 
     /// Settle the constraints generated **so far** in the current binding,
-    /// mid-walk (CE-1): discharge the eager `Eq`s and wake members to a fixpoint,
-    /// then put every suspension still pending back on the constraint list,
-    /// and every [`ArgCheck`], none of which fires here, on
-    /// [`Solver::settled_args`], for the binding's final [`Self::solve`]. Used to
-    /// ask whether a local binder or a statement is ground *at that point in
-    /// the walk*.
+    /// mid-walk (CE-1): wake members to a fixpoint, then put every suspension
+    /// still pending back on the constraint list, and every [`ArgCheck`], none
+    /// of which fires here, on [`Solver::settled_args`], for the binding's final
+    /// [`Self::solve`]. Used to ask whether a local binder or a statement is
+    /// ground *at that point in the walk*.
     ///
-    /// Only the two constraint kinds that are true regardless of the rest of the
-    /// binding are discharged. An `Eq` is a genuine equality, and a member wake
-    /// reads nothing but its receiver's type — so discharging either early is
-    /// what the final solve would do anyway. An argument check is gated on the
+    /// A member wake reads nothing but its receiver's type (and a method's
+    /// argument types), so waking it early is what the final solve would do
+    /// anyway. An argument check is gated on the
     /// **whole** binding's walk-completeness, which is not known until the walk
     /// ends, so it waits for [`Self::solve`].
     pub(super) fn settle(&mut self, scope: &mut Scope) {
@@ -412,7 +410,7 @@ impl<'a> Gen<'a> {
     /// [`Self::settle`] runs without it, since the check's completeness gate is
     /// not yet decided.
     fn run_worklist(&mut self, scope: &mut Scope, fire: Fire) -> WorklistOutcome {
-        // Split the batch: discharge every eager `Eq` now, park suspensions.
+        // Park the suspensions.
         let mut suspended: Vec<SuspendedMember> = Vec::new();
         // No argument check fires under `Fire::None`, so the ones a settle
         // parked wait outside the fixpoint, ahead of those this run parks.
@@ -420,15 +418,14 @@ impl<'a> Gen<'a> {
             Fire::None => (std::mem::take(&mut self.solver.settled_args), Vec::new()),
             Fire::All => (Vec::new(), std::mem::take(&mut self.solver.settled_args)),
         };
-        self.discharge_eqs(scope, &mut suspended, &mut suspended_args);
+        self.take_suspended(&mut suspended, &mut suspended_args);
         let mut outcome = WorklistOutcome::default();
         // The latest end of a discharged check's argument, which a member
         // resolved afterwards may have learned its receiver from.
         let mut latest_discharge: Option<TextSize> = None;
 
         // Fixpoint: scan the parked members and arg-checks; wake each whose watched
-        // variable is now concrete/ready, discharging any `Eq` its wake produces.
-        // Repeat while anything fires. Each suspension fires at most once (a woken
+        // variable is now concrete/ready; a wake unifies at once. Repeat while anything fires. Each suspension fires at most once (a woken
         // one is not re-parked), so the loop runs at most `suspended.len() +
         // suspended_args.len()` times.
         loop {
@@ -443,8 +440,8 @@ impl<'a> Gen<'a> {
                         ..m
                     }),
                     // A concrete named receiver — attempt the member lookup (a data
-                    // member or a method, per `m.kind`), which may push an
-                    // `Eq(result, member_ty)` and record the resolved member's
+                    // member or a method, per `m.kind`), which may unify
+                    // `result` with the member's type and record the resolved member's
                     // identity at `use_range` (Stage 3.3b). A `false` return is a
                     // *retry* request (an overload whose argument is not yet ground):
                     // re-park without counting as progress, so a later wake that
@@ -473,7 +470,7 @@ impl<'a> Gen<'a> {
                         }
                     }
                     // A field of a project record, read off its declaration.
-                    TyKind::Project { .. } if self.wake_record_field(head, &m) => {
+                    TyKind::Project { .. } if self.wake_record_field(scope, head, &m) => {
                         woke = true;
                         if m.late(latest_discharge) {
                             outcome.late_member = true;
@@ -517,8 +514,7 @@ impl<'a> Gen<'a> {
                     && self.arg_check_binds_only_current_vars(scope, ac)
                 {
                     // Fire: discharge the arg↔param relation as a genuine equality,
-                    // **immediately** (not via the deferred `Eq` queue) so we learn
-                    // the outcome now. On success the check discharged (poison
+                    // unified now, so we learn the outcome now. On success the check discharged (poison
                     // nothing — the relation is modelled). On failure (ill-typed
                     // code) the atomic rollback leaves no trace, and the check is
                     // *undischarged*, so its `arg`/`dom`/`r` are poisoned. Either
@@ -541,9 +537,10 @@ impl<'a> Gen<'a> {
                 }
             }
             suspended_args = still_pending_args;
-
-            // Discharge the `Eq`s a wake produced (grounding the next chain link).
-            self.discharge_eqs(scope, &mut suspended, &mut suspended_args);
+            debug_assert!(
+                self.solver.constraints.is_empty(),
+                "a wake suspends nothing"
+            );
             // Nothing fired this pass ⇒ no watched variable can become more ready ⇒
             // fixpoint.
             if !woke {
@@ -655,24 +652,15 @@ impl<'a> Gen<'a> {
         })
     }
 
-    /// Discharge every pending `Eq` in `self.solver.constraints` (best-effort, via
-    /// [`InferTable::unify_atomic`]), routing each suspended constraint into its
-    /// pending list instead. Shared by [`Self::solve`]'s initial split and its
-    /// per-wake re-drain (a wake pushes a fresh `Eq`, and a member/arg wake could
-    /// in principle push a fresh suspension).
-    fn discharge_eqs(
+    /// Route each constraint in `self.solver.constraints` into its pending
+    /// list, [`Self::run_worklist`]'s split.
+    fn take_suspended(
         &mut self,
-        scope: &mut Scope,
         suspended: &mut Vec<SuspendedMember>,
         suspended_args: &mut Vec<ArgCheck>,
     ) {
         for c in std::mem::take(&mut self.solver.constraints) {
             match c {
-                Constraint::Eq(a, b) => {
-                    if self.solver.table.unify_atomic(a, b).is_err() {
-                        scope.eq_failures += 1;
-                    }
-                }
                 Constraint::HasMember {
                     recv,
                     name,
