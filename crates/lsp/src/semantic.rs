@@ -1453,12 +1453,13 @@ impl SemanticState {
         env: &Arc<AssemblyEnv>,
         project: &Path,
         workspace: &mut Workspace,
-    ) -> bool {
+    ) -> FoldEnv {
         let key = self
             .assembly_envs
             .iter()
             .find(|(_, entry)| Arc::ptr_eq(&entry.cached.env, env))
             .map(|(key, _)| key.clone());
+        let mut replaced = None;
         let served = match key {
             None => false,
             Some(key) => match self.confirmed_env(&key, workspace) {
@@ -1505,8 +1506,11 @@ impl SemanticState {
                         if !kept {
                             // The fold against the old env goes; the env its
                             // refold reads is built here, from the resolution
-                            // just made, rather than resolved again.
-                            self.build_and_cache(
+                            // just made, rather than resolved again, and
+                            // handed to the refold whether or not it is
+                            // cached (a transient failure is retried by the
+                            // next request, not by this one).
+                            let (rebuilt, retryable) = self.build_and_cache(
                                 key.clone(),
                                 dotnet_root.as_deref(),
                                 &refs,
@@ -1515,16 +1519,21 @@ impl SemanticState {
                                 started,
                                 workspace,
                             );
+                            replaced = Some((rebuilt.env, retryable));
                         }
                         kept
                     }
                 }
             },
         };
-        if !served {
-            self.drop_env(env);
+        if served {
+            return FoldEnv::Served;
         }
-        served
+        self.drop_env(env);
+        match replaced {
+            Some((env, retryable)) => FoldEnv::Replaced(env, retryable),
+            None => FoldEnv::Gone,
+        }
     }
 
     /// The [`ResolvedProject`] for `project` **paired with the exact
@@ -1617,6 +1626,7 @@ impl SemanticState {
         // (`Self::drop_env`), and the request falls through to rebuild both.
         // If the parses aren't cached, neither is the fold (they are built and
         // dropped together), so this correctly falls through.
+        let mut replaced = None;
         if let Some(cached) = self.project_parses.get(&key) {
             let want_len = up_to_index.saturating_add(1).min(cached.parses.files.len());
             lookup_span.record("requested_files", want_len as i64);
@@ -1624,9 +1634,13 @@ impl SemanticState {
                 && resolved.len() >= want_len
             {
                 let (resolved, env) = (Arc::clone(resolved), Arc::clone(env));
-                if self.env_still_served(&env, project, workspace) {
-                    lookup_span.record("cache_hit", true);
-                    return Some((resolved, env));
+                match self.env_still_served(&env, project, workspace) {
+                    FoldEnv::Served => {
+                        lookup_span.record("cache_hit", true);
+                        return Some((resolved, env));
+                    }
+                    FoldEnv::Replaced(env, retryable) => replaced = Some((env, retryable)),
+                    FoldEnv::Gone => {}
                 }
             }
         }
@@ -1666,14 +1680,19 @@ impl SemanticState {
         // (see [`crate::restore`]); the `&Workspace` entry point does the
         // same, so they agree.
         let restore_env = self.restore_env(workspace);
-        let (env, retryable) = self.assembly_env_for_project_retryable(
-            project,
-            dotnet_root,
-            root_reads,
-            &target_framework,
-            workspace,
-            restore_env,
-        );
+        // The env the fast path built in finding the cached fold's env moved
+        // is the one this generation resolves to: reuse it.
+        let (env, retryable) = match replaced {
+            Some(replaced) => replaced,
+            None => self.assembly_env_for_project_retryable(
+                project,
+                dotnet_root,
+                root_reads,
+                &target_framework,
+                workspace,
+                restore_env,
+            ),
+        };
         // The fold horizon: `.file(up_to_index)` and everything it can
         // reference (files `0..up_to_index`), nothing after. The *whole*
         // Compile list is still handed to sema — the sig ↔ impl pairing must
@@ -2592,6 +2611,20 @@ struct EnvEntry {
     /// generation, so the next confirmation covers the installed contents
     /// it trusts too ([`Workspace::confirm_env`]'s `after_event`).
     event_since: bool,
+}
+
+/// What became of the env a cached fold was folded against
+/// ([`SemanticState::env_still_served`]).
+#[derive(Debug)]
+enum FoldEnv {
+    /// Still the env its key serves: the fold stands.
+    Served,
+    /// Its references resolve differently now: this env was built from that
+    /// resolution (and cached unless it is retryable, the flag beside it),
+    /// and the fold must be folded again against it.
+    Replaced(Arc<AssemblyEnv>, bool),
+    /// No longer served, and nothing built in its place.
+    Gone,
 }
 
 /// What [`SemanticState::confirmed_env`] found of a cached env.

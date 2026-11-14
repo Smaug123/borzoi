@@ -1677,14 +1677,16 @@ fn main() {
     let mut census = Census::default();
     let mut rows: BTreeMap<usize, (&str, Vec<Cost>)> = BTreeMap::new();
     let mut totals = Vec::new();
+    // `own-comment` alone writes the project file: the comment goes before
+    // its closing tag, however that is spelt (`</Project>`, `</Project >`).
     let original = client_fs::read_bytes(&project).expect("read the project file");
-    let commented = {
+    let commented = (script == Script::OwnComment).then(|| {
         let text = std::str::from_utf8(&original).expect("a UTF-8 project file");
         let end = text
-            .rfind("</Project>")
+            .rfind("</Project")
             .expect("the project file closes its <Project>");
         format!("{}  <!-- edit_counts -->\n{}", &text[..end], &text[end..])
-    };
+    });
     e.text.push_str("\n// edit_counts ");
     for k in 0..keystrokes {
         barriers.push(client.measure(&Step::Barrier).0);
@@ -1758,7 +1760,7 @@ fn main() {
                 if script == Script::OwnSave {
                     client_fs::rewrite_in_place(&project).expect("rewrite the project file");
                 }
-                if script == Script::OwnComment {
+                if let Some(commented) = &commented {
                     let bytes = if k % 2 == 0 {
                         commented.as_bytes()
                     } else {

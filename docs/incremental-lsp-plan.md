@@ -3548,6 +3548,14 @@ Planted, each caught, then removed (each run against `cargo test -p borzoi
 | the env built with no incompleteness mark | the generated `evaluation_cutoff` property, three `semantic` incompleteness tests |
 | the fast path discarding a resolution that found new inputs, so the refold resolves again (Codex) | the generated `evaluation_cutoff` property (added for it: two resolutions in one generation) |
 
+Codex's second round found the same shape once more: an env built that
+way but not cached (a transient C# sidecar or restore failure) was built
+again by the refold. The fast path now hands the env it built to the refold
+(`FoldEnv::Replaced`), cached or not; no test reaches a transient failure.
+It also found the generated property's census able to miss a category on
+an unlucky seed; two fixed sequences that reach every category now run
+first.
+
 Two plants first passed every test: the parse cutoff ignoring `LangVersion`
 provenance (no test changed the provenance alone) and a kept env keeping
 its old unrecorded readers (no test kept an env across a resolution that

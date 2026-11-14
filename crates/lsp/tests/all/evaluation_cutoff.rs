@@ -607,6 +607,16 @@ fn run(edits: &[Edit], census: &mut Census) -> Result<(), TestCaseError> {
 #[test]
 fn the_env_and_the_fold_are_kept_exactly_when_what_they_read_is() {
     let census = std::cell::RefCell::new(Census::default());
+    // Sequences that reach every kind of step the census asks for, so that
+    // its check holds whatever the generator draws: the generated cases add
+    // to them.
+    let covering = [
+        vec![Edit::Comment(1), Edit::Define("FOO")],
+        vec![Edit::Reference(Ref::CSharp), Edit::Reference(Ref::Lib)],
+    ];
+    for edits in &covering {
+        run(edits, &mut census.borrow_mut()).unwrap();
+    }
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 24,
         ..ProptestConfig::default()
