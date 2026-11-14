@@ -513,6 +513,11 @@ impl<'s, 'r> Engine<'s, 'r> {
                 // A task whose condition is false does not run: MSBuild neither
                 // binds it nor reads its parameters.
                 other => {
+                    // MSBuild looks for batching in a task's parameters before
+                    // its condition, and fails on batching it cannot do.
+                    if task_batches(child) {
+                        return decline(format!("target {target}'s {other} batches"));
+                    }
                     if self.decide(child)? {
                         return decline(format!("target {target} runs {other}"));
                     }
@@ -819,6 +824,13 @@ impl<'s, 'r> Engine<'s, 'r> {
         if references_private(raw) {
             return decline(format!("{raw} reads a property no project can write"));
         }
+        // MSBuild expands properties, functions included, before items, so a
+        // function receives an item reference in its arguments as text.
+        if item_reference_in_property(raw) {
+            return decline(format!(
+                "{raw} passes an item reference to a property function"
+            ));
+        }
         // The tables hold identities decoded, and MSBuild expands a list from
         // their escaped spellings, which decoding loses. In a value that
         // spelling is what the value holds, and a later read may run it into a
@@ -1068,9 +1080,53 @@ fn condition_text(node: Node<'_, '_>) -> Result<Option<String>, Decline> {
             _ => {}
         }
     }
-    // A character reference may spell a quote or a line break.
-    if raw.contains("&#") {
+    // A character reference may spell a quote or a line break, and `&apos;`
+    // a quote the scan above cannot see.
+    if raw.contains("&#") || raw.contains("&apos;") {
         return decline(format!("the condition {raw} holds a character reference"));
     }
     Ok(Some(attr.value().to_owned()))
+}
+
+/// Whether an `@(` in `raw` sits inside a `$(…)` (a property function's
+/// receiver or arguments), counting parentheses from each `$(`.
+fn item_reference_in_property(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut open: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                open.push(1);
+                i += 2;
+                continue;
+            }
+            b'@' if bytes.get(i + 1) == Some(&b'(') && !open.is_empty() => return true,
+            b'(' => {
+                if let Some(depth) = open.last_mut() {
+                    *depth += 1;
+                }
+            }
+            b')' => {
+                if let Some(depth) = open.last_mut() {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        open.pop();
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether a task element's parameters or children mention metadata, which
+/// MSBuild batches on.
+fn task_batches(task: Node<'_, '_>) -> bool {
+    task.descendants().any(|node| {
+        node.attributes().any(|a| a.value().contains("%("))
+            || (node.is_text() && node.text().is_some_and(|t| t.contains("%(")))
+    })
 }

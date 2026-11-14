@@ -62,7 +62,7 @@ const VALUES: [&str; 21] = [
     "$([System.String]::Concat('p', $(A)))",
     "$(A.Substring(9))",
 ];
-const CONDITIONS: [&str; 13] = [
+const CONDITIONS: [&str; 15] = [
     "'$(A)' == 'x'",
     "'$(A)' != 'x'",
     "'$(B)' == ''",
@@ -79,6 +79,10 @@ const CONDITIONS: [&str; 13] = [
     // False in MSBuild, which keeps the line break; true once an XML reader
     // normalises it to a space.
     "'x\ny' == 'x y'",
+    // The same with its quotes spelt as entities.
+    "&apos;x\ny&apos; == &apos;x y&apos;",
+    // MSBuild passes a function the item reference as text.
+    "$([System.String]::IsNullOrEmpty('@(J)'))",
     "Exists('nowhere')",
 ];
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
@@ -106,11 +110,14 @@ fn label(rng: &mut SplitMix64) -> &'static str {
 
 fn condition(rng: &mut SplitMix64) -> String {
     if rng.below(3) == 0 {
-        // `Exists` (which the executor declines) only now and then.
+        // Mostly one of the first five, which the executor decides; now and
+        // then any but the last; `Exists` (which it declines) rarely.
         let pick = if rng.below(20) == 0 {
             CONDITIONS.len() - 1
-        } else {
+        } else if rng.below(3) == 0 {
             rng.below(CONDITIONS.len() - 1)
+        } else {
+            rng.below(5)
         };
         format!(" Condition=\"{}\"", CONDITIONS[pick])
     } else {
@@ -251,7 +258,7 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
         }
         out.push_str(&format!("  <Target Name=\"{name}\"{attributes}>\n"));
         for _ in 0..rng.below(3) {
-            match rng.below(12) {
+            match rng.below(13) {
                 0..=6 => {
                     out.push_str(&format!("    <PropertyGroup{}>\n", condition(rng)));
                     for _ in 0..1 + rng.below(2) {
@@ -276,6 +283,8 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
                     "    <Message Text=\"$(A)\" Importance=\"{}\" />\n",
                     rng.pick(&["low", "high", " Normal ", "invalid"])
                 )),
+                // Batching MSBuild cannot do fails the build whatever the condition.
+                12 => out.push_str("    <Error Condition=\"false\" Text=\"%(M)\" />\n"),
                 // A task the executor does not run, behind a condition that is
                 // false (it does not run in MSBuild either) or true.
                 _ => out.push_str(&format!(
