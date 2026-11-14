@@ -2813,27 +2813,26 @@ then have to carry. It is not adopted by default.
   `projects_generation` no longer drops every semantic cache
   (`sync_with_evaluations`): what it drops is the envs with an unrecorded
   reader, and nothing else.
-- **A change owes one refresh.** A text sync or a watch event records, for
-  each path it names, the generation in which it owed the semantic-token
-  refresh (`SemanticState::announced`). A cached fold found stale owes no
-  second refresh when every item that moved was announced after the
-  generation that last confirmed the fold: the client was told of each
-  change it finds. The rebuild decides it, comparing the stale parses'
-  texts with the ones it read (`owe_refresh_for_unannounced`), so
-  validation still stops at the first item that moved. A change announced in that generation or before it, or
-  never (a write on disk with no event), owes one from the request that
-  finds it. Without this, every keystroke sent the client two
-  workspace-wide refreshes: one at the `didChange`, and one from the next
-  request's validation (found by Codex; `each_change_owes_one_refresh`).
-  A first version kept a set of announced paths that a fold reading them
-  consumed; Codex found both ways that lifecycle goes wrong (an
-  announcement for a file that had not changed outlived the confirmation
-  that found it unchanged and silenced a later unwatched change, and one
-  project's fold consumed the announcement a second project compiling the
-  same file still needed). Comparing generations has no lifecycle to get
-  wrong: an announcement speaks only for what changed after the fold was
-  last confirmed, for every fold at once
-  (`an_announcement_speaks_only_for_changes_after_the_last_confirmation`).
+- **A change owes one refresh.** Every text sync of a source owes the
+  semantic-token refresh when it is synced. A cached fold found stale owes
+  no second one when every item that moved, moved to the text an open
+  buffer holds now (`owe_refresh_for_unannounced`, run by the rebuild,
+  which compares the stale parses' texts with the ones it read, so
+  validation still stops at the first item that moved). A fold reads a
+  buffer in preference to the disk, so such a move is that buffer's opening
+  or one of its edits since the fold was last confirmed, each of which owed
+  the refresh. A move to disk text (a buffer closed, a write with or without
+  an event) owes one when it is found: possibly a second one for a watched
+  write or a close, never a missed one. Without this, every keystroke sent
+  the client two workspace-wide refreshes, one at the `didChange` and one
+  from the next request's validation (found by Codex;
+  `each_change_owes_one_refresh`). Two earlier versions recorded which
+  paths had been announced, first as a set a fold consumed and then by the
+  generation of the announcement, and Codex found three ways each let an
+  unwatched write inherit an older announcement or a second project lose
+  one (`a_stale_fold_owes_a_refresh_for_every_change_no_sync_announced`
+  holds all three). The buffer the fold read is the announcement itself, so
+  there is nothing to record and no lifecycle to get wrong.
 - **A fold refusal records the evaluation it was refused under**, and
   `fold_outcome` reports `Unknown` under any other
   (`a_fold_refusal_does_not_outlive_the_project_that_caused_it`). A text
@@ -3006,6 +3005,8 @@ The oracle:
   `a_save_that_changes_the_project_recomputes_it`, gives the project a
   define and must evaluate it once and fold.
 - `xml_doc::lookup::tests::a_same_size_rewrite_with_its_mtime_put_back_is_seen`.
+- `observed_counts::a_stale_fold_owes_a_refresh_for_every_change_no_sync_announced`:
+  the three announcement cases Codex found.
 - `observed_counts::each_change_owes_one_refresh`: a keystroke owes one
   semantic-token refresh, at the keystroke, and the request that then finds
   the fold stale owes none; a closed item rewritten with no event owes one,
@@ -3096,7 +3097,8 @@ Planted, each caught, then removed (each run against `cargo test -p borzoi
 | the doc-file cache caching under a racy stamp | `nothing_is_cached_under_a_racy_stamp` (added for it) |
 | a validation owing a refresh for an announced change (Codex) | `each_change_owes_one_refresh` (added for it: `(1, 1, 0, 1)` where `(1, 0, 0, 1)` is right) |
 | every change treated as announced | `each_change_owes_one_refresh` (the unwatched write owes none), the pinned scripts |
-| announcements as a set a fold consumes (Codex) | `an_announcement_speaks_only_for_changes_after_the_last_confirmation` (added for it) |
+| announcements as a set a fold consumes (Codex) | `a_stale_fold_owes_a_refresh_for_every_change_no_sync_announced` (added for it) |
+| announcements by generation, not by the text announced (Codex) | the same test, once it wrote a closed source two projects compile (added for it) |
 | the dotnet-root probe's reads left out of the env (Codex) | `an_env_records_what_choosing_its_dotnet_root_read` (added for it) |
 
 #313's mutations, re-planted where their code still exists:

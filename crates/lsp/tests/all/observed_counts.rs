@@ -906,12 +906,16 @@ proptest! {
     }
 }
 
-/// The refreshes two announcement lifecycles owe (found by Codex): a watch
-/// event for a closed item that changed nothing, then the same item
-/// rewritten with no event; and a keystroke in a source two cached projects
-/// compile, then a request on each project.
+/// The refreshes a stale fold owes in three cases Codex found: a watch event
+/// for a closed item that changed nothing, then the same item rewritten with
+/// no event; a keystroke in a source two cached projects compile, then a
+/// request on each project; and a watched write to a closed source both
+/// compile, a request on one project, then an unwatched write and a request
+/// on the other. A move to a buffer's text was announced by its sync; a move
+/// to disk text owes a refresh when it is found, so no unwatched write is
+/// taken for one the client was told of.
 #[test]
-fn an_announcement_speaks_only_for_changes_after_the_last_confirmation() {
+fn a_stale_fold_owes_a_refresh_for_every_change_no_sync_announced() {
     let tmp = TempDir::new().unwrap();
     let p = tmp.path().join("P");
     let q = tmp.path().join("Q");
@@ -920,7 +924,7 @@ fn an_announcement_speaks_only_for_changes_after_the_last_confirmation() {
     let (items, mut texts) = project(&p, 4);
     std::fs::write(
         q.join("Q.fsproj"),
-        "<Project>\n  <ItemGroup>\n    <Compile Include=\"../P/F0.fs\" />\n    <Compile Include=\"Q.fs\" />\n  </ItemGroup>\n</Project>\n",
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"../P/F0.fs\" />\n    <Compile Include=\"../P/F2.fs\" />\n    <Compile Include=\"Q.fs\" />\n  </ItemGroup>\n</Project>\n",
     )
     .unwrap();
     let q_text = "module Q\n\nlet q = F0.v0 + 1\n";
@@ -991,6 +995,23 @@ fn an_announcement_speaks_only_for_changes_after_the_last_confirmation() {
         tokens(&mut client, &q.join("Q.fs")) + barrier(&mut client),
         0,
         "Q"
+    );
+
+    // A watched write to the closed `F2`, which both compile, and a request
+    // on `P` only; then `F2` rewritten with no event, and a request on `Q`.
+    std::fs::write(&items[2], format!("{}// watched\n", texts[2])).unwrap();
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": Uri::from_file_path(&items[2]).unwrap().as_str(), "type": 2 }] }),
+    );
+    barrier(&mut client);
+    tokens(&mut client, &items[1]);
+    barrier(&mut client);
+    std::fs::write(&items[2], format!("{}// unwatched\n", texts[2])).unwrap();
+    assert_eq!(
+        tokens(&mut client, &q.join("Q.fs")) + barrier(&mut client),
+        1,
+        "an unwatched write found by one project after a watched one found by another owes a refresh"
     );
     client.shut_down();
 }

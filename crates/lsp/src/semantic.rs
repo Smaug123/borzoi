@@ -33,7 +33,7 @@ use borzoi_sema::{
 
 use crate::assembly_cache::AssemblyCache;
 use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
-use crate::paths::{lexically_normalize, path_dedup_key, paths_equal};
+use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
     resolve_assemblies_for_tfm, resolve_assemblies_root_only, resolve_transitive_project_tfms,
 };
@@ -531,15 +531,6 @@ pub struct SemanticState {
     /// Compile-order folds computed in the open generation
     /// ([`Self::end_generation`]).
     folds: u64,
-    /// The generation in which each source was last announced to the
-    /// client as changed: a text sync or a watch event named it and owed
-    /// the refresh then ([`Self::owe_token_refresh`]). A cached fold whose
-    /// moved items were all announced after the generation that last
-    /// confirmed it owes no second refresh (`Self::owe_refresh_for_unannounced`):
-    /// the client was told of every change it finds. Keyed as the `Vfs` keys
-    /// its buffers ([`crate::paths::path_dedup_key`]), one entry per source
-    /// the session has announced.
-    announced: HashMap<String, u64>,
     /// A project's cached parses that validation found stale under the
     /// evaluation they were built from, kept until the rebuild that follows
     /// compares them with what it read, to decide whether the change owes a
@@ -671,28 +662,15 @@ impl SemanticState {
         }
     }
 
-    /// Something an open buffer's semantic tokens may read changed, at
-    /// `paths`: a source buffer was opened, edited or closed, or a watch
-    /// event reported a source or a project file changed. The caches need
-    /// nothing (each confirms its inputs when read), but an open buffer
-    /// other than the one touched may now be shown stale tokens, and the
-    /// client re-asks only for the one it touched, so a
-    /// `workspace/semanticTokens/refresh` is owed. The paths are recorded as
-    /// announced in `generation` (the open one, `None` outside one), so a
-    /// fold that finds them changed owes no second one.
-    pub fn owe_token_refresh<'a>(
-        &mut self,
-        paths: impl IntoIterator<Item = &'a Path>,
-        generation: Option<u64>,
-    ) {
+    /// Something an open buffer's semantic tokens may read changed: a source
+    /// buffer was opened, edited or closed, or a watch event reported a
+    /// source or a project file changed. The caches need nothing (each
+    /// confirms its inputs when read), but an open buffer other than the one
+    /// touched may now be shown stale tokens, and the client re-asks only
+    /// for the one it touched, so a `workspace/semanticTokens/refresh` is
+    /// owed.
+    pub fn owe_token_refresh(&mut self) {
         self.wants_refresh = true;
-        if let Some(generation) = generation {
-            self.announced.extend(
-                paths
-                    .into_iter()
-                    .map(|path| (path_dedup_key(&lexically_normalize(path)), generation)),
-            );
-        }
     }
 
     /// Forget `project`'s cached parses and fold, as if it had never been
@@ -1762,7 +1740,7 @@ impl SemanticState {
                 }
             };
             if let Some(stale) = &stale {
-                self.owe_refresh_for_unannounced(stale, &parses);
+                self.owe_refresh_for_unannounced(stale, &parses, docs);
             }
             self.project_parses.insert(
                 key.clone(),
@@ -1863,27 +1841,32 @@ impl SemanticState {
 
     /// Owe a semantic-token refresh unless every Compile item whose text
     /// moved between `stale` and `fresh` (folded under one evaluation, so
-    /// over one Compile list) was announced after the generation that last
-    /// confirmed `stale`, which owed the refresh then: the client was told
-    /// of each change. One announced in that generation or before it may
-    /// predate the confirmation, and outside a generation nothing is known,
-    /// so either owes the refresh again.
-    fn owe_refresh_for_unannounced(&mut self, stale: &CachedParses, fresh: &ProjectParses) {
-        let confirmed_in = stale.validated_in;
-        let announced = &self.announced;
-        let same_list = stale.parses.paths == fresh.paths;
-        let unannounced = !same_list
+    /// over one Compile list) moved to the text an open buffer holds now.
+    /// A fold reads a buffer in preference to the disk, so such a move is
+    /// the buffer's opening or one of its edits since `stale` was last
+    /// confirmed, and each of those owed the refresh when it was synced
+    /// ([`Self::owe_token_refresh`]). A move to disk text (a buffer closed,
+    /// a write with a watch event or without one) owes it here, so an
+    /// unwatched write is never taken for one the client was told of.
+    fn owe_refresh_for_unannounced(
+        &mut self,
+        stale: &CachedParses,
+        fresh: &ProjectParses,
+        docs: &Vfs,
+    ) {
+        let synced_from_a_buffer = |path: &Path, now: &Arc<str>| {
+            docs.buffer_uri(path)
+                .and_then(|uri| docs.get(uri))
+                .is_some_and(|buffer| Arc::ptr_eq(buffer, now))
+        };
+        let unannounced = stale.parses.paths != fresh.paths
             || stale
                 .parses
                 .paths
                 .iter()
                 .zip(stale.parses.texts.iter().zip(&fresh.texts))
                 .filter(|(_, (before, now))| !(Arc::ptr_eq(before, now) || ***before == ***now))
-                .any(|(path, _)| {
-                    !announced
-                        .get(&path_dedup_key(&lexically_normalize(path)))
-                        .is_some_and(|&at| confirmed_in.is_some_and(|confirmed| at > confirmed))
-                });
+                .any(|(path, (_, now))| !synced_from_a_buffer(path, now));
         if unannounced {
             self.wants_refresh = true;
         }
@@ -8421,12 +8404,19 @@ mod tests {
             .expect("warm");
         assert!(!sema.take_wants_refresh(), "a cold fold flags no refresh");
 
-        // Edit A, then a token request for A itself (an incremental fold).
+        // Edit A, with its text sync, then a token request for A itself (an
+        // incremental fold), which finds the fold stale at the buffer's new
+        // text: the sync announced it, so the fold owes nothing more.
         docs.insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
-        sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
-            .expect("prefix A after edit");
+        sema.owe_token_refresh();
         assert!(sema.take_wants_refresh(), "the edit flags a refresh");
         assert!(!sema.take_wants_refresh(), "take clears the flag");
+        sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
+            .expect("prefix A after edit");
+        assert!(
+            !sema.take_wants_refresh(),
+            "the fold owes no second refresh for the change its sync announced"
+        );
 
         // The refresh makes the client re-request the later buffer B; that
         // incremental fold must NOT flag another refresh.
@@ -8462,8 +8452,10 @@ mod tests {
             "the cold warm fold flags nothing"
         );
 
-        // Body-only edit to A: `1` -> `(1)`. Still flags a refresh (conservative).
+        // Body-only edit to A: `1` -> `(1)`, and its text sync. Still flags a
+        // refresh (conservative).
         docs.insert(a_uri, "module A\nlet x = (1)\n".to_string());
+        sema.owe_token_refresh();
         sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
             .expect("prefix A after body edit");
         assert!(
@@ -8528,6 +8520,7 @@ mod tests {
         sema.drop_every_env();
         assert!(sema.take_wants_refresh(), "a dropped env owes a refresh");
         docs.insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
+        sema.owe_token_refresh();
         // This fold is cold (no prev base), but the edit still owes a refresh.
         sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
             .expect("cold fold after structural invalidation + edit");
@@ -8547,7 +8540,7 @@ mod tests {
         assert!(!sema.take_wants_refresh(), "nothing owed initially");
 
         // No fold anywhere — just what the notification path records.
-        sema.owe_token_refresh([Path::new("/some/project/A.fs")], None);
+        sema.owe_token_refresh();
         assert!(
             sema.take_wants_refresh(),
             "a fold-less source change still owes a refresh"

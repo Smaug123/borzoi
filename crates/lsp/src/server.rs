@@ -418,9 +418,7 @@ impl State {
         if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
             return;
         }
-        let path = uri.to_file_path().ok();
-        self.semantic
-            .owe_token_refresh(path.as_deref(), self.docs.generation());
+        self.semantic.owe_token_refresh();
     }
 
     /// Apply a batch of `workspace/didChangeWatchedFiles` changes and return
@@ -487,9 +485,7 @@ impl State {
                 ChangeClass::Structural => structural = true,
                 ChangeClass::Source => {
                     self.wants_diagnostic_refresh = true;
-                    let path = change.uri.to_file_path().ok();
-                    self.semantic
-                        .owe_token_refresh(path.as_deref(), self.docs.generation());
+                    self.semantic.owe_token_refresh();
                 }
                 ChangeClass::AssemblyInput => assembly_input = true,
                 ChangeClass::Ignored => {}
@@ -502,8 +498,7 @@ impl State {
             self.workspace.note_structural_event();
             self.semantic
                 .sync_with_evaluations(self.workspace.projects_generation());
-            self.semantic
-                .owe_token_refresh(hinted.iter().map(PathBuf::as_path), self.docs.generation());
+            self.semantic.owe_token_refresh();
             // This is the response to the moved generation, so none is owed
             // for it after the message.
             self.evaluations_reported = self.workspace.projects_generation();
@@ -3396,9 +3391,11 @@ mod tests {
         maybe_send_refresh(&mut state, &server, SweepStatus::Idle);
 
         // Export-changing edit to A, then a token request for A itself.
-        state
-            .docs
-            .insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
+        state.docs.insert(
+            a_uri.clone(),
+            "module A\nlet x = 1\nlet extra = 2\n".to_string(),
+        );
+        state.note_source_sync(&a_uri);
         {
             let State {
                 semantic,
