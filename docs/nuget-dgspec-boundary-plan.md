@@ -1976,10 +1976,13 @@ the two differ where it matters:
   padding kept, and a value that XML normalisation or entity decoding
   touched declines, as does inner XML.
 
-It declines everything else: another task, `InitialTargets` (not run yet),
+It declines everything else: another task, a built-in task a `UsingTask`
+may rebind, an empty request (the default targets), `InitialTargets` (not
+run yet),
 `Inputs`/`Outputs`/`Returns`, a backslash in an item identity or metadatum
 (MSBuild's Unix path fixup may respell it),
-`%(…)` and `@(…)`, a property function, `MSBuildThisFile*` (which name the
+`%(…)` and `@(…)` (including one properties assemble, which MSBuild then
+expands as such), a property function, `MSBuildThisFile*` (which name the
 defining file inside a target), a read of any value the walk does not vouch
 for, a write to a reserved or global property, and a graph in which a target
 can bring itself up again through hooks or literal dependencies. MSBuild

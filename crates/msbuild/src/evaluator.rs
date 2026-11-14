@@ -1779,6 +1779,10 @@ struct State<'r> {
     /// runs before any target a build asks for.
     #[cfg(any(test, feature = "test-support"))]
     initial_targets_named: bool,
+    /// The `TaskName` of every `<UsingTask>` the walk reached: the executor
+    /// runs a built-in task only where none may rebind it.
+    #[cfg(any(test, feature = "test-support"))]
+    using_task_names: Vec<String>,
     /// What the walk knows, or doesn't, about each property's stored value —
     /// keyed by lowercase property name. All three forward-uncertainty channels
     /// live in the one [`Trust`] value, so a name cannot be marked on one
@@ -2232,6 +2236,8 @@ impl<'r> State<'r> {
             directory_build_splices: reads::DirectoryBuildSplices::default(),
             #[cfg(any(test, feature = "test-support"))]
             initial_targets_named: false,
+            #[cfg(any(test, feature = "test-support"))]
+            using_task_names: Vec::new(),
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: None,
@@ -2797,6 +2803,8 @@ impl<'r> State<'r> {
                 directory_build_splices: _,
             #[cfg(any(test, feature = "test-support"))]
                 initial_targets_named: _,
+            #[cfg(any(test, feature = "test-support"))]
+                using_task_names: _,
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
@@ -4004,6 +4012,10 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             #[cfg(any(test, feature = "test-support"))]
             if node.tag_name().name() == "Target" {
                 state.record_target_definition(node);
+            } else {
+                state
+                    .using_task_names
+                    .push(node.attribute("TaskName").unwrap_or_default().to_owned());
             }
             state.push(
                 DiagnosticKind::UnsupportedConstruct {

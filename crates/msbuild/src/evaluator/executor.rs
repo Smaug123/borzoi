@@ -290,6 +290,10 @@ impl<'s, 'r> Engine<'s, 'r> {
         if self.state.initial_targets_named {
             return decline("a file names InitialTargets");
         }
+        // An empty request runs the default targets, which are not modelled.
+        if probe.targets.is_empty() {
+            return decline("the build asks for its default targets");
+        }
         let requested: Vec<String> = probe.targets.clone();
         self.push(&requested, None, Reason::Requested)?;
         let mut steps = 0usize;
@@ -464,6 +468,14 @@ impl<'s, 'r> Engine<'s, 'r> {
     /// parameter it rejects (an unknown `Importance`), so only the shapes it
     /// accepts run.
     fn message(&mut self, task: Node<'_, '_>) -> Result<(), Decline> {
+        if self
+            .state
+            .using_task_names
+            .iter()
+            .any(|name| may_bind(name, "Message"))
+        {
+            return decline("a UsingTask may rebind Message");
+        }
         for attr in task.attributes() {
             if !matches!(attr.name(), "Text" | "Importance" | "Condition") {
                 return decline(format!("Message has {}", attr.name()));
@@ -647,6 +659,11 @@ impl<'s, 'r> Engine<'s, 'r> {
             return Ok(true);
         };
         self.check_references(&raw)?;
+        if holds_reference(properties::substitute(&raw, &self.lookup).0.as_escaped()) {
+            return decline(format!(
+                "the condition {raw} expands to an item or metadata reference"
+            ));
+        }
         match condition::evaluate(&raw, &self.lookup).outcome {
             condition::Outcome::True => Ok(true),
             condition::Outcome::False => Ok(false),
@@ -665,6 +682,11 @@ impl<'s, 'r> Engine<'s, 'r> {
             .any(|issue| !matches!(issue, Issue::Undefined { .. }))
         {
             return decline(format!("{raw} does not expand cleanly"));
+        }
+        // Properties can assemble an item or metadata reference, which MSBuild
+        // then expands as such.
+        if holds_reference(value.as_escaped()) {
+            return decline(format!("{raw} expands to an item or metadata reference"));
         }
         Ok(value)
     }
@@ -686,6 +708,16 @@ impl<'s, 'r> Engine<'s, 'r> {
     /// The run may read `name`: it wrote it, or the walk vouches for it.
     fn check_read(&self, name: &str) -> Result<(), Decline> {
         let lower = name.to_ascii_lowercase();
+        // A value that holds an item or metadata reference is one MSBuild
+        // expands again as such once properties are in (`$(A)$(B)` with
+        // `A=@`, `B=(I)` reads `@(I)`).
+        if self
+            .lookup
+            .get(name)
+            .is_some_and(|value| holds_reference(value.as_escaped()))
+        {
+            return decline(format!("{name} holds an item or metadata reference"));
+        }
         if self.written.contains(&lower) {
             return Ok(());
         }
@@ -757,4 +789,22 @@ fn attribute(node: Node<'_, '_>, name: &str) -> Result<Option<String>, Decline> 
         return decline(format!("the attribute {name} is not its source verbatim"));
     }
     Ok(Some(attr.value().to_owned()))
+}
+
+/// Whether a `UsingTask` of `task_name` may bind the task an element names
+/// `name`: MSBuild matches a task by its name or the last segment of a
+/// qualified one, case-insensitively. A name it cannot read may bind
+/// anything.
+fn may_bind(task_name: &str, name: &str) -> bool {
+    let task_name = task_name.trim();
+    task_name.contains(['$', '@', '%'])
+        || task_name
+            .rsplit('.')
+            .next()
+            .is_some_and(|last| last.eq_ignore_ascii_case(name))
+}
+
+/// Whether escaped text holds an item or metadata reference.
+fn holds_reference(escaped: &str) -> bool {
+    escaped.contains("@(") || escaped.contains("%(")
 }

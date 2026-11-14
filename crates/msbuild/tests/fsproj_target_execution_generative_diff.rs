@@ -30,9 +30,10 @@ const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// Values a target writes.
 /// Padding is significant; a backslash is one MSBuild's Unix path fixup may
 /// respell in an item; a literal tab survives in MSBuild where XML attribute
-/// normalisation would turn it into a space.
-const VALUES: [&str; 9] = [
-    "x", "y", "$(A)z", "$(B)", "", "$(Gated)", " x ", "a\\b", "x\ty",
+/// normalisation would turn it into a space. `@` and `(I)` assemble an item
+/// reference as `$(A)$(B)`, which MSBuild expands as such.
+const VALUES: [&str; 12] = [
+    "x", "y", "$(A)z", "$(B)", "", "$(Gated)", " x ", "a\\b", "x\ty", "@", "(I)", "$(A)$(B)",
 ];
 const CONDITIONS: [&str; 6] = [
     "'$(A)' == 'x'",
@@ -90,9 +91,12 @@ fn project(rng: &mut SplitMix64) -> String {
         ""
     };
     let mut out = format!("<Project{initial}>\n  <PropertyGroup>\n");
-    out.push_str(&format!("    <A>{}</A>\n", rng.pick(&["x", "y"])));
-    if rng.below(2) == 0 {
-        out.push_str("    <B>b</B>\n");
+    // `A=@` and `B=(I)` assemble an item reference as `$(A)$(B)`.
+    out.push_str(&format!("    <A>{}</A>\n", rng.pick(&["x", "y", "@"])));
+    match rng.below(4) {
+        0 | 1 => out.push_str("    <B>b</B>\n"),
+        2 => out.push_str("    <B>(I)</B>\n"),
+        _ => {}
     }
     if rng.below(3) == 0 {
         out.push_str(&format!(
@@ -102,6 +106,10 @@ fn project(rng: &mut SplitMix64) -> String {
     out.push_str("    <Deps>T2;T3</Deps>\n    <Hook>T1</Hook>\n  </PropertyGroup>\n");
     if rng.below(2) == 0 {
         out.push_str("  <ItemGroup>\n    <I Include=\"e\" M=\"m\" />\n  </ItemGroup>\n");
+    }
+    // A `UsingTask` may rebind a built-in task.
+    if rng.below(15) == 0 {
+        out.push_str("  <UsingTask TaskName=\"Message\" AssemblyFile=\"missing.dll\" />\n");
     }
     // Defaults an item a target creates takes too.
     if rng.below(5) == 0 {
@@ -389,4 +397,30 @@ fn many_runs_are_committed() {
 fn soak() {
     let (seed, cases) = common::soak_parameters("fsproj_target_execution_generative_diff", 5000);
     sweep(seed, cases);
+}
+
+/// An empty request runs the project's default targets, which the executor
+/// does not model.
+#[test]
+fn an_empty_request_declines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = host_fs::canonicalize(dir.path()).unwrap().join("p.proj");
+    let xml =
+        "<Project><Target Name=\"T0\"><PropertyGroup><A>x</A></PropertyGroup></Target></Project>";
+    std::fs::write(&path, xml).unwrap();
+    let probe = ReadProbe {
+        execute: Some(ExecutionProbe::default()),
+        ..ReadProbe::default()
+    };
+    let (_, reads) = parse_fsproj_reads(
+        xml,
+        &path,
+        &HashMap::new(),
+        &common::oracle_environment(),
+        None,
+        None,
+        &probe,
+    )
+    .unwrap();
+    assert!(matches!(reads.execution, Some(ExecutionRead::Declined(_))));
 }
