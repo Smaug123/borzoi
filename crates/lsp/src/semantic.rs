@@ -1362,11 +1362,13 @@ impl SemanticState {
 
     /// [`Self::resolved_prefix_and_env_for`], stopping at a checkpoint once
     /// `watch` sees a notification ([`crate::inbox`]). No unit of work begins
-    /// without one just before it: before returning a cached prefix, after
-    /// the project's evaluation is confirmed, before each Compile item's
-    /// parse ([`Self::parses_for_project_watched`]), before the env, before
-    /// the fold, and after it. Each unit is cached before the checkpoint that
-    /// follows it, so a run that stops keeps what it computed.
+    /// without one just before it: before returning a cached prefix (its
+    /// caller may begin one), before the parses (whose rebuild may evaluate
+    /// the project again) and each Compile item's parse
+    /// ([`Self::parses_for_project_watched`]), before the env, and before the
+    /// fold. Each unit is cached before the next checkpoint, so a run that
+    /// stops keeps what it computed; what follows the last unit is the
+    /// caller's, up to the loop's checkpoint after the handler.
     pub fn resolved_prefix_and_env_watched(
         &mut self,
         project: &Path,
@@ -1606,7 +1608,6 @@ impl SemanticState {
             }
             self.drop_env_past_name_cap(&key, &env);
         }
-        watch.check()?;
         Ok(Some((resolved, env)))
     }
 
@@ -1660,8 +1661,8 @@ impl SemanticState {
     }
 
     /// [`Self::inferred_prefix_for`], stopping at the checkpoints of
-    /// [`Self::resolved_prefix_and_env_watched`] and at one after the
-    /// inference, which is cached before it.
+    /// [`Self::resolved_prefix_and_env_watched`] and at one before the
+    /// inference.
     pub fn inferred_prefix_watched(
         &mut self,
         project: &Path,
@@ -1723,7 +1724,6 @@ impl SemanticState {
         // Inference publishes its types into the env's type table, which the
         // cap bounds with the name table.
         self.drop_env_past_name_cap(&key, &env);
-        watch.check()?;
         Ok(Some((resolved, env, inferred)))
     }
 

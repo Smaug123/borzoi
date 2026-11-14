@@ -3493,12 +3493,12 @@ the stop:
   compares the counter with it, and once it has moved, the request returns
   `Superseded`, which every handler and every fold entry point propagates
   (`Result<_, Superseded>`).
-- **Checkpoints follow memo boundaries.** Each one comes after a unit of work
-  whose result is cached: the ownership walk and evaluation the request
-  asked for, each Compile item's parse, the env, the fold, the inference.
-  One more comes after the handler has returned, before its answer is sent.
-  So an abandoned run keeps every unit it completed, and the next run finds
-  them in the caches.
+- **Checkpoints sit at memo boundaries.** No unit of work whose result is
+  cached begins without one just before it: the parses (whose rebuild may
+  evaluate the project again), each Compile item's parse, the env, the
+  fold, the inference, each project `workspace/symbol` parses. One more
+  comes after the handler has returned, before its answer is sent. So an abandoned run keeps every unit it
+  completed, and the next run finds them in the caches.
 - **An abandoned request is unanswered.** Its message goes back into the
   epoch. The loop finishes the step as it finishes any (the response to a
   moved evaluation, the owed refreshes, the deferral report, the end of the
@@ -3562,9 +3562,9 @@ the re-run pays one unit at most again.
 - The Stage 8 interleaving property, with messages delivered at checkpoints
   inside running requests, not only between steps.
 - `the_plan_is_its_specification`, with re-runs.
-- A test that each abandoned request stops at the next checkpoint after the
-  notification, and one that the edit's pull is answered before the request
-  it interrupted.
+- A test that a request stops before it begins another unit, wherever the
+  notification arrives, and one that the edit's pull is answered before the
+  request it interrupted.
 - `blocked-edit`, measured on both projects.
 
 **Implemented** (`crates/lsp/src/inbox.rs`, `crates/lsp/src/server.rs`,
@@ -3585,9 +3585,9 @@ the re-run pays one unit at most again.
   compares. The fold's entry points have watched variants
   (`SemanticState::parses_for_project_watched`,
   `resolved_prefix_and_env_watched`, `inferred_prefix_watched`) that check
-  after confirming the evaluation, before each Compile item after the first,
-  after the parses, after the env, after the fold and after the inference,
-  each unit cached first. The handlers that fold (`hover`, `definition`,
+  before returning a cached prefix, before the parses, before each Compile
+  item, before the env, before the fold and before the inference, each unit
+  cached before the next checkpoint. The handlers that fold (`hover`, `definition`,
   `references`, `completion`, `semanticTokens`, `workspace/symbol`) take a
   watch (`handle_watched`) and check after finding the owning project; the
   loop checks once more after the handler returns. Every other caller keeps
@@ -3639,13 +3639,20 @@ The oracle, as built:
   session's answer after the whole batch. Its non-vacuity check asks for a
   batch in which a run stopped and an answer with a result after the
   arrival.
-- `dispatch_coalescing::a_request_starts_no_unit_after_a_notification_arrives`:
-  the cancellation latency in units. For a hover (fold and inference),
-  references (the whole project) and semantic tokens, on a cold session, a
-  notification sent as each unit begins (`parse_compile_item`,
-  `build_env_from_dll_paths`, `resolve_project`, `infer_project`) stops the
-  request before it begins another, and the request then answers as it does
-  unstopped.
+- `dispatch_coalescing::a_request_stops_for_a_notification_wherever_it_arrives`:
+  the cancellation latency in units. A notification sent as any span of the
+  request's handler begins (the handler's own, each unit's, every span
+  inside them) stops the request once, before it begins another unit
+  (`parse_compile_item`, `build_assembly_env`, `resolve_project`,
+  `infer_project`), and the request then answers as it does unstopped. Swept
+  over every such span of a cold hover, cold references, cold semantic
+  tokens, a hover whose fold is cached and whose inference is not, and
+  `workspace/symbol` over two projects. Its first version sent the
+  notification only as a unit began, over the three cold requests; Codex
+  found two units it let begin after a notification (the next project's
+  first parse in `workspace/symbol`, and cold inference after a cached
+  prefix), and the plant of a missing checkpoint after the handler passed
+  it once every unit was followed by one.
 - `dispatch_coalescing::an_edit_that_arrives_mid_request_is_answered_before_it`:
   the gate in small. A change to `A` and a pull of `A` arrive at a hover on
   `C`'s first checkpoint; the hover stops, the pull is answered first, and
@@ -3665,7 +3672,9 @@ and the state machine's warm and stopping properties):
 | plant | caught by |
 |---|---|
 | no cancellation (a checkpoint never sees the count move) | the exhaustive and full-inbox tests, the coalescing property, the latency sweep, the gate in small, the stopping state machine |
-| a stale answer: no checkpoint after the handler | the latency sweep (references stops at no unit) |
+| a stale answer: no checkpoint after the handler | the latency sweep, once it covered every span (a notification during references' scan) |
+| no checkpoint before a project's first parse (Codex) | the latency sweep, once it covered `workspace/symbol` over two projects |
+| no checkpoint between a cached prefix and the inference (Codex) | the latency sweep, once it covered a hover over a cached fold |
 | a stopped fold's partial parses cached as the project's | the latency sweep, the stopping state machine |
 | the stale parses lost on a stop (the rebuild's refresh decision) | `a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change` (added for it: it passed everything else) |
 | an unbounded inbox | `a_full_inbox_holds_the_sender_back` |
@@ -3676,7 +3685,7 @@ and the state machine's warm and stopping properties):
 | a restart's place taken before reading what arrived | the gate in small |
 | no checkpoint after the env | the latency sweep |
 | no checkpoint between Compile items | the latency sweep |
-| no checkpoint after the fold | the latency sweep |
+| no checkpoint after the fold | nothing, once every unit was preceded by a checkpoint: it guarded no unit (the next is preceded by its own) and no answer (the loop's checks it), so it was deleted, with the one after the inference |
 | the count before the push | the exhaustive and full-inbox tests |
 | the counter read after the channel | the exhaustive test |
 
@@ -3749,6 +3758,58 @@ What the window now consists of, on WoofWare.Incremental (attributed by
 So the part after the edit is under the budget on WoofWare.PawPrint.Domain
 (43.6 M) and over it on WoofWare.Incremental (79.7 M), and the window is
 over it on both because of work done before the edit was sent.
+
+The tables were taken at d2b7f874 (main merged); the checkpoints Codex's
+second round added before the inference, before a cached prefix is
+returned and before each project's parses are an atomic load each.
+
+**Departures.**
+
+- **No worker and no snapshot.** The plan sketched a worker running
+  semantic requests against a cloned `Vfs` and the memo tables behind a
+  lock. This stage keeps the one owner and stops the request instead (the
+  design's "Why not the sketch"). The oracle's "interleaving test of the
+  memo table's insert-versus-read race" is accordingly an exhaustive test
+  of what is shared: the inbox's channel and counter.
+- **The measurement's end.** The plan's window ends at the answer to
+  `diagnostic E`; Stage 8's harness read the counters after both answers and
+  a settle, which on Stage 8 is the same moment, since `diagnostic E` was
+  answered last. It now reads them as `diagnostic E`'s answer arrives, as the
+  plan defines, and also reports the split at the edit.
+- **`edit_counts` hands its messages to the inbox**, so it runs no input
+  thread, and a message is in the inbox, and a notification counted, when
+  its send returns; the baseline's harness writes to Stage 8's connection,
+  which its loop reads directly.
+- **Every notification stops a running request**, not only a text sync: the
+  input thread cannot know what the request reads, and a cancellation of
+  the running request should stop it too. A notification that changes
+  nothing the request read costs the rest of a unit.
+- **A re-run waits behind the requests that arrived while it ran**, a change
+  to Stage 8's plan.
+- **The loop's input thread moved into `run_with_fetcher`** from `main`
+  (`inbox::forward`, which replaces `server::buffer_input`).
+
+**Open gaps.**
+
+- The gate fails: the window is 384.5 M and 394.3 M against 50 M. 300 M of
+  it is the re-evaluation, done before the edit was sent.
+- A fresh evaluation's first confirmation asks every read again (2,262
+  `stat`s, 45–54 M on WoofWare.Incremental), because its checks are taken
+  with no witnesses; the request that would have paid it stopped, so the
+  edit's pull pays it.
+- Building a fresh evaluation's checks (`Evaluation::checks_and_exempt`)
+  costs 31 M after the evaluation itself, within the unit, so before the
+  next checkpoint.
+- An edit that arrives during an env build waits for the rest of it (up to
+  2.7 G on WoofWare.Incremental, cold), and one that arrives during a cold
+  fold or inference for the rest of that (0.6 G and 0.1 G): each is one unit.
+- An edit waits in full for a notification ahead of it (a `didOpen` that
+  evaluates a project, about 0.3 G); only requests stop.
+- A client whose notifications never pause starves its requests, now also
+  mid-request: each stops at its next checkpoint.
+- A notification that cannot change what a request read (a cancellation of
+  another request, `didSave`) stops it all the same.
+- A `workspace/diagnostic` sweep in flight is not stopped (as in Stage 8).
 
 ## Non-goals
 
