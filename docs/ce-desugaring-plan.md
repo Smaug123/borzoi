@@ -468,7 +468,8 @@ immediately).
 ### CE-1 — body furniture: expression-level `let` and `Sequential` in infer
 
 **Landed.** Implemented as specified, with three findings the probes settled
-(module docs of `crates/sema/src/infer.rs`, "CE-1"):
+(module docs of `crates/sema/src/infer/mod.rs`, "Expression-level `let … in` and
+sequences"):
 
 - "Ground by itself" is decided by *settling* the constraints so far mid-walk —
   equalities and member wakes, never argument checks, whose completeness gate

@@ -1,6 +1,6 @@
 //! Best-effort type inference over the parsed CST (Phase 3).
 //!
-//! **Stage 3.1 — literal typing in soundness-safe positions.** A literal's
+//! **Literal typing in soundness-safe positions.** A literal's
 //! *displayed* F# type is not fixed by its lexical kind: F# retargets literals
 //! by the **expected type** that reaches them. `let x: int64 = 42` makes `42` an
 //! `int64`; `printfn "%d"` makes `"%d"` a `PrintfFormat`; `1.0<kg>` makes the
@@ -20,24 +20,22 @@
 //! Everything else is left absent — the D5 "Deferred, say nothing" contract:
 //! literals in argument / annotated / measure / collection positions (where an
 //! expected type may retarget them) and the few whose type is not fixed even in
-//! isolation (`USER_NUM_LIT` like `1I`/`1G`, source-location identifiers). They
-//! become typeable once expected-type propagation lands (Phase 3.2), which
-//! generalises exactly this "what expected type reaches here" question.
+//! isolation (`USER_NUM_LIT` like `1I`/`1G`, source-location identifiers).
 //!
 //! Pure (no IO): a binding-RHS literal's type is syntactically determined.
 //! Differentially tested against FCS's typed tree
 //! (`crates/sema/tests/all/infer_literals_diff.rs`), which exercises both the sound
 //! positions (must agree) and the unsound ones (must stay silent).
 //!
-//! **Stage 3.2a — the generate→solve pipeline.** Inference is structured as
+//! **The generate→solve pipeline.** Inference is structured as
 //! the plan's [D8] generate→solve: a pure fold produces an inert
 //! `Vec<Constraint>` over inference variables, the [`InferTable`] substrate
 //! solves them by unification, and each expression's type is read back by
 //! resolving its variable — emitted only when it is fully [`ground`](TyTable::is_ground)
 //! (D5: silence otherwise).
 //!
-//! **Stage 3.2b-1 — value-reference propagation.** Generation now consults name
-//! resolution ([`crate::resolve_file`]) to connect a value *use* to its binder:
+//! **Value-reference propagation.** Generation consults name resolution
+//! ([`crate::resolve_file`]) to connect a value *use* to its binder:
 //! each in-file binder gets an inference variable keyed by its `DefId`, and a
 //! sound value binding `let y = <rhs>` unifies that variable with its RHS. The
 //! RHS may itself be a value use (`let y = x`), so a binder's type propagates
@@ -48,11 +46,9 @@
 //! annotated binding, an `if`/`match` arm) F# may insert a *subsumption
 //! coercion* — `s : string` flowing into an `obj` slot has expression type
 //! `obj`, not `string` — so the use's type is **not** its binder's, and emitting
-//! the binder's type there would violate D5. Those positions defer until
-//! expected-type propagation lands. Function bindings (generic, needing
-//! instantiation) and binders we never typed also stay Deferred.
+//! the binder's type there would violate D5.
 //!
-//! **Stage 3.2b-2 — parentheses and tuples.** The coercion-free RHS typer
+//! **Parentheses and tuples.** The coercion-free RHS typer
 //! recurses through transparent parentheses (`let y = (x)`) and types a
 //! reference tuple `(a, b, …)` as [`TyKind::Tuple`], recursing into each element
 //! (still coercion-free — an unannotated tuple imposes no expected type on its
@@ -60,20 +56,20 @@
 //! element we cannot type are deferred (the latter leaves the tuple un-ground
 //! while its typeable siblings still emit).
 //!
-//! **Stage 3.2c-1 — the bidirectional spine + control flow.** RHS typing
-//! becomes a recursive [`Gen::infer_expr`] threading an `expected` type
+//! **The bidirectional spine and control flow.** RHS typing
+//! is a recursive [`Gen::infer_expr`] threading an `expected` type
 //! (bidirectional checking): `None` is *synth* mode — a coercion-free position
 //! where the synthesized type *is* the elaborated one, so the node is emitted —
 //! and `Some(_)` is *check* mode — a coercion-possible position where the node is
-//! **not** emitted, since the elaborated type may be a coercion this stage
-//! doesn't model (no subtype relation yet). Check mode only suppresses emission
+//! **not** emitted, since the elaborated type may be a coercion inference
+//! doesn't model (no subtype relation). Check mode only suppresses emission
 //! and propagates the mode to children; it deliberately adds no cross-constraint,
 //! which without a subtype relation could only force equality and back-flow a
 //! coerced type onto a binder. This is the permanent HM shape: function
-//! application (a later slice) checks arguments against parameter types the same
-//! way, and subtype-aware checking later *completes* the check-mode rule (relate
-//! by subtyping, emit the coerced type) without replacing it. The first construct
-//! it unlocks is `if`/`then`/`else`: in synth mode the result is the then-branch's
+//! application checks arguments against parameter types the same
+//! way, and subtype-aware checking would *complete* the check-mode rule (relate
+//! by subtyping, emit the coerced type) without replacing it. For
+//! `if`/`then`/`else`, in synth mode the result is the then-branch's
 //! synthesized type (and the whole `if` defers if that branch can't synthesize —
 //! its type must not be taken from the coercible else), the else-branch is checked
 //! against it; an `if` with no *final* `else` (a plain `if c then a` or an `elif`
@@ -81,7 +77,7 @@
 //! type, so it too defers. In check mode both branches are checked. The result
 //! flows to the binder and hover (`let r = if … then 1 else 2` ⇒ `int`).
 //!
-//! **Stage 3.2c-2a — function/lambda body traversal.** Generation now walks the
+//! **Function and lambda bodies.** Generation walks the
 //! **body** of a function binding (`let f x … = body`), a lambda
 //! (`fun x … -> body`), and a `while` loop, so their sub-expressions get typed —
 //! e.g. a function body that is an `if` emits its result type
@@ -89,22 +85,19 @@
 //! body carries the right bidirectional *mode*: a function-binding body and a
 //! synth-position lambda body are coercion-free (synth); a lambda reached in
 //! *check* mode passes it on (an expected function type could retarget the body);
-//! a `while` body is checked against `unit`. The function value itself stays
-//! Deferred: its `TyKind::Fun` type (and let-generalisation) are a later slice — this
-//! one lays the body-traversal groundwork they build on.
+//! a `while` body is checked against `unit`.
 //!
-//! **Stage 3.2c-2b — `TyKind::Fun` + monomorphic function types + condition typing.**
-//! A `let`-function binder now carries a [`TyKind::Fun`] type built by currying its
+//! **`TyKind::Fun`, monomorphic function types, and condition typing.**
+//! A `let`-function binder carries a [`TyKind::Fun`] type built by currying its
 //! parameter variables over the body's return variable
 //! ([`Gen::function_type`]) — emitted (on [`InferredFile::def_type`]) only when
 //! every operand is [`ground`](TyTable::is_ground), i.e. **monomorphic** functions
 //! (`let f c = if c then 1 else 2` ⇒ `f : bool -> int`). A polymorphic function
-//! (an un-grounded parameter or return) leaves an open variable and so silently
-//! defers until let-generalisation (3.2c-2c).
+//! (an un-grounded parameter or return) leaves an open variable and so is
+//! published only if it generalises (below).
 //!
-//! This is where **condition typing** returns, done soundly. A parameter is
-//! grounded by a real constraint, and the one this stage supplies is the
-//! `if`/`while` **condition** ([`Gen::constrain_bool`]): a condition admits *no*
+//! **Condition typing.** A parameter is grounded by a real constraint, and one
+//! that inference supplies is the `if`/`while` **condition** ([`Gen::constrain_bool`]): a condition admits *no*
 //! subsumption — F# requires it to be exactly `bool` — so unifying it with
 //! `bool` is a genuine equality, not the coercion-possible check of an `if`
 //! branch. `let f c = if c then …` thus makes `c : bool` *inside* the function
@@ -112,7 +105,7 @@
 //!
 //! The subtlety is that condition typing is one *modelled* constraint among
 //! possibly-**unmodelled** others: a parameter can also carry a use-site
-//! ascription (`(c : int)`) or an annotation this stage does not read, and on
+//! ascription (`(c : int)`) or an annotation inference does not read, and on
 //! ill-typed mid-edit code F# resolves the conflict differently (keeping `int`,
 //! reporting the condition error). So the condition-derived `bool` must not reach
 //! any place we publish a parameter's *own* type. The mechanism:
@@ -133,7 +126,7 @@
 //! hence a ground function matches FCS, while still surfacing the parameter types
 //! *within* the signature (`f : bool -> int`).
 //!
-//! **Stage 3.2c-2c — `let`-generalisation, instantiation, and typar rendering.**
+//! **`let`-generalisation, instantiation, and typar rendering.**
 //! A function binding whose type is still *open* after solving may be
 //! **generalised** — `let f x = x` ⇒ `f : 'a -> 'a` — with each use instantiating
 //! the scheme afresh. This is the genuinely hard HM part, and its soundness is
@@ -146,7 +139,7 @@
 //! because `+` is unmodelled — FCS grounds it to `int`). Emitting `'a -> 'b` there
 //! would be a wrong published type (a D5 violation). So a variable may be
 //! quantified only when we can prove **every constraint FCS has on it is one we
-//! modelled** — which needs new machinery:
+//! modelled** — which needs this machinery:
 //!
 //! - **Per-binding walk-completeness** ([`Scope::complete`]). During one binding's
 //!   generation, any sub-expression or pattern we do not fully model marks the
@@ -157,8 +150,8 @@
 //!   constraints on `x`/`y`). Incomplete ⇒ **no generalisation** (ground emission
 //!   is unaffected — the subset argument needs no completeness).
 //! - **Poisoned variables** ([`Scope::poison`]). Check mode deliberately drops the
-//!   relation between a checked expression and its expected type (no subtype
-//!   relation yet); that dropped relation could ground *either* endpoint in FCS
+//!   relation between a checked expression and its expected type (there is no
+//!   subtype relation); that dropped relation could ground *either* endpoint in FCS
 //!   (`let f x = if true then x else 1` unifies `x` with `int` through the
 //!   else-relation we drop). So [`Gen::infer_expr`] poisons the expected and
 //!   returned variables of every check-mode call; at generalisation the set is
@@ -166,7 +159,7 @@
 //!   poisoned variable is never generalised (but *poisoned-and-ground* is fine —
 //!   the subset argument again).
 //!
-//! On a **complete** function binding the 2b private-slot decoupling is undone:
+//! On a **complete** function binding the private-slot decoupling is undone:
 //! [`Gen::slot_binder_reunify`] emits `Eq(slot, binder_var)` per simple parameter
 //! (F# has one variable for the parameter — the decoupling only exists to fence
 //! off *unmodelled* constraints, and every unmodelled shape already sets
@@ -174,7 +167,7 @@
 //! [`Gen::finish`] never publishes a parameter from it: it publishes the
 //! parameter's annotation, or its ground slot in a published function type, and
 //! nothing for a generic one. Parameter uses in
-//! synth positions may now emit (`let f x = if x then (1, x) else (2, x)` types the
+//! synth positions may emit (`let f x = if x then (1, x) else (2, x)` types the
 //! tuple's `x` as `bool`), sound on a complete binding.
 //!
 //! Generalisation is **sequential per binding** (Algorithm W): [`Gen::let_binding`]
@@ -183,50 +176,32 @@
 //! ([`InferTable::mark`]) taken at binding start makes the environment-freeness
 //! check trivial (an open var inherited from an earlier binder has a smaller index,
 //! so it defers this function rather than being quantified). At a function
-//! binding's finalisation: resolve its type; if ground, emit as before; else
+//! binding's finalisation: resolve its type; if ground, emit it; else
 //! generalise iff complete **and** every open var is created-this-binding and
 //! unpoisoned — replacing those vars by [`TyKind::Param`]s numbered by first
 //! appearance (DFS, argument-before-return) — else defer. A use of a scheme'd
 //! binder ([`Gen::infer_construct`]'s [`Expr::Ident`] arm) instantiates with a
 //! fresh var per distinct `Param`.
 //!
-//! **Stage 3.2c-3 — function application (v1: no worklist).** `f x` becomes a
+//! **Function application.** `f x` is a
 //! modelled construct ([`Gen::infer_app`]): the **function position** is
 //! synthesized ([`Gen::infer_callee`]) but records **no** node — FCS emits a typed
 //! node only at the whole application, never at the bare function-position use
 //! (probed against the `types` oracle) — then fresh domain `d` and result `r`
 //! variables are created and `Eq(tf, Fun(d, r))` is pushed. That equality is
 //! **genuinely true**: applying an in-file value forces a function shape (an
-//! in-file binder cannot be a method group). The argument is walked in **check
-//! mode** against `d`, so [`Gen::infer_expr`]'s poison wrapper poisons `d` and the
-//! argument's variable — F# relates them by *subsumption*, which this stage drops,
-//! and that poison is the soundness story. The `App` node emits `r` in synth
+//! in-file binder cannot be a method group). The `App` node emits `r` in synth
 //! positions (D5-safe: `r` is fixed by the `Eq` against the function's *own* type,
 //! independent of how the argument coerces). Curried `f x y` falls out of nested
 //! `App`s, and so does an **infix** application (see *Infix operators* below); a
 //! **bracket indexer** (`arr[i]`, which the parser stores under `APP_EXPR` but F#
 //! lowers to a member lookup, not an application), `TypeApp`, and applied
-//! `DotGet` stay unmodelled ⇒ incomplete. The application
-//! result `r` is also **poisoned** unconditionally: a `ground` `r` is unaffected
-//! (poison bites only open vars, so every ground payoff still emits), but a
-//! still-*open* `r` — a polymorphic result, or a result whose shape `Eq` could not
-//! unify (a value applied as `n 3`, whose failed constraint rolls back leaving `r`
-//! unrelated) — never generalises, so nothing bogus is published.
+//! `DotGet` stay unmodelled ⇒ incomplete.
 //!
-//! Payoffs and gaps, both by construction: a ground `f : bool -> int` applied to
-//! any argument grounds `r` (a ground var is unaffected by poison), so
-//! `let n = f true` ⇒ `n : int` and a partial `let g = add true` ⇒
-//! `g : bool -> int`. A **polymorphic** call defers: `let n = id 42` has
-//! `id`'s scheme instantiate to `d = r`, both poisoned by the argument check, so
-//! `r` stays open → silence (FCS grounds `n : int`; we say nothing rather than risk
-//! a wrong type). Likewise `let g y = id y` cannot generalise (`d`/`r`/`y`
-//! poisoned). Closing the polymorphic gap is Stage 3.3's suspended coercion-free
-//! wake rule.
-//!
-//! **Stage 3.3a — the suspended `HasMember` worklist (fields/properties).** A
+//! **The suspended `HasMember` worklist (fields and properties).** A
 //! member access `recv.Name` where `Name` is a **field or non-indexer instance
 //! property** on a **non-generic [`TyKind::Named`]** receiver resolved through the
-//! [`AssemblyEnv`] now types: `let s = "hi"` then `let n = s.Length` ⇒ `n : int`,
+//! [`AssemblyEnv`] types: `let s = "hi"` then `let n = s.Length` ⇒ `n : int`,
 //! `let n = "hi".Length` ⇒ `int`, and chains / multi-dot access.
 //!
 //! - **Two parse shapes** (probed against `fcs-dump types` and the CST first):
@@ -238,7 +213,7 @@
 //!   result) **and** at the receiver (its own value), never at the bare `.Name` —
 //!   so generation emits the receiver at its own range (synth: a member access
 //!   never coerces its receiver) and the whole access at the node range.
-//! - **The worklist.** `Constraint` grew a suspended
+//! - **The worklist.** `Constraint` holds a suspended
 //!   [`Constraint::HasMember`] `{ recv, name, result }`. [`Gen::solve`] discharges
 //!   the eager `Eq`s, then fixpoints: wake each parked member whose `recv`
 //!   resolves to a concrete head ([`Gen::wake_member`]), discharge the
@@ -259,10 +234,8 @@
 //!   `result` unconditionally (application's `r`-poison pattern) — an unwoken
 //!   member relation must never let either var generalise (`let f x = (x.Foo, x)`
 //!   defers, not a bogus `'a -> 'b * 'a`), while a ground emission is unaffected.
-//! - [`infer_file`] gained an [`AssemblyEnv`] parameter (pure — values in). The
-//!   application wake rule is Stage 3.3c.
 //!
-//! **Stage 3.3b — member-resolution side-table.** On a successful `HasMember`
+//! **The member-resolution side-table.** On a successful `HasMember`
 //! wake ([`Gen::wake_member`]) the resolved member's identity is recorded at the
 //! member-name use range in [`InferredFile::member_resolutions`], in the
 //! resolver's own [`Resolution::Member`] `{ parent, idx }` shape (so every LSP
@@ -273,19 +246,17 @@
 //! resolver's `Deferred(QualifiedAccess)` at a member-name range for hover /
 //! go-to-definition; dot-completion is served from the receiver's inferred type.
 //!
-//! **Stage 3.3c — the application wake rule (suspended arg↔param).** The
-//! worklist's second client, closing 3.2c-3's polymorphic gap: `let g y = id y` ⇒
+//! **The application wake rule (suspended arg↔param).** The
+//! worklist's second client: `let g y = id y` ⇒
 //! `g : 'a -> 'a`, `let n = id 42` ⇒ `n : int`, `let h y = fb y` (in-file
 //! `fb : bool -> int`) ⇒ `h : bool -> int`, and chained `let c x = id (id x)` ⇒
 //! `'a -> 'a`.
 //!
-//! 3.2c-3 dropped the argument↔parameter subsumption by *eagerly poisoning* the
-//! domain `d` and the argument's variable, so a polymorphic application could
-//! never generalise. 3.3c replaces that eager poison with a **suspended**
-//! [`Constraint::ArgCheck`] `{ arg, dom, r }` generated at each modelled
-//! application (the argument walk no longer takes the [`Gen::infer_expr`] poison
+//! Each modelled application generates a **suspended**
+//! [`Constraint::ArgCheck`] `{ arg, dom, r }` for the argument↔parameter
+//! subsumption (the argument walk does not take the [`Gen::infer_expr`] poison
 //! wrapper — [`Gen::infer_arg`] opts the application path out; every *other* check
-//! site is unchanged), and the eager `d`/`r` poison is gone.
+//! site takes it).
 //!
 //! **The wake rule** runs in the same per-binding fixpoint as `HasMember`
 //! ([`Gen::solve`]). An `ArgCheck` discharges as a genuine `Eq(arg, dom)` (via
@@ -322,15 +293,15 @@
 //! equality, so FCS, which tries an equality first, applies all of them, in
 //! whatever order. Otherwise no check fires at all.
 //!
-//! **Deferred poisoning** replaces the "un-poison" idea (never remove poison, just
-//! don't add it). At binding finalisation (in [`Gen::solve`], before the poison
+//! **Deferred poisoning** (poison is never removed, only not added). At binding
+//! finalisation (in [`Gen::solve`], before the poison
 //! closure / generalisation) every `ArgCheck` that did **not** successfully
 //! discharge — never woken, gate failed, or the `Eq` itself failed on ill-typed
 //! code (the atomic rollback leaves no trace) — poisons its `arg`, `dom`, **and**
 //! the result `r`. A successful discharge poisons nothing (the relation is now
-//! modelled); a ground result still emits (poison bites only open vars). This
-//! keeps the 3.2c-3 guards intact: a failed-shape `n 3` still poisons its dangling
-//! `r`, and a polymorphic result that never wakes still defers.
+//! modelled); a ground result still emits (poison bites only open vars). So a
+//! failed-shape `n 3` poisons its dangling `r`, and a polymorphic result that
+//! never wakes defers.
 //!
 //! **The soundness hazard this design closes.** *Unconditional* discharge would
 //! be a D5 violation on ill-typed mid-edit code: `let h (y: string) = (y, f y)`
@@ -339,21 +310,18 @@
 //! `string`. The completeness gate blocks it: the annotated parameter `(y:
 //! string)` marks the binding incomplete, so the `ArgCheck` never discharges and
 //! `y` stays open (silent). Argument-node *emission* stays off (a check-mode arg
-//! records no node even when its relation discharges); conditional read-off of
-//! check-mode nodes is a separate follow-up.
+//! records no node even when its relation discharges).
 //!
-//! **Stage 3.3d — single-candidate method-call typing.** A method call
-//! `recv.Method(args)` — the ~73 % of the census Member bucket 3.3a (fields /
-//! properties, ~26 %) left deferred — types as the method's **return** type:
+//! **Method-call typing.** A method call
+//! `recv.Method(args)` types as the method's **return** type:
 //! `let h = s.GetHashCode()` ⇒ `int`, `let t = s.GetType()` ⇒ `System.Type`.
 //!
 //! - **Parse shape.** A method call is an **`App` whose callee is a member access**
 //!   (`APP_EXPR[ LONG_IDENT_EXPR[s.M] / DOT_GET_EXPR["hi".M], arg ]`), and FCS emits
 //!   its `call:instance` node at the *whole* application, typed as the return type,
-//!   with the receiver its own node. [`Gen::infer_callee`] never modelled such a
-//!   callee (it always deferred), so [`Gen::infer_app`] routes a member-access
-//!   callee to [`Gen::infer_method_call`] — pure extra coverage, no emission change.
-//! - **The worklist, extended by *kind*.** [`Constraint::HasMember`] grew a
+//!   with the receiver its own node. [`Gen::infer_app`] routes a member-access
+//!   callee to [`Gen::infer_method_call`].
+//! - **The worklist, by *kind*.** [`Constraint::HasMember`] carries a
 //!   [`MemberAccessKind`] (`Data` | `Method { arg_count }`); the wake dispatches the
 //!   lookup on it — [`AssemblyEnv::instance_data_member`] vs
 //!   [`AssemblyEnv::instance_method`] (a **single non-overloaded, non-generic**
@@ -372,7 +340,7 @@
 //!   unvalidated here), and an extra-parenthesized tuple (`s.Insert((0, "z"))`, which
 //!   FCS elaborates as a method-value `application`, so only the one call-parenthesis
 //!   layer is peeled and it counts as a single argument). Conservative on
-//!   `[<Optional>]` / `params` / named-argument methods (a later slice), never wrong.
+//!   `[<Optional>]` / `params` / named-argument methods, never wrong.
 //! - **Void returns defer.** A `void`-returning method's call type is F# `unit`
 //!   (unmodelled), so [`Gen::wake_member`] records the member's identity but skips
 //!   the type unify when the return `TypeRef` is [`Primitive::Void`] — bridging it
@@ -396,11 +364,11 @@
 //!   (`s.ToLowerInvariant().Length`) resolves through the same fixpoint — the inner
 //!   call grounds the receiver, then the outer member wakes.
 //! - **LSP.** The `Method` wake records the method in `member_resolutions` exactly
-//!   as `Data` does, so 3.3b's hover / go-to-def path serves a called method name
-//!   with no LSP change.
+//!   as `Data` does, so the hover / go-to-def path serves a called method name
+//!   too.
 //!
-//! **CE-1 — expression-level `let … in` and sequences.** A function body with a
-//! local `let` or a statement no longer defers wholesale
+//! **Expression-level `let … in` and sequences.** A function body with a
+//! local `let` or a statement is walked
 //! ([`Gen::infer_let_in`], [`Gen::infer_sequential`]); the bang, `use` and
 //! `rec` forms stay unmodelled.
 //!
