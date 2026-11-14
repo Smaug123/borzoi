@@ -8,7 +8,8 @@
 > (ownership is memoised), Stage 5 (one parse per text), Stages 6a and 6b
 > (env read sets, targeted assembly invalidation), Stage 7 (the
 > hand-wired invalidation deleted) and Stage 8 (coalescing in the dispatch
-> loop) implemented; Stage 9's gate measured, and failed. Tracks
+> loop) implemented, with the follow-up cutoffs on the evaluation's
+> consumed outputs; Stage 9's gate measured, and failed. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -2948,7 +2949,8 @@ and the env's confirmation notices the move
   evaluation re-run to the same Compile items and symbols (a comment added
   to the `.fsproj`) drops the project's parses; the per-file cache keeps the
   rebuild to a lookup per item. The env, whose read set holds the entry's
-  `.fsproj` text, is rebuilt then too (see the open gaps).
+  `.fsproj` text, is rebuilt then too (see the open gaps). The follow-up
+  cutoffs on the evaluation's consumed outputs (after Stage 8) close both.
 - **A fold refusal survives a text change.** `invalidate_file` cleared every
   refusal on every edit, which made `fold_outcome` read `Unknown` until the
   next fold. A refused project caches no parses, so the next request that
@@ -3401,6 +3403,234 @@ epoch would not need it (see the open gaps).
   depends on that timing; the rendezvous test holds the buffer to taking a
   whole burst eagerly.
 
+### Follow-up: cutoffs on the evaluation's consumed outputs
+
+**Dependencies**: Stage 8. **Closes**:
+[#712](https://github.com/WoofWare/borzoi/issues/712) and
+[#723](https://github.com/WoofWare/borzoi/issues/723).
+
+Stage 7 left two open gaps. The parses keyed on the evaluation's identity, so
+an evaluation run again to the same Compile items and symbols (a comment
+added to the `.fsproj`) dropped every parse and the fold over them (#712).
+And the env's read set held the entry project's `.fsproj` text, which its
+graph walk absorbs with the rest of the entry's evaluation, so any edit to
+the file, a define included, rebuilt the env and forced a cold fold (#723).
+Stage 9's `blocked-edit` measured that rebuild as most of a 3.4 G wait.
+
+Both are D2's early cutoff, applied where the evaluation meets the two
+derived values that read it: compare what the consumer read, not which
+evaluation it read it from.
+
+**What the parses read** (`semantic::ParseInputs`): the Compile items
+(`CompileBefore`, `Compile`, `CompileAfter`) in the evaluation's order, the
+`#if` symbols (`COMPILED`, `EDITING` and `$(DefineConstants)`), the language
+version, and the cause of an untrusted `LangVersion` provenance (the
+version-boundary gate runs exactly when there is one, and a refusal it makes
+names it). Whether the evaluation declines the fold at all is the `Err` of
+the same function. `build_parses` takes a `ParseInputs` and the `Vfs` and no
+longer takes the workspace, so it cannot read anything else of the
+evaluation: completeness is the function's signature, not a review finding.
+A cached `ProjectParses` records its inputs and the evaluation last found to
+give them. `validate_cached_fold` compares nothing while the workspace
+serves that evaluation; once per new evaluation it computes the inputs again
+and keeps the parses, the fold and the fold outcome when they are equal.
+
+**What the env reads** splits in two (`semantic::EnvInputs`). Resolving the
+env's references (the producer-TFM recovery, the graph walk and the
+evaluations behind it, the assets files, the packs, the output search)
+produces a `ReferenceSet`; building the env reads only two things of it, the
+reference DLLs in fold order and whether some declared reference could not
+be read (which marks the env incomplete), and then each DLL's bytes. So the
+env is a function of `EnvInputs` and its DLLs' stamps, and `build_env` takes
+exactly those. Each cached env (`EnvEntry`) carries its inputs and two sets
+of checks: `contents` (what the build read: the DLL stamps) and `resolution`
+(what resolving read, the entry's whole evaluation read set among it, and
+the key's root probe and canonicalisation). The first lookup in a generation
+confirms `contents`; a moved DLL drops the env, as before. Then
+`resolution`; when it moves, the references are resolved again and the env
+is kept, with the new resolution's checks and unrecorded readers, exactly
+when the new `EnvInputs` are equal (`keep_if_resolved_alike`). Otherwise the
+env is built from the resolution just made.
+
+**The key moves with the evaluation.** The env's key (the dotnet root and the
+served TFM) is chosen from the entry's evaluation. The slow path chooses it
+afresh on every lookup; the fold's fast path finds the env by identity and
+never did, which was sound only because a moved evaluation dropped the
+parses and the fold with it. A retarget of an SDK-less project moves no
+`#if` symbol, so the parses now survive it, and the fast path chooses the
+key again whenever the resolution's reads have moved, before resolving: an
+env under another key than the one the project would choose now is not
+served (`env_still_served`).
+
+**The guarantee.** A cached fold is served in a generation only if its
+parses' Compile texts are the ones it read, the evaluation the workspace
+serves gives the `ParseInputs` it was built from, its env's DLL stamps hold,
+and either every read its env's resolution made holds or a resolution made
+in this generation, under the key the project chooses now, gives the
+`EnvInputs` the env was built from. `build_parses` and `build_env` read
+nothing else, so the fold is then the one a fresh session folds. Validation
+stays exact: no comparison is skipped or deferred, and every read set is
+confirmed under Stage 3b's racy rule as before. What it costs is one
+resolution of the env's references per generation in which the resolution's
+reads moved and the inputs did not.
+
+**Departures from the issues.** #723 proposed keying the env on "the
+evaluation's reference-relevant outputs". Naming them ahead of the
+resolution would mean listing what the graph walk, the producer-TFM
+recovery and `resolve_reference_dlls` read of every evaluation they consult,
+a list that grows with each reference rule. The cutoff sits after the
+resolution instead, on the two values the build reads, so the resolution
+stays one function with one read set, and only its output is compared.
+
+Oracle:
+
+- `observed_counts`: `an_edit_no_consumer_reads_costs_one_evaluation`
+  (a comment, whitespace, an unread property, each with its watch event or
+  without one) costs one evaluation and one resolution, and parses, builds
+  and folds nothing; `a_define_change_keeps_the_env` re-parses and folds,
+  builds no env and resolves once. Both fail on Stage 8 (`envs_built: 1,
+  folds: 2`).
+- `evaluation_cutoff` (new): over generated sequences of edits to a
+  restored project and a referenced one (a define, the Compile order, the
+  language version, the TFM, a reference to a built, an unbuilt and a C#
+  project, the referenced project's output name, a comment, indentation, an
+  unread property, the referenced project's comment), each step compares a
+  long-lived state with a fresh one. Kept is exact: the env is the same
+  allocation exactly when a fresh env would be built from the same DLLs with
+  the same completeness under the same TFM, a generation builds one exactly
+  when it is not, and the fold is kept, and nothing folds, exactly when the
+  env is kept and the evaluation's values the parses read are unchanged.
+  Sound: the fold is folded against the env the project's key serves now,
+  built from the fresh state's DLLs and completeness, over parses whose trees
+  are structurally the fresh state's, and its outcome is reported. Its
+  non-vacuity check asks for kept and rebuilt envs, kept folds, parses that
+  moved under a kept env, an env that moved under kept parses, and
+  completeness that moved with the DLLs unchanged.
+  `each_consumed_value_moves_only_what_reads_it` pins each edit's verdict.
+  Both fail on Stage 8.
+- `incremental_state_machine`: a `Touch` command rewrites a project file
+  keeping everything else it says, with a comment or a `<TargetFramework>`
+  (only `net10.0` is restored), in the flushed, project-write and unflushed
+  generators. A pinned script retargets `P` with no event, through a comment
+  and back: the parses stand and the env must move.
+- `evaluation_cutoff::a_change_of_language_version_provenance_alone_reaches_the_fold`:
+  a `LangVersion` of `7.0` written under a gate the walker cannot pin, and
+  then not, around a file whose parse shape depends on the version: the
+  fold is refused exactly while the provenance is untrusted, though the
+  items, the symbols and the version are the same.
+- `semantic::tests::a_kept_env_names_the_unrecorded_readers_of_the_resolution_that_kept_it`:
+  an env kept across an on-demand restore that resolves, as the assets file
+  did, to no DLL names the restore.
+
+Planted, each caught, then removed (each run against `cargo test -p borzoi
+--lib --test all`):
+
+| plant | caught by |
+|---|---|
+| the env ignores a reference-set change (the DLLs not compared) | both `evaluation_cutoff` properties, three state-machine tests (the pinned scripts, unflushed, unwatched assembly writes), `a_watched_change_to_an_installed_import_reaches_the_env` |
+| the env ignores a TFM change: the fast path keeps the key | the generated `evaluation_cutoff` property (the fold's env is not the one its key serves), `an_env_records_what_choosing_its_dotnet_root_read` |
+| the env ignores a TFM change: the key holds no TFM | both `evaluation_cutoff` properties, `assembly_env_cache_keys_on_target_framework` |
+| the parses ignore a define change | both `evaluation_cutoff` properties, `warm_session_agrees_with_a_fresh_one`, two `observed_counts` properties |
+| the parses ignore a Compile-order change | both `evaluation_cutoff` properties |
+| the parse cutoff compares the wrong field (the language version alone) | both `evaluation_cutoff` properties, five state-machine tests, two `observed_counts` properties |
+| the parse cutoff ignores the language version | both `evaluation_cutoff` properties |
+| the parse cutoff ignores `LangVersion` provenance | `a_change_of_language_version_provenance_alone_reaches_the_fold` (added for it) |
+| the env cutoff compares the wrong field (the DLLs the env holds, not those resolved) | `each_consumed_value_moves_only_what_reads_it` (its junk-package flavour) |
+| the env cutoff ignores incompleteness | both `evaluation_cutoff` properties |
+| a moved resolution served without resolving again | both `evaluation_cutoff` properties, four state-machine tests, both new `observed_counts` properties, `a_watched_change_to_an_installed_import_reaches_the_env`, `an_env_records_what_choosing_its_dotnet_root_read` |
+| a moved resolution rebuilds the env (no cutoff: Stage 8's cost) | both `evaluation_cutoff` properties, both new `observed_counts` properties |
+| a kept env keeps its old resolution checks (a resolution every generation) | both new `observed_counts` properties (`envs_resolved_again`) |
+| the parse cutoff does not record the evaluation it agreed with | the generated `evaluation_cutoff` property (the fold outcome reads `Unknown`) |
+| a kept env keeps its old unrecorded readers | `a_kept_env_names_the_unrecorded_readers_of_the_resolution_that_kept_it` (added for it) |
+| the DLLs an env holds not confirmed | four `env_validation` tests, two state-machine tests |
+| the env built with no incompleteness mark | the generated `evaluation_cutoff` property, three `semantic` incompleteness tests |
+
+Two plants first passed every test: the parse cutoff ignoring `LangVersion`
+provenance (no test changed the provenance alone) and a kept env keeping
+its old unrecorded readers (no test kept an env across a resolution that
+consulted a new one). The tests named against them were added, and each
+then failed. The fast path keeping the key is caught by the generated
+property and a unit test, not by the state machine's retarget script: the
+resolution it runs is under the new TFM, so it keeps the env only when the
+new TFM's DLLs are the old ones, which no answer can tell apart; the
+property's check that the fold's env is the one the project's key serves
+can.
+
+**Measured** on WoofWare.Incremental (and WoofWare.PawPrint.Domain for
+`blocked-edit`), each row the minimum over three runs of each binary (five
+for `blocked-edit`): Stage 8's head (e1726d32, with this follow-up's
+`edit_counts`) and this follow-up. The keystroke script ran 20 keystrokes per
+run, the save and edit scripts 5 rounds. `EDIT_COUNTS_SCRIPT=own-comment` is
+new: each round adds an XML comment to the measured project's `.fsproj` (or
+takes it away again) and reports the write. `edit_counts` prints the
+re-resolutions as `a.again`. The on-disk assembly cache is off.
+
+| per round of | instructions 8 | this | allocs 8 | this | envs built 8 | this | folds 8 | this |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| a keystroke | 35.25 M | 35.31 M | 20,397 | 20,479 | 0 | 0 | 2 | 2 |
+| a save of the project's own `.fsproj`, unchanged | 53.13 M | 53.10 M | 8,826 | 8,832 | 0 | 0 | 0 | 0 |
+| a comment added to the project's `.fsproj` | 3,568.6 M | **495.5 M** | 3,984,851 | 167,702 | 1 | **0** | 2 | **0** |
+| a save of an unrelated project's `.fsproj` | 47.22 M | 47.38 M | 7,168 | 7,174 | 0 | 0 | 0 | 0 |
+
+The comment round, per message:
+
+| message | instructions 8 | this | what it does now |
+|---|---:|---:|---|
+| `didChangeWatchedFiles` | 326.1 M | 327.6 M | evaluates the project (115 files opened) |
+| `diagnostic E` | 51.8 M | 52.0 M | the new evaluation's first confirmation (2,239 `stat`s, 32 listings) |
+| `diagnostic L` | 2.8 M | 2.8 M | |
+| `semanticTokens E` | 2,494.6 M | **50.6 M** | resolves the env's references again (654 reads) and keeps the env and the fold; Stage 8 built the env and folded cold |
+| `semanticTokens L` | 602.5 M | **56.1 M** | the new resolution checks' first confirmation (2,158 `stat`s, 33 listings, 28 canonicalisations); Stage 8 folded cold |
+| `hover L` | 88.5 M | **6.4 M** | Stage 8 inferred cold |
+
+What a comment edit now costs is one evaluation and the first confirmation
+of each new read set: the evaluation's (as Stage 3b's first confirmation)
+and the env resolution's, plus the resolution itself (about 35 M). The
+first confirmations take a witness per read, which a confirmation born with
+its witnesses (as Stage 4b's listings are) would save; that is left open.
+
+Stage 9's gate, `blocked-edit` (a define added or taken away while
+`semanticTokens L` re-folds, five runs of five rounds):
+
+| project | the edit waited, Stage 8 | this | envs built 8 | this |
+|---|---:|---:|---:|---:|
+| WoofWare.Incremental (82 items) | 3,430.4 M | **995.1 M** | 1 | 0 |
+| WoofWare.PawPrint.Domain (34 items) | 3,897.4 M | **814.4 M** | 1 | 0 |
+
+No round builds an env: each resolves the references once and keeps it. What
+the edit waits for is now the evaluation (about 330 M), its first
+confirmation, the resolution and its first confirmation (about 110 M
+together), and the fold, which the define makes cold (every tree is new;
+the per-file parse cache serves the other define's trees from an earlier
+round, so `p.new` stays at 2). Both still exceed Stage 9's 50 M budget, by
+20 and 16 times: the gate's verdict stands, and the snapshot worker is what
+takes the rest off the edit's path.
+
+The keystroke and the two saves move within their runs' spread. The cold
+env build (`semanticTokens E (cold)`) costs 1,670 allocations more (two sets
+of checks where there was one), its instructions within the spread.
+
+**Open gaps.**
+
+- An env with an unrecorded reader (an on-demand restore, the C# sidecar)
+  is still dropped whenever the `projects_generation` moves, so any
+  `.fsproj` edit rebuilds it, as before.
+- A new read set's first confirmation takes a witness per read: about 50 M
+  for the evaluation's and 55 M for the env resolution's on
+  WoofWare.Incremental, two thirds of what a comment edit now costs beyond
+  the evaluation.
+- A resolution run again evaluates every referenced project afresh (only
+  the entry's evaluation is read from the cache), so its cost grows with
+  the project graph.
+- The env's key is compared by value, not by what it selects: a TFM change
+  that selects the same DLLs (a retarget from none to the assets file's sole
+  target) still builds the env again under the new key.
+- Ownership answers record the identity of the evaluations they consulted,
+  so they are walked again after any evaluation is run again (a few `stat`s
+  and a scan of the Compile items), and a fold refusal is reported only
+  under the evaluation it was refused under.
+- Stage 9's gate still fails (above).
+
 ### Stage 9 (gated): requests on a snapshot
 
 **Dependencies**: Stage 8 and its measurement. **Implements**: D6's second
@@ -3462,6 +3692,10 @@ the wait. Without it the wait would still be a cold fold, which costs at least
 0.62 G on WoofWare.Incremental (the cold pass's `semanticTokens L`, which
 folds only the items after `E`, over a built env), twelve times the budget. Stage 8
 cannot shorten either, since the edit arrives while the request runs.
+
+The follow-up cutoffs on the evaluation's consumed outputs (above) remove
+the env rebuild: the wait is now 995.1 M on WoofWare.Incremental and
+814.4 M on WoofWare.PawPrint.Domain, still 20 and 16 times the budget.
 
 If built: a worker runs semantic requests against a cloned `Vfs` and the memo
 tables behind a lock. The dispatch thread applies edits and answers syntactic
