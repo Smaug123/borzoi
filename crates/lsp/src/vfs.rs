@@ -62,7 +62,9 @@ use lsp_types::Uri;
 
 use borzoi_msbuild::observed::{Failure, TextDigest};
 
-use crate::observed::{EvaluationCounts, GENERATION_EVENT, Generation, HostDisk, ReadCounts};
+use crate::observed::{
+    EnvCounts, EvaluationCounts, GENERATION_EVENT, Generation, HostDisk, ReadCounts,
+};
 use crate::parses::ParseCounts;
 use crate::paths::{lexically_normalize, path_dedup_key};
 use crate::uri::UriExt as _;
@@ -564,25 +566,28 @@ impl<D: Disk> Vfs<D> {
     }
 
     /// End the current generation, in which no project evaluation was read,
-    /// no file's owner was looked for and nothing was parsed.
+    /// no file's owner was looked for, nothing was parsed and no env was
+    /// read.
     pub fn end_generation(&mut self) -> Generation {
         self.end_generation_with(
             EvaluationCounts::default(),
             borzoi_msbuild::observed::ReadCounts::default(),
             ParseCounts::default(),
+            EnvCounts::default(),
         )
     }
 
     /// End the current generation, in which reading project evaluations
     /// cost `evaluations`, finding the projects that own files cost
-    /// `ownership` and the parse memo did `parses`: send it to the log, if
-    /// one is attached, emit its counts as [`GENERATION_EVENT`], and return
-    /// it.
+    /// `ownership`, the parse memo did `parses` and reading assembly envs
+    /// cost `envs`: send it to the log, if one is attached, emit its counts
+    /// as [`GENERATION_EVENT`], and return it.
     pub fn end_generation_with(
         &mut self,
         evaluations: EvaluationCounts,
         ownership: borzoi_msbuild::observed::ReadCounts,
         parses: ParseCounts,
+        envs: EnvCounts,
     ) -> Generation {
         let (number, counts) = self.disk.end_generation();
         let generation = Generation {
@@ -591,6 +596,7 @@ impl<D: Disk> Vfs<D> {
             evaluations,
             ownership,
             parses,
+            envs,
         };
         if let Some(log) = &self.log
             && log.send(generation).is_err()
@@ -613,6 +619,11 @@ impl<D: Disk> Vfs<D> {
             o_stats = ownership.stats,
             parsed = parses.parsed,
             parses_reused = parses.reused,
+            envs_built = envs.built,
+            av_opens = envs.validation.opens,
+            av_stats = envs.validation.stats,
+            av_listings = envs.validation.listings,
+            av_canonicalizations = envs.validation.canonicalizations,
         );
         generation
     }

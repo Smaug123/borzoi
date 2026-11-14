@@ -16,6 +16,12 @@
 //!
 //! The env itself carries the read set, each DLL's stamp included, whether
 //! the DLL's projection came from reading it or from the assembly cache.
+//!
+//! What a cached env confirms before it is served again (Stage 6b) is that
+//! read set less the contents of the installed versions it trusts: the
+//! framework pack's, and each committed package's in the NuGet folder. The
+//! same sweep holds that to soundness over the project tree, where the
+//! installed-version axiom says nothing.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -23,9 +29,10 @@ use std::path::{Path, PathBuf};
 use borzoi::assembly_cache::AssemblyCache;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::SemanticState;
+use borzoi::vfs::Nanos;
 use borzoi::workspace::Workspace;
-use borzoi_msbuild::observed::Observation;
 use borzoi_msbuild::observed::soundness::{Edit, Perturbation, Tally, Why, sweep_with};
+use borzoi_msbuild::observed::{Observation, ReadSet};
 use proptest::prelude::*;
 use tempfile::TempDir;
 
@@ -357,6 +364,106 @@ fn check(world: &World, reached: &mut Reached) {
     reached.tally.absorb(&tally);
 }
 
+/// What [`check_confirmed`] saw, summed over cases.
+#[derive(Debug, Default)]
+struct Confirmed {
+    /// Reads the env trusts as installed contents rather than confirms.
+    exempt: u64,
+    /// Of those, reads inside a package version.
+    exempt_packages: u64,
+    tally: Tally,
+}
+
+/// Lay `world` down, with every package in the NuGet folder committed (its
+/// `.nupkg.metadata` written), and sweep the project tree (`ws/`) holding
+/// the reads a cached env confirms, inside a generation whose time is far
+/// past every file's, to soundness. A DLL's stamp is left out of the
+/// compared set: it is racy for as long as the fixture is fresh, and the
+/// stamp test below holds it.
+fn check_confirmed(world: &World, confirmed: &mut Confirmed) {
+    let tmp = TempDir::new().unwrap();
+    let root = host_fs::canonicalize(tmp.path()).unwrap();
+    let entry = lay_down(&root, world);
+    // NuGet reads its user settings from a home that exists.
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let nuget = root.join("nuget");
+    for (i, folder) in world.packages.iter().enumerate() {
+        if *folder == Folder::Primary {
+            write(&nuget.join(format!("pkg{i}/1.0.0/.nupkg.metadata")), "{}");
+        }
+    }
+    let dotnet = root.join("dotnet");
+    let resolve = || {
+        let mut ws = Workspace::with_env(SdkDiscoveryEnv {
+            dotnet_root: Some(root.join("no-dotnet")),
+            nuget_packages_dir: Some(nuget.clone()),
+            home_dir: Some(root.join("home")),
+            ..SdkDiscoveryEnv::default()
+        });
+        ws.begin_generation(Nanos(i128::MAX / 2));
+        let tfm = ws.served_tfm_for_project(&entry);
+        let mut semantic = SemanticState::new();
+        // The DLLs the resolution names, whether or not they project: the
+        // fixture's DLLs are not assemblies, so the env keeps none.
+        let (dlls, _) = semantic.reference_resolution_for_project(&entry, Some(&dotnet), &tfm, &ws);
+        let (reads, _) = semantic.env_reads_for_project(&entry, Some(&dotnet), &tfm, &ws);
+        // An env a transient failure left incomplete is not cached, and
+        // confirms nothing: what it read is what it depends on.
+        let checks = semantic.env_confirmed_reads_for_project(&entry, Some(&dotnet), &tfm, &ws);
+        ws.end_generation();
+        let checks = checks.unwrap_or_else(|| reads.reads.reads().to_vec());
+        (dlls, reads.reads.clone(), checks)
+    };
+    let (_, reads, checks) = resolve();
+    for read in reads.reads() {
+        if checks.contains(read) {
+            continue;
+        }
+        confirmed.exempt += 1;
+        let inside = |dir: &std::path::Path| read.path.starts_with(dir) && read.path != dir;
+        assert!(
+            inside(&dotnet.join("packs/Microsoft.NETCore.App.Ref")) || inside(&nuget),
+            "a read outside the installs is not confirmed: {read:?}"
+        );
+        if inside(&nuget) {
+            confirmed.exempt_packages += 1;
+        }
+    }
+    let compute = || {
+        let (dlls, _, checks) = resolve();
+        let checks: ReadSet = checks
+            .into_iter()
+            .filter(|read| !matches!(read.observation, Observation::Stamp(_)))
+            .collect();
+        (dlls, checks)
+    };
+    // Installing a pack version is not an in-place change to an installed
+    // one: the listing that chose the version is confirmed, and must fail.
+    let newest = world
+        .pack_versions
+        .iter()
+        .map(|(v, _)| *v)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let install = Perturbation {
+        why: Why::Extra,
+        edits: vec![Edit::Write(
+            dotnet
+                .join("packs/Microsoft.NETCore.App.Ref")
+                .join(format!("{newest}.0.0/ref/{TFM}/System.Runtime.dll")),
+            b"dll".to_vec(),
+        )],
+    };
+    let tally = sweep_with(&root.join("ws"), &compute, &[install]);
+    assert_eq!(
+        tally.stale.get(&Why::Extra).copied().unwrap_or(0),
+        1,
+        "a pack version installed left what the env confirms standing: {tally:?}"
+    );
+    confirmed.tally.absorb(&tally);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 8, ..ProptestConfig::default() })]
 
@@ -364,6 +471,40 @@ proptest! {
     fn the_env_resolution_read_set_is_sound(world in world()) {
         check(&world, &mut Reached::default());
     }
+
+    #[test]
+    fn what_an_env_confirms_is_sound_outside_the_installs(world in world()) {
+        check_confirmed(&world, &mut Confirmed::default());
+    }
+}
+
+/// Over a fixed seed's worth of worlds, a cached env trusts reads inside the
+/// framework pack and inside committed packages rather than confirming
+/// them, and the sweep of the project tree moves the resolution.
+#[test]
+fn an_env_trusts_installed_contents_and_confirms_the_rest() {
+    use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 8,
+            failure_persistence: None,
+            ..Config::default()
+        },
+        TestRng::from_seed(RngAlgorithm::ChaCha, &[5; 32]),
+    );
+    let confirmed = RefCell::new(Confirmed::default());
+    runner
+        .run(&world(), |world| {
+            check_confirmed(&world, &mut confirmed.borrow_mut());
+            Ok(())
+        })
+        .unwrap();
+    let c = confirmed.into_inner();
+    eprintln!("{c:?}");
+    assert!(
+        c.exempt > c.exempt_packages && c.exempt_packages > 0 && c.tally.moved(Why::Delete) > 0,
+        "{c:?}"
+    );
 }
 
 /// Over a fixed seed's worth of worlds, the resolution finds package,
@@ -408,7 +549,8 @@ fn the_generator_reaches_every_reference_kind_and_moves_the_resolution() {
 /// DLL or took its projection from the assembly cache. The pack's
 /// `System.Runtime.dll` is a real assembly, so the cache holds its
 /// projection after the first build and the second build is a hit. A
-/// stamp taken within the racy window of the DLL's last change never holds.
+/// stamp taken within the racy window of the DLL's last change holds only
+/// while the DLL holds the bytes the env read: a same-size rewrite fails it.
 #[test]
 fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
     let world = World {
@@ -445,12 +587,38 @@ fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
             (dlls, reads)
         };
         // Built straight after the fixture was written, every DLL's stamp is
-        // racy, and the read set holds no longer than it was taken.
+        // racy: it carries a digest of the bytes read, and holds while they
+        // stand, and no longer.
         let (_, racy) = run();
+        let racy_stamps = racy
+            .reads
+            .reads()
+            .iter()
+            .filter(|read| read.observation.is_racy_stamp())
+            .count();
+        assert!(racy_stamps > 0, "precondition: the DLLs' stamps are racy");
         assert!(
-            racy.reads.first_stale().is_some(),
-            "a read set of freshly written DLLs held (cached: {cached})"
+            racy.reads
+                .reads()
+                .iter()
+                .all(|read| match &read.observation {
+                    Observation::Stamp(Ok(stamp)) if stamp.racy => stamp.digest.is_some(),
+                    _ => true,
+                }),
+            "a racy DLL stamp carries no digest of what was read (cached: {cached})"
         );
+        assert_eq!(racy.reads.first_stale(), None, "cached: {cached}");
+        let racy_pack = host_fs::read(&pack_dll).unwrap();
+        let mut same_size = racy_pack.clone();
+        same_size[0] ^= 0xff;
+        std::fs::write(&pack_dll, &same_size).unwrap();
+        assert!(
+            racy.reads
+                .first_stale()
+                .is_some_and(|read| read.path == pack_dll),
+            "a same-size rewrite within the racy window left the read set standing (cached: {cached})"
+        );
+        std::fs::write(&pack_dll, &racy_pack).unwrap();
         std::thread::sleep(
             borzoi_msbuild::observed::STAMP_RACY_WINDOW + std::time::Duration::from_millis(200),
         );
@@ -474,6 +642,36 @@ fn the_env_records_each_dll_stamp_with_or_without_the_cache() {
             );
         }
         assert_eq!(reads.reads.first_stale(), None);
+        if cached {
+            // The same bytes written again with their modification time put
+            // back (as an extraction that keeps an archive's times does):
+            // the cache keys on size and modification time, so it holds a
+            // projection for them, but the change time is new and the stamp
+            // racy. A projection served under a racy stamp could never be
+            // confirmed again, so the DLL is read, and its stamp carries a
+            // digest.
+            let mtime = host_fs::metadata(&pack_dll).unwrap().modified().unwrap();
+            std::fs::write(&pack_dll, &system_runtime).unwrap();
+            host_fs::set_modified(&pack_dll, mtime).unwrap();
+            let (_, again) = run();
+            let pack_stamp = again
+                .reads
+                .reads()
+                .iter()
+                .find_map(|read| match &read.observation {
+                    Observation::Stamp(Ok(stamp)) if read.path == pack_dll => Some(*stamp),
+                    _ => None,
+                })
+                .expect("the env stamps the pack's DLL");
+            assert!(
+                pack_stamp.racy,
+                "precondition: the rewrite left a racy stamp"
+            );
+            assert!(
+                pack_stamp.digest.is_some(),
+                "a racy DLL stamp a cache hit rests on carries no digest"
+            );
+        }
         std::fs::write(&pack_dll, b"a rewritten dll").unwrap();
         assert!(
             reads.reads.first_stale().is_some(),

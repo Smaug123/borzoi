@@ -97,6 +97,26 @@
 //! * `EDIT_COUNTS_CLIENT` (`pull`, the default, or `push`): the diagnostic
 //!   model the client advertises. A push client is sent diagnostics from
 //!   `didChange` itself and sends no diagnostic requests.
+//! * `EDIT_COUNTS_SCRIPT`: what each round of the script does before the
+//!   requests. `keystroke` (the default) types one character, as above.
+//!   `unrelated-build` and `unrelated-save` touch another project of the
+//!   workspace instead, one the measured project does not reference: a
+//!   `workspace/didChangeWatchedFiles` naming its `bin` and `obj` output
+//!   DLLs, as a build of it reports them, or naming its `.fsproj`, as a save
+//!   of it does. Nothing is written: neither file is one the measured
+//!   project's evaluation or env reads, so what they hold cannot move its
+//!   answers, and the event is all the server is told. Each round is then
+//!   followed by the keystroke's requests, and its rows report what the
+//!   measured project paid for a change it does not depend on.
+//! * `EDIT_COUNTS_UNRELATED`: the other project for those scripts. Default:
+//!   `WoofWare.Incremental.Test` beside the default project, which references
+//!   it rather than the other way round.
+//!
+//! The **a.built** column counts the envs built (each a cold resolution of a
+//! project's references and a projection of every DLL they name), and
+//! **av.open**, **av.stat**, **av.list** and **av.canon** what confirming the
+//! cached envs cost (`borzoi::workspace::Workspace::confirm_env`), from each
+//! [`GENERATION_EVENT`].
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -266,10 +286,11 @@ const ENV_RESOLUTION_FIELDS: [&str; 6] = [
 /// What confirming cached evaluations cost every generation that has ended,
 /// from each [`GENERATION_EVENT`] (opens, stats, listings and
 /// canonicalisations), what finding the projects that own files cost it
-/// (listings and stats), and what the parse memo did (sources parsed, and
-/// parses reused).
-static VALIDATION: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-const VALIDATION_FIELDS: [&str; 8] = [
+/// (listings and stats), what the parse memo did (sources parsed, and
+/// parses reused), and what confirming cached envs cost it (opens, stats,
+/// listings and canonicalisations).
+static VALIDATION: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+const VALIDATION_FIELDS: [&str; 12] = [
     "v_opens",
     "v_stats",
     "v_listings",
@@ -278,6 +299,10 @@ const VALIDATION_FIELDS: [&str; 8] = [
     "o_stats",
     "parsed",
     "parses_reused",
+    "av_opens",
+    "av_stats",
+    "av_listings",
+    "av_canonicalizations",
 ];
 
 /// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
@@ -326,7 +351,7 @@ impl tracing::field::Visit for ProjectField {
 struct ReadFields {
     opens: Option<u64>,
     stats: Option<u64>,
-    validation: [Option<u64>; 8],
+    validation: [Option<u64>; 12],
 }
 
 impl tracing::field::Visit for ReadFields {
@@ -488,7 +513,9 @@ struct Cost {
     env: [u64; 6],
     /// The validations' and the ownership walks' counts, in
     /// [`VALIDATION_FIELDS`] order.
-    validation: [u64; 8],
+    validation: [u64; 12],
+    /// Envs built ([`ENV_BUILD_SPAN`]).
+    env_builds: u64,
 }
 
 impl Cost {
@@ -509,6 +536,7 @@ impl Cost {
             evaluation: std::array::from_fn(|i| self.evaluation[i] + other.evaluation[i]),
             env: std::array::from_fn(|i| self.env[i] + other.env[i]),
             validation: std::array::from_fn(|i| self.validation[i] + other.validation[i]),
+            env_builds: self.env_builds + other.env_builds,
         }
     }
 }
@@ -523,7 +551,8 @@ struct Reading {
     stats: u64,
     evaluation: [u64; 5],
     env: [u64; 6],
-    validation: [u64; 8],
+    validation: [u64; 12],
+    env_builds: u64,
 }
 
 impl Reading {
@@ -541,6 +570,7 @@ impl Reading {
             evaluation: std::array::from_fn(|i| EVALUATION[i].load(Relaxed)),
             env: std::array::from_fn(|i| ENV_RESOLUTION[i].load(Relaxed)),
             validation: std::array::from_fn(|i| VALIDATION[i].load(Relaxed)),
+            env_builds: ENV_BUILDS.load(Relaxed),
         }
     }
 
@@ -563,6 +593,7 @@ impl Reading {
             evaluation: std::array::from_fn(|i| later.evaluation[i] - self.evaluation[i]),
             env: std::array::from_fn(|i| later.env[i] - self.env[i]),
             validation: std::array::from_fn(|i| later.validation[i] - self.validation[i]),
+            env_builds: later.env_builds - self.env_builds,
         }
     }
 }
@@ -802,6 +833,66 @@ fn did_change(doc: &Doc, version: i32) -> Step {
     }
 }
 
+/// A `workspace/didChangeWatchedFiles` reporting each of `paths` changed.
+fn did_change_watched_files(paths: &[PathBuf]) -> Step {
+    let changes: Vec<Value> = paths
+        .iter()
+        .map(|path| {
+            json!({
+                "uri": Uri::from_file_path(path).expect("a file URI").as_str(),
+                // FileChangeType::Changed.
+                "type": 2,
+            })
+        })
+        .collect();
+    Step::Notify {
+        method: "workspace/didChangeWatchedFiles",
+        params: json!({ "changes": changes }),
+    }
+}
+
+/// What a round of the script does before the keystroke's requests
+/// (`EDIT_COUNTS_SCRIPT`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Script {
+    /// Type one character into `E`.
+    Keystroke,
+    /// Report another project's output DLLs changed, as a build of it does.
+    UnrelatedBuild,
+    /// Report another project's `.fsproj` changed, as a save of it does.
+    UnrelatedSave,
+}
+
+/// The files a round of `script` reports changed in the project at
+/// `unrelated`: its `bin` and `obj` output DLLs under the Debug
+/// configuration, or its `.fsproj`.
+fn unrelated_changes(script: Script, unrelated: &Path) -> Vec<PathBuf> {
+    let dir = unrelated.parent().expect("a project directory");
+    let name = unrelated
+        .file_stem()
+        .expect("a project file name")
+        .to_string_lossy()
+        .into_owned();
+    match script {
+        Script::Keystroke => Vec::new(),
+        Script::UnrelatedSave => vec![unrelated.to_path_buf()],
+        Script::UnrelatedBuild => {
+            let tfm = Workspace::new()
+                .target_framework_for_project(unrelated)
+                .expect("the unrelated project names its target framework");
+            ["bin", "obj"]
+                .into_iter()
+                .map(|out| {
+                    dir.join(out)
+                        .join("Debug")
+                        .join(&tfm)
+                        .join(format!("{name}.dll"))
+                })
+                .collect()
+        }
+    }
+}
+
 fn semantic_tokens(doc: &Doc) -> Step {
     Step::Request {
         method: "textDocument/semanticTokens/full",
@@ -932,17 +1023,21 @@ fn columns(cost: &Cost) -> String {
         o_stats,
         parsed,
         reused,
+        av_opens,
+        av_stats,
+        av_listings,
+        av_canon,
     ] = cost.validation;
     let [a_opens, a_stats, a_listings, a_canon, a_reads, a_unrecorded] = cost.env;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7}",
-        cost.allocations, cost.allocated_bytes, cost.opens, cost.stats,
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7} {parsed:>7} {reused:>7} {a_opens:>7} {a_stats:>7} {a_listings:>7} {a_canon:>7} {a_reads:>7} {a_unrecorded:>7} {:>7} {av_opens:>7} {av_stats:>7} {av_listings:>7} {av_canon:>7}",
+        cost.allocations, cost.allocated_bytes, cost.opens, cost.stats, cost.env_builds,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "message",
         "instructions",
         "allocs",
@@ -967,7 +1062,12 @@ fn header() -> String {
         "a.list",
         "a.canon",
         "a.reads",
-        "a.unrec"
+        "a.unrec",
+        "a.built",
+        "av.open",
+        "av.stat",
+        "av.list",
+        "av.canon"
     )
 }
 
@@ -986,6 +1086,7 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             evaluation: std::array::from_fn(|i| f(a.evaluation[i], b.evaluation[i])),
             env: std::array::from_fn(|i| f(a.env[i], b.env[i])),
             validation: std::array::from_fn(|i| f(a.validation[i], b.validation[i])),
+            env_builds: f(a.env_builds, b.env_builds),
         })
     };
     (pick(u64::min), pick(u64::max))
@@ -1009,6 +1110,14 @@ fn main() {
     };
     let keystrokes = env_usize("EDIT_COUNTS_KEYSTROKES").unwrap_or(5);
     assert!(keystrokes > 0, "EDIT_COUNTS_KEYSTROKES must be positive");
+    let script = match std::env::var("EDIT_COUNTS_SCRIPT").as_deref() {
+        Ok("keystroke") | Err(_) => Script::Keystroke,
+        Ok("unrelated-build") => Script::UnrelatedBuild,
+        Ok("unrelated-save") => Script::UnrelatedSave,
+        Ok(other) => panic!(
+            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build` or `unrelated-save`, not {other:?}"
+        ),
+    };
 
     // The Compile order, read by an evaluator of the client's own (the
     // server's is not shared, and evaluating here costs the server nothing).
@@ -1059,7 +1168,7 @@ fn main() {
     };
     println!("project {}", project.display());
     println!(
-        "{} Compile items, {bytes} bytes; E = [{early}] {}, L = [{late}] {}; {mode:?} client, {keystrokes} keystrokes",
+        "{} Compile items, {bytes} bytes; E = [{early}] {}, L = [{late}] {}; {mode:?} client, {keystrokes} rounds of {script:?}",
         compile.len(),
         relative(&compile[early]),
         relative(&compile[late]),
@@ -1071,6 +1180,23 @@ fn main() {
         .and_then(Path::parent)
         .expect("a repository directory")
         .to_path_buf();
+    let unrelated = std::env::var_os("EDIT_COUNTS_UNRELATED")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("WoofWare.Incremental.Test/WoofWare.Incremental.Test.fsproj"));
+    let unrelated = std::path::absolute(&unrelated).expect("an absolute project path");
+    let changes = unrelated_changes(script, &unrelated);
+    if script != Script::Keystroke {
+        assert!(
+            client_fs::is_file(&unrelated),
+            "{} does not exist (set EDIT_COUNTS_UNRELATED)",
+            unrelated.display()
+        );
+        println!("{script:?}: each round reports changed:");
+        for path in &changes {
+            println!("  {}", path.display());
+        }
+        println!();
+    }
     PROJECT_SPELLING
         .set(ProjectId::new(&project).as_path().display().to_string())
         .expect("set once");
@@ -1139,7 +1265,9 @@ fn main() {
     e.text.push_str("\n// edit_counts ");
     for k in 0..keystrokes {
         barriers.push(client.measure(&Step::Barrier).0);
-        e.text.push('x');
+        if script == Script::Keystroke {
+            e.text.push('x');
+        }
         let mut total: Option<Cost> = None;
         let mut record = |i: usize, label: &'static str, cost: Cost| {
             rows.entry(i)
@@ -1155,7 +1283,18 @@ fn main() {
             i += 1;
             result
         };
-        next(&mut client, "didChange E", did_change(&e, k as i32 + 1));
+        match script {
+            Script::Keystroke => {
+                next(&mut client, "didChange E", did_change(&e, k as i32 + 1));
+            }
+            Script::UnrelatedBuild | Script::UnrelatedSave => {
+                next(
+                    &mut client,
+                    "didChangeWatchedFiles",
+                    did_change_watched_files(&changes),
+                );
+            }
+        }
         if mode == Mode::Pull {
             let report = next(&mut client, "diagnostic E", diagnostic(&e, &result_ids));
             remember_result_id(&mut result_ids, &e, &report);
@@ -1173,7 +1312,7 @@ fn main() {
         drop(record);
         totals.push(total.expect("a keystroke sends something"));
     }
-    println!("per keystroke (min, then max, over {keystrokes}):");
+    println!("per round of {script:?} (min, then max, over {keystrokes}):");
     let (min, max) = min_max(&barriers);
     println!("{:<34} {}", "barrier min", columns(&min));
     println!("{:<34} {}", "barrier max", columns(&max));

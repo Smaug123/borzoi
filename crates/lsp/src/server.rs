@@ -259,16 +259,24 @@ impl State {
         let now = self.clock.now();
         self.docs.begin_generation(now);
         self.workspace.begin_generation(now);
-        self.semantic.parses_mut().begin_generation();
+        self.semantic.begin_generation();
     }
 
     /// End the generation, logging what its source reads, its project
-    /// evaluations, its ownership walks and its parses cost.
+    /// evaluations, its ownership walks, its parses and its assembly envs
+    /// cost.
     pub fn end_generation(&mut self) -> crate::observed::Generation {
         let counts = self.workspace.end_generation();
-        let parses = self.semantic.parses_mut().end_generation();
-        self.docs
-            .end_generation_with(counts.evaluations, counts.ownership, parses)
+        let (parses, envs_built) = self.semantic.end_generation();
+        self.docs.end_generation_with(
+            counts.evaluations,
+            counts.ownership,
+            parses,
+            crate::observed::EnvCounts {
+                built: envs_built,
+                validation: counts.envs,
+            },
+        )
     }
 
     /// Record the capabilities the client advertised at `initialize`. Called
@@ -426,21 +434,29 @@ impl State {
     /// independently of this list, because workspace pulls include unopened
     /// files.
     ///
+    /// - Every change, whatever its class, drops the assembly envs that depend
+    ///   on its path
+    ///   ([`crate::semantic::SemanticState::hint_assembly_paths`]): a path an
+    ///   env's resolution read, an entry of a directory it listed, or a file
+    ///   inside an installed version it trusts. Every other env stands, and
+    ///   is confirmed against the disk before it is served again.
     /// - A `Structural` change (a `.fsproj` / `Directory.Build.*` /
     ///   `global.json` / `project.assets.json`) invalidates the *whole*
-    ///   project-evaluation cache and *all* semantic caches (broad-but-correct;
-    ///   see `docs/completed/file-watch-invalidation-plan.md` W2), and requests a
+    ///   project-evaluation cache and every semantic cache derived from it
+    ///   (broad-but-correct; see `docs/completed/file-watch-invalidation-plan.md`
+    ///   W2), with each env whose reads are not all recorded, and requests a
     ///   republish of every open buffer — its `DefineConstants` may have moved.
     /// - A `Source` change invalidates just the semantic caches that list the
     ///   file and requests a workspace diagnostic refresh (no push republish:
     ///   an unopened source edit can't change an open buffer's lexer/parser
     ///   diagnostics, but its own workspace report changed).
     /// - An `AssemblyInput` change (a `.dll` rewritten by a sibling rebuild or
-    ///   restore, a `.cs`/`.csproj` edit feeding the C# sidecar) drops the
-    ///   referenced-assembly caches
-    ///   ([`crate::semantic::SemanticState::invalidate_assembly_state`]) while
-    ///   keeping project evaluation; no republish (binaries can't change an
-    ///   open buffer's lexer/parser diagnostics either).
+    ///   restore, a `.cs`/`.csproj` edit feeding the C# sidecar) drops each env
+    ///   whose reads are not all recorded: those an on-demand restore or the
+    ///   C# sidecar answered part of
+    ///   ([`crate::semantic::SemanticState::invalidate_assembly_state`]). It
+    ///   keeps project evaluation; no republish (binaries can't change an open
+    ///   buffer's lexer/parser diagnostics either).
     ///
     /// Pure of IO beyond cache mutation, so it is testable without a
     /// [`Connection`]; the shell does the actual publishing.
@@ -455,6 +471,13 @@ impl State {
             .collect();
         self.docs.hint(hinted.iter().map(PathBuf::as_path));
         self.workspace.hint(hinted.iter().map(PathBuf::as_path));
+        self.semantic.hint_assembly_paths(&hinted);
+        // NuGet's settings choose the packages folder SDK discovery resolves
+        // versioned SDKs from, and nothing records reading them, so no env's
+        // read set can say whether one moved it: every env goes.
+        if hinted.iter().any(|path| is_nuget_config(path)) {
+            self.semantic.drop_every_env();
+        }
         for change in changes {
             match classify_change(&change.uri, change.typ) {
                 ChangeClass::Structural => structural = true,
@@ -470,7 +493,7 @@ impl State {
         }
         if structural {
             // Subsumes the assembly-input invalidation: `invalidate_all`
-            // clears the assembly state too.
+            // drops every env whose reads are not all recorded too.
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
             self.semantic
@@ -546,6 +569,14 @@ fn watched_files_registration_entry() -> Registration {
     }
 }
 
+/// Whether `path` names a NuGet settings file (`nuget.config`, in any
+/// casing), as [`classify_change`] matches one.
+fn is_nuget_config(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("nuget.config"))
+}
+
 /// What a `workspace/didChangeWatchedFiles` change affects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChangeClass {
@@ -556,9 +587,10 @@ enum ChangeClass {
     Source,
     /// An input to the referenced-assembly layer: a `.dll` (a sibling
     /// project's rebuilt output, a package-cache write), or a `.cs`/`.csproj`
-    /// whose change alters what the C# sidecar would emit. The assembly envs
-    /// (and everything folded against them) may be stale; project evaluation
-    /// (defines, Compile order) is not.
+    /// whose change alters what the C# sidecar would emit. An env that reads
+    /// the path, and every env a reader that records nothing answered part
+    /// of, may be stale (and everything folded against them); project
+    /// evaluation (defines, Compile order) is not.
     AssemblyInput,
     /// Anything we don't react to.
     Ignored,
@@ -2885,30 +2917,29 @@ mod tests {
         );
     }
 
-    /// The headline for the referenced-assembly class: a watched `.dll` change
-    /// (a sibling project rebuilt, a package cache updated) drops the cached
-    /// assembly env, so the next lookup re-resolves against the new binaries.
-    /// Cache identity is observed by `Arc::ptr_eq` — the un-resolvable project
-    /// here caches a (stable, empty) env, which is exactly enough to see the
-    /// hit/miss behaviour without real DLL fixtures.
+    /// The referenced-assembly class, targeted (`docs/incremental-lsp-plan.md`,
+    /// Stage 6b): a watched `.dll` change no env read (a sibling project's
+    /// output this one does not reference) leaves the cached env standing, and
+    /// a watched change to a path the env's resolution read (here the entry
+    /// project file, which it found absent) drops it, so the next lookup
+    /// re-resolves. Cache identity is observed by `Arc::ptr_eq` — the
+    /// un-resolvable project here caches a (stable, empty) env, which is
+    /// exactly enough to see the hit/miss behaviour without real DLL fixtures.
     #[test]
-    fn watched_dll_change_drops_the_assembly_env_cache() {
+    fn a_watched_change_drops_only_an_env_that_read_its_path() {
         let mut state = State::default();
         let proj = PathBuf::from("/p/App.fsproj");
-        let first = state.semantic.assembly_env_for_project(
-            &proj,
-            None,
-            &crate::workspace::ServedTfm::NoneDeclared,
-            &state.workspace,
-        );
-        let hit = state.semantic.assembly_env_for_project(
-            &proj,
-            None,
-            &crate::workspace::ServedTfm::NoneDeclared,
-            &state.workspace,
-        );
+        let env = |state: &mut State| {
+            state.semantic.assembly_env_for_project(
+                &proj,
+                None,
+                &crate::workspace::ServedTfm::NoneDeclared,
+                &state.workspace,
+            )
+        };
+        let first = env(&mut state);
         assert!(
-            Arc::ptr_eq(&first, &hit),
+            Arc::ptr_eq(&first, &env(&mut state)),
             "second lookup must be a cache hit"
         );
 
@@ -2920,16 +2951,24 @@ mod tests {
             "a referenced-assembly change cannot alter an open buffer's \
              lexer/parser diagnostics; nothing republishes"
         );
-
-        let rebuilt = state.semantic.assembly_env_for_project(
-            &proj,
-            None,
-            &crate::workspace::ServedTfm::NoneDeclared,
-            &state.workspace,
-        );
         assert!(
-            !Arc::ptr_eq(&first, &rebuilt),
-            "the assembly env must be re-resolved after a watched DLL change"
+            Arc::ptr_eq(&first, &env(&mut state)),
+            "a DLL the env never read dropped it"
+        );
+
+        state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        let second = env(&mut state);
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "the env must be re-resolved after a watched change to a path it read"
+        );
+
+        // NuGet's settings are read by no recorded reader, so a change to any
+        // of them drops every env, wherever it is.
+        state.apply_watched_changes(&[changed(url("file:///elsewhere/NuGet.Config"))]);
+        assert!(
+            !Arc::ptr_eq(&second, &env(&mut state)),
+            "a NuGet settings change left an env standing"
         );
     }
 

@@ -2345,6 +2345,414 @@ rebuilds in every project that does not reference what changed. Today each
 costs one cold env and fold per open project (about 3.8 G instructions on
 WoofWare.Incremental with the on-disk cache off).
 
+**Implemented** (`crates/lsp/src/semantic.rs`, `crates/lsp/src/workspace.rs`,
+`crates/lsp/src/read_checks.rs`, `crates/lsp/src/server.rs`,
+`crates/msbuild/src/observed.rs`):
+
+- **An env is confirmed, not trusted.** Each `assembly_envs` entry
+  (`EnvEntry`) carries what to confirm before it is served again
+  (`EnvChecks`), and the generation that last confirmed it. The first
+  lookup in a generation confirms every check (`Workspace::confirm_env`);
+  later lookups in the generation are hits. An entry any of whose answers
+  moved is dropped with every fold against its env (`drop_env`: the
+  resolved, inferred and incremental-base folds hold handles into it) and
+  built afresh, and the drop owes the client a semantic-token refresh.
+  Outside a generation an env is served as it is, as a cached evaluation is.
+- **The fold's fast path confirms its env too.** `resolved_projects` was
+  served without asking for the env again, on the ground that every rebuilt
+  env cleared it. It now finds the entry its env belongs to, by identity
+  rather than by key (computing the key would cost the SDK probing the fast
+  path exists to skip), and confirms it (`env_still_served`); a fold whose
+  env has no entry goes with it.
+- **What an env confirms** (`Workspace::env_checks`) is its resolution's
+  read set less the contents of the installed versions it trusts, by the
+  rule a cached evaluation follows, which became one function for both
+  (`confirming_reads`). The installed versions are those under the dotnet
+  root the env was resolved against, under every package folder its assets
+  file names (`ResolvedAssemblies::package_folders`: NuGet extracts a package
+  version into `<id>/<version>/` there and never changes it in place,
+  whichever settings chose the folder), and under every root and the NuGet
+  folder the entry project's cached evaluation names (its `ImmutableRoots`,
+  which the cached evaluation now keeps). A package version is trusted only
+  if its `.nupkg.metadata` was written outside the racy window before the
+  resolution began (`nuget_committed_before`, read at the generation's time
+  before the build).
+- **Shared stamps.** The env's checks are confirmed through the workspace's
+  own `ReadChecks`, the one confirming evaluations, so a directory or file
+  both depend on (the entry's `.fsproj` closure, which an env records through
+  its graph walk) is `stat`ed once per generation. A checker has an identity
+  (`ReadChecks::id`), since a check's witness names its directories by index:
+  checks made under another workspace never hold. The generation separates
+  the counts (`EnvCounts`: envs built, and the confirmation's opens, `stat`s,
+  listings and canonicalisations), which `edit_counts` prints as `a.built`,
+  `av.open`, `av.stat`, `av.list` and `av.canon`.
+- **A watch event widens the next confirmation, and names paths.** Every
+  event batch goes to `SemanticState::hint_assembly_paths`. It drops at once
+  each env that read one of its paths as spelt (`EnvChecks::named_by`: a path
+  its resolution read, or an entry of a directory it listed), which is the
+  only cover for a file system whose stamps do not move (D1's "not
+  covered"). Every other env stands, with a mark (`EnvEntry::event_since`)
+  that makes its next confirmation inside a generation cover the installed
+  contents it trusts too (`EnvChecks::exempt`; `confirm_env`'s
+  `after_event`), whatever path the event named. That is D3's fallback ("a
+  structural watch event still drops everything") restated for envs: an
+  in-place rewrite inside an installed version moves a stamp the widened
+  confirmation sees, under any spelling the client reports (another case, a
+  symlink, a native separator), at the cost of one full confirmation per
+  event rather than a rebuild of every env. A structural event no longer
+  drops a fully recorded env: `invalidate_all` keeps every env whose reads
+  are all recorded. The one
+  exception is a NuGet settings file (`nuget.config` in any casing): SDK
+  discovery reads NuGet's settings directly, unrecorded (Stage 3b's open
+  gap), and they choose the folder versioned SDKs resolve from, so an event
+  naming one drops every env (`drop_every_env`; found by Codex).
+- **What the graph walk absorbs for the entry** is its cached evaluation's
+  whole read set (`CachedEvaluation::reads`), not the reads that confirm it:
+  the installed contents an evaluation exempts (an SDK's imports) are then
+  among the env's exempt reads, which a watch event makes it confirm.
+- **C# references keep their event-driven invalidation.**
+  `invalidate_assembly_state` is now the event-driven rule for the envs with
+  an unrecorded reader: it drops every env whose `EnvReads::unrecorded` is
+  not empty, and `apply_watched_changes` calls it for every `.dll`, `.cs` and
+  `.csproj` event, as before. `invalidate_all` drops them too. A `.cs` edit
+  plus its event therefore drops the envs with a C# edge (and those an
+  on-demand restore built) and nothing else. `CSharpSources` stays
+  unwitnessed.
+- **`pdb_images` is keyed by the DLL's stamp** (`FileStamp`, through the
+  `GoToDefinition` reader). An entry answers only while the DLL's stamp is
+  the recorded one, and a racy stamp is never cached under. The sidecar
+  `.pdb` the DLL names is not in the key, so a referenced-assembly watch
+  event still clears the map, as before: a symbol file added beside an
+  unchanged DLL reaches it that way (found by Codex). `.pdb` files are not
+  watched, so one added with no `.dll` event is unseen, as before.
+- **Both trust opt-ins drop every env** when they change
+  (`set_on_demand_restore_enabled`, as `set_csharp_project_references_enabled`
+  did), since neither is in the env's key and a structural event no longer
+  clears every env behind them.
+- **A racy DLL stamp is confirmed by the DLL's bytes** (see the second
+  decision below): `read_stamped` records a digest of the bytes it read
+  beside a racy stamp (`FileStamp::digest`), and `Read::still_holds` and
+  `ReadChecks::holds` confirm such a stamp by reading the file again and
+  comparing digests. A read that finds the bytes under a stamp no longer racy
+  keeps that stamp on the check (`Check::confirmed`), which then confirms it
+  by a `stat`. `enumerate_dll_type_defs_cached` records its stamp taken before
+  the assembly cache is asked only when the cache answers: on a miss the read
+  records the stamp (and digest) its bytes rest on, and under a racy stamp
+  the cache is not asked at all (an answer resting on a racy stamp could
+  never be confirmed again; found by Codex).
+- **An unreadable DLL's stamp says so.** `read_stamped` of a DLL that can
+  be `stat`ed and not read recorded the open's failure as the stamp's
+  answer; asked again as a `stat`, it succeeded, so it never held, and the
+  env was rebuilt and the client refreshed in every generation. Asking every
+  failed stamp as a whole-file read instead was wrong the other way: a
+  `stat` that failed (a directory above denying search) and then succeeded,
+  the file still unreadable, held. So the two are told apart in the record:
+  a whole-file read that could not open or read the file records the file's
+  stamp marked `FileStamp::unreadable` (by a `stat`, when it could not
+  open it), or the `stat`'s failure, exactly as `stamp` would. An unreadable
+  stamp is asked again as the read (`read_stamped_now`, compared by
+  `same_unreadable`, raciness aside: the failing read is what it rests on),
+  is never a fact, and so never trusted inside an installed version; a
+  failed stamp is asked as a `stat`, as before (both found by Codex, in two
+  rounds).
+- **A generation number is a workspace's.** An entry confirmed in
+  generation `n` is trusted for the rest of `n` only while the workspace
+  confirming it owns its checks (`Workspace::owns`): a replaced workspace
+  starts its generations again from 1 (found by Codex).
+
+**The first decision: envs with unrecorded readers.** An env built through an
+on-demand restore or the C# sidecar (`EnvReads::unrecorded` not empty) is
+never trusted on its recorded reads alone. It is confirmed like any other
+env, and it is dropped besides by everything that dropped every env before
+this stage: a structural watch event or a dropped evaluation
+(`invalidate_all`, through `sync_with_evaluations`), and a referenced-assembly
+watch event (`.dll`, `.cs`, `.csproj`: `invalidate_assembly_state`). That is
+today's event-driven invalidation for exactly those envs, with the read-set
+confirmation added on top, so such an env is never served on less evidence
+than before. Rebuilding it in every generation was the other option: it
+would re-run a restore or a C# design-time build per message.
+
+The guarantee, stated per env:
+
+- **All reads recorded.** A cached env is served in a generation only if
+  every read its resolution made, bar the contents of the installed versions
+  it trusts, gets its recorded answer as of that generation's stamps (each
+  witness and file stamp under the racy rule, a racy DLL stamp by the DLL's
+  bytes), and every trusted version still exists. By the read-set soundness
+  property it is then the env a fresh resolution would build. Outside it:
+  an in-place change to an installed version (D3's axiom), which a watch
+  event naming the file covers, and the file systems D1 lists as not covered,
+  which a watch event naming the path covers too.
+- **An unrecorded reader.** As above for what it recorded; for what the
+  restore or the sidecar read, the env is current as of the last watch event
+  of a structural or referenced-assembly class, or the last dropped
+  evaluation. A `.cs` or `.csproj` edit with no watch event serves stale C#
+  metadata (the `CSharpSources` class, unwitnessed by design), and a package
+  added to the warm cache with no event reaches an on-demand restore's env
+  only through one of those.
+
+**The second decision: the installed-version exemption, and the racy
+window.** The exemption is applied to env reads with Stage 3b's conditions
+(above). On WoofWare.Incremental every DLL the env reads is a framework pack
+or a package, so it exempts all 159 DLL stamps and the reads inside those
+versions: the confirmed reads hold none of the DLL stamps. That needed the
+package folders the assets file names among the roots: the whole-project
+corpus restores into a package folder of its own, which NuGet's settings do
+not name, and with only the settings' folder trusted every package DLL was
+`stat`ed in every generation (185 `stat`s and 4.3 M instructions per
+fold-reading message, measured on the way).
+
+The racy window had a cost no measurement on WoofWare.Incremental shows,
+because its env reads no project output: an env reading a DLL written within
+2 s of the resolution (a referenced project just built, a package extracted
+during the resolution) recorded a racy stamp, which never held again. So
+every generation inside the window rebuilt the env, and each rebuild owed the
+client a token refresh, whose re-pull rebuilt it again. The state machine
+found it as soon as envs were confirmed: every case whose world was written
+within 2 s of a request looped on refreshes until the window passed
+("re-pulls kept releasing refreshes after 8 rounds"). Each rebuild is a cold
+env and the cold fold it forces (on WoofWare.Incremental, with the on-disk
+cache off, the 2.9 G of the 6a build round below). That is structural, and the remedy is git's for a racy index
+entry: a racy stamp from a whole-file read carries a digest of the bytes read,
+and confirms by reading the file again and comparing, a few million
+instructions for a 2 MB DLL where a rebuild costs a cold env; once a read
+finds the bytes under a settled stamp, the check keeps that stamp and
+confirms by a `stat`. A same-size rewrite inside the window changes the
+bytes, so it fails exactly as before. A racy stamp no read took (the stamp a
+cache hit rests on) still never holds again.
+
+**Departures.**
+
+- **A structural watch event no longer drops a fully recorded env.** The
+  plan's headline needs it: a project-file save is structural, and so is a
+  build that writes `obj/*.AssemblyInfo.fs` or `*.nuget.g.props`. The event
+  drops the envs whose reads name its path, and the rest are confirmed. The
+  evaluations, parses and folds still go with every structural event, as
+  before (Stage 7's subject), so a save in an unrelated project still costs
+  the measured project an evaluation, its parses and a cold fold: only the
+  env is kept.
+- **D3's fallback, for envs, is a widened confirmation.** The plan kept
+  "a structural watch event still drops everything" for evaluations; for
+  envs, any event makes the next confirmation cover the installed contents
+  (above), which covers the same in-place change without dropping the envs
+  it did not touch. A first version matched the event's path against the
+  installed versions each env trusted; Codex found three spellings it missed
+  in two rounds (case on a folding file system, a symlinked alias, Windows'
+  separator), so the matching went and confirmation took its place, which
+  no spelling reaches.
+- **Racy DLL stamps carry a digest** (the second decision). Stage 6a's rule
+  was that a racy stamp never holds again; with envs confirmed, that rule
+  rebuilt an env in every generation of the 2 s after a write and looped
+  the client on token refreshes. `FileStamp` gains `digest`, and a racy
+  stamp a whole-file read took holds while the file's bytes are the ones
+  read.
+- **The env is confirmed through the workspace's checker**, not one of its
+  own as the ownership listings are. The env's read set holds the entry's
+  evaluation checks (its graph walk absorbs them), so a separate checker
+  would `stat` all of them twice per generation.
+- **`Unobserved::EnvKey` stays.** The key (the dotnet root a project with no
+  SDK falls back to, and its canonical spelling) is computed afresh on every
+  slow-path lookup, so no cached value rests on it, and the env records
+  every read it makes under that root. It costs one canonicalisation per
+  lookup that misses the fold cache.
+- **No new count harness was needed beyond two scripts** for
+  `edit_counts`: `EDIT_COUNTS_SCRIPT=unrelated-build` and `unrelated-save`
+  deliver the watch events a build or a save of another project of the
+  workspace (by default `WoofWare.Incremental.Test`, which references the
+  measured project, not the reverse) reports, without writing: neither file
+  is one the measured project's evaluation or env reads, so the event is all
+  that can move its answers.
+- **Open: memory.** `invalidate_all` used to free every env; now an env
+  stays until its reads move or a watch event names one. An env under a key
+  no lookup asks for again (a project whose TFM or dotnet root moved) is
+  never confirmed, so never dropped: the table grows by one env per distinct
+  (project, root, TFM) a session meets. Replacing a project's env with the
+  newest would bound it, but the cache deliberately holds one env per TFM
+  (`assembly_env_cache_keys_on_target_framework`, preparation for a TFM
+  override), so that is left to the issue it belongs to.
+
+The oracle:
+
+- `incremental_state_machine`: the world gains a package in a package folder
+  of its own, which either assets file may name, whose DLL is a copy of the
+  real `System.Console.dll` or not an assembly at all, and sources read
+  `System.Console.Out`. `ReferencedAssemblies` splits in two:
+  `ReferenceResolution` (the assets files and the package DLL, outside every
+  installed version), which `WITNESSED` gains, and
+  `InstalledVersionContents` (the framework pack's DLL, rewritten in place
+  inside an installed version), unwitnessed by D3's axiom. The existing
+  `.dll` writes are unchanged, and still flushed.
+  `unwatched_assembly_writes_agree_with_a_fresh_session` generates scripts
+  that write and delete the assets files and the package DLL and never flush;
+  its non-vacuity check asks for comparisons with such a write pending and
+  for hovers that read the package (272 and 4 at its default 16 cases). Four
+  pinned no-flush scripts: the package DLL rewritten from junk to an
+  assembly, an assets file rewritten to name the package, the package DLL
+  created where the env recorded it absent, and the DLL and the assets file
+  deleted. Every env in the world records all its reads (no C# project, no
+  on-demand restore). On 6a the generated test and all four pinned scripts
+  fail.
+- `env_validation` (new): two unrelated restored projects over a stub
+  framework pack, one referencing an F# project whose built output is a
+  copy of `System.Console.dll` and a package. A rebuild of that output, with
+  its watch event or without one, rebuilds the referencing env and leaves the
+  other the same allocation (`Arc::ptr_eq`), and an unchanged generation
+  builds no env and confirms each by `stat`s alone; an event naming files no
+  env read drops nothing, an unwatched in-place rewrite inside a trusted
+  package version goes unseen (the exemption is live), and any event at all
+  then makes the next confirmation see it; a package is trusted only once
+  committed; an env made under another workspace is built again. The first
+  two fail on 6a.
+- `csharp_ref_assembly_env_e2e::a_cs_edit_and_its_event_rebuild_only_the_env_with_a_csharp_edge`
+  (the plan's C# oracle, on `csharp_ref_assembly_env_e2e`'s fixture plus an
+  F#-only project): a `.cs` edit adding a namespace and its event put the
+  namespace in the referencing env and leave the F#-only env the same
+  allocation. Fails on 6a.
+- `env_read_set_soundness::what_an_env_confirms_is_sound_outside_the_installs`:
+  `sweep_with` over the project tree of every generated restored-project
+  fixture holds what a cached env confirms, inside a generation, to
+  soundness, and a pack version installed beside the recorded ones must
+  fail it; `an_env_trusts_installed_contents_and_confirms_the_rest` checks,
+  over a fixed seed, that every read left out lies inside the framework pack
+  or a package, and that some of each kind are.
+- `the_env_records_each_dll_stamp_with_or_without_the_cache` (6a's) now holds
+  the digest rule: a freshly built env's racy DLL stamps carry digests, hold
+  while the bytes do, and fail on a same-size rewrite inside the window.
+  `a_racy_whole_file_read_holds_while_its_bytes_do` (`borzoi-msbuild`) and
+  `a_racy_stamp_holds_while_its_bytes_do_on_the_host` (`read_checks`) hold
+  `Read::still_holds` and `ReadChecks::holds` to it, including the settled
+  stamp that later confirms by a `stat`.
+- `env_validation` also holds an in-place change to an import inside an
+  installed SDK version, with its event, to reaching the env through the
+  entry's evaluation (`a_watched_change_to_an_installed_import_reaches_the_env`),
+  and a package version deleted whole, without one, to being seen
+  (`a_removed_package_version_is_seen_without_an_event`).
+- `a_failed_whole_file_read_holds_while_it_keeps_failing_on_the_host`
+  (`read_checks`): an unreadable DLL's stamp holds while the read keeps
+  failing, and fails once it succeeds; a `stat` that failed and then
+  succeeds, the file still unreadable, fails.
+- Unit tests whose subject the stage changed were rewritten to the new rule,
+  not loosened: `a_dropped_env_forces_a_cold_refold` (was
+  `assembly_state_invalidation_forces_cold_refold`),
+  `the_broad_invalidations_drop_only_an_env_with_an_unrecorded_reader` (was
+  `invalidate_all_drops_assembly_env`),
+  `a_watched_change_drops_only_an_env_that_read_its_path` (was
+  `watched_dll_change_drops_the_assembly_env_cache`), and
+  `pdb_image_cache_computes_once_per_stamp_and_caches_the_negative`. New:
+  `a_trust_opt_in_change_drops_every_env`.
+
+Planted, each caught, then removed:
+
+| plant | caught by |
+|---|---|
+| no confirmation (a cached env served as it is, as on 6a) | the generated assembly test, the pinned scripts, four `env_validation` tests |
+| the fold's fast path not confirming its env | the generated assembly test, the pinned scripts |
+| a dropped env owing no refresh | the pinned scripts (what a client displays) |
+| watch events not reaching `hint_assembly_paths` | `a_watched_change_drops_only_an_env_that_read_its_path`, `a_watched_rebuild_rebuilds_only_the_env_that_reads_it`, `watched_assembly_refresh_e2e` |
+| `named_by` blind to the paths an env read | the same three, `a_dropped_env_forces_a_cold_refold` |
+| no event mark (an event not widening the next confirmation) | `an_event_widens_the_next_confirmation_to_installed_contents` |
+| the widened confirmation skipping the installed contents | `an_event_widens_the_next_confirmation_to_installed_contents` |
+| the graph walk absorbing the entry's checks, not its whole read set | `a_watched_change_to_an_installed_import_reaches_the_env` (added for it) |
+| `invalidate_assembly_state` dropping nothing | `the_broad_invalidations_drop_only_an_env_with_an_unrecorded_reader`, the C# e2e |
+| `invalidate_all` keeping an env with an unrecorded reader | `the_broad_invalidations_drop_only_an_env_with_an_unrecorded_reader` |
+| a NuGet settings event keeping every env (Codex) | `a_watched_change_drops_only_an_env_that_read_its_path` |
+| the env ignoring the entry evaluation's roots | three `env_validation`/`env_read_set_soundness` tests |
+| the env ignoring the assets file's package folders | `an_env_trusts_a_package_only_once_it_was_committed`, `an_event_widens_the_next_confirmation_to_installed_contents` |
+| a package trusted before its commit marker | `an_env_trusts_a_package_only_once_it_was_committed` |
+| everything under a dotnet root trusted, not only version contents | both new `env_read_set_soundness` tests |
+| a trusted version's existence not confirmed | `a_removed_package_version_is_seen_without_an_event` (added for it) |
+| a racy stamp holding on a digest mismatch | `a_racy_stamp_holds_while_its_bytes_do_on_the_host`, the pinned scripts |
+| `Read::still_holds` ignoring the digest | `a_racy_whole_file_read_holds_while_its_bytes_do`, the stamp test |
+| no digest recorded | both racy-content tests, the stamp test, every generated state-machine test (the refresh loop) |
+| a settled stamp trusted without comparing | `a_racy_stamp_holds_while_its_bytes_do_on_the_host` |
+| the pre-cache stamp recorded on a miss | the stamp test, every generated state-machine test (the refresh loop) |
+| the assembly cache asked under a racy stamp (Codex) | the stamp test (once it rewrote a DLL with its mtime put back) |
+| an unreadable read asked as a `stat` (Codex), in either crate | `a_failed_whole_file_read_holds_while_it_keeps_failing_on_the_host` |
+| a generation number trusted under another workspace (Codex) | `an_env_made_under_another_workspace_is_built_again` (once its build and the replacement's first generation shared a number) |
+| checks confirmed through another workspace's checker | `an_env_made_under_another_workspace_is_built_again` |
+| `pdb_images` keyed by path alone | `pdb_image_cache_computes_once_per_stamp_and_caches_the_negative` |
+| `pdb_images` kept on an assembly event (Codex) | the same |
+| the restore opt-in keeping every env | `a_trust_opt_in_change_drops_every_env` |
+
+Four plants first passed every test, and the tests named against them were
+added or extended until each failed: the entry's checks absorbed rather
+than its reads, a version's existence not confirmed, the cache asked under a
+racy stamp, and a generation number trusted under another workspace. The
+last one also found a defect: a confirmation outside a generation recorded
+`None` as the generation that confirmed the env, which made the test pass by
+accident; it now leaves the last generation's record standing. One plant is
+not a defect: `drop_env` not dropping the folds against an env. The fold's
+fast path finds no entry for that env, drops the env again and folds anew,
+and the inferred and incremental-base folds are reused only against the same
+env by identity; `drop_env` clears them to bound memory.
+
+
+**Measured** on WoofWare.Incremental, each row the minimum over three runs
+of each binary: Stage 6a (a055f302, with this stage's `edit_counts` scripts)
+and this stage. The keystroke script ran 20 keystrokes per run; the two
+unrelated-change scripts 5 rounds per run, each round the change's watch
+event and then the keystroke's requests, against `WoofWare.Incremental.Test`
+(which references the measured project, not the reverse). The on-disk
+assembly cache is off, as in every earlier measurement.
+
+The plan's headline, per round:
+
+| round of | instructions 6a | 6b | allocs 6a | 6b | envs built 6a | 6b |
+|---|---:|---:|---:|---:|---:|---:|
+| a build of the unrelated project (its two output DLLs' events) | 3,114.8 M | **37.6 M** | 3,819,086 | 7,128 | 1 | **0** |
+| a save of the unrelated project's `.fsproj` | 3,647.9 M | **1,238.2 M** | 3,967,669 | 583,168 | 1 | **0** |
+
+| row, per round | build 6a | 6b | save 6a | 6b |
+|---|---:|---:|---:|---:|
+| `didChangeWatchedFiles` | 154.4 M | 1.0 M | 481.4 M | 328.0 M |
+| `diagnostic E` | 2.6 M | 2.6 M | 56.1 M | 55.9 M |
+| `diagnostic L` | 2.7 M | 2.7 M | 2.7 M | 2.7 M |
+| `semanticTokens E` | 2,307.6 M | 17.0 M | 2,464.0 M | 213.5 M |
+| `semanticTokens L` | 555.6 M | 7.0 M | 554.3 M | 550.5 M |
+| `hover L` | 88.6 M | 6.7 M | 88.4 M | 87.2 M |
+
+A build of a project the measured one does not reference builds no env and
+folds nothing. The first fold-reading request after the event confirms the
+env widened to its installed contents (352 `stat`s, about 10 M: the price
+of covering an in-place change to an installed version under any
+spelling), the rest confirm it with 10 `stat`s, and all serve the cached
+fold. 6a dropped every env on the `.dll` event (the
+154 M of `didChangeWatchedFiles` is freeing it) and the next request built
+it and folded cold. A save builds no env either; what is left (1.23 G) is
+everything else a structural event still drops: every evaluation (the
+measured project is evaluated again, 329 M), every parse (82 items re-parsed
+in `semanticTokens E`) and every fold (cold again in `semanticTokens L` and
+`hover L`). That is Stage 7's.
+
+The keystroke:
+
+| message, per keystroke | instructions 6a | 6b | allocs 6a | 6b | av.stat |
+|---|---:|---:|---:|---:|---:|
+| `didChange E` | 0.14 M | 0.16 M | 99 | 99 | 0 |
+| `diagnostic E` | 3.39 M | 3.41 M | 247 | 247 | 0 |
+| `diagnostic L` (`unchanged`) | 2.67 M | 2.68 M | 84 | 84 | 0 |
+| `semanticTokens E` | 8.40 M | 9.05 M | 4,928 | 4,932 | 10 |
+| `semanticTokens L` | 12.47 M | 13.09 M | 11,443 | 11,447 | 10 |
+| `hover L` | 7.69 M | 8.38 M | 3,878 | 3,886 | 10 |
+| **keystroke total** | **34.90 M** | **36.82 M** | 20,679 | 20,695 | **30** |
+
+Each message that reads the fold confirms the env once: 10 `stat`s and
+nothing else (the entry's evaluation checks among its reads were confirmed
+by the workspace earlier in the same generation, through the same checker,
+so they cost nothing more), about 0.65 M instructions and 4 allocations. A
+keystroke costs 1.9 M (5.5%) more. The plan's Stage 7 estimate ("roughly
+130 `stat`s per fold-reading request in total") put this part at about 50:
+the installed-version exemption and the shared checker make it 10.
+
+The cold rows: the env is built in `semanticTokens E (cold)` as before, now
+also turning its reads into checks and exempt reads (67 M and 20,600
+allocations more: classifying each read's path against the installed
+versions, and 175 `stat`s of the packages' commit markers), and the first
+confirmation, in `semanticTokens L (cold)`, asks each check's query once and
+takes its witness (2,377 `stat`s, 33 listings, 27 canonicalisations; 52 M),
+as an evaluation's first confirmation does (Stage 3b). From then on it is
+the 10 `stat`s.
+
 ### Stage 7: delete the hand-wired invalidation
 
 **Dependencies**: Stages 2b–6b. **Implements**: the end state of D2.

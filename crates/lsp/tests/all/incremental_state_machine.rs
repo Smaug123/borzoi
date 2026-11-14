@@ -42,8 +42,11 @@
 //! `P/O.fsproj` beside it, and `Q/Q.fsproj` — over four sources, one of which
 //! (`Shared/S.fs`) every project may link, a `common.props` any may import, and
 //! per-directory `project.assets.json` files over a stub framework pack holding
-//! the real `System.Runtime.dll`. Sources reference one another across files
-//! (`A.x`, `open S`, `S.x.Length`), and their bindings sit under `#if FOO` /
+//! the real `System.Runtime.dll`, which may also name a package whose DLL, in a
+//! package folder of the world's own, is a copy of the real `System.Console.dll`
+//! or not an assembly at all. Sources reference one another across files
+//! (`A.x`, `open S`, `S.x.Length`) and into the package (`System.Console.Out`),
+//! and their bindings sit under `#if FOO` /
 //! `#if BAR` blocks keyed on each project's `DefineConstants`, so a stale define
 //! set, Compile order, neighbour file or assembly changes what a name resolves
 //! to. The initial world is healthy (see [`Damage`]); commands break it.
@@ -172,9 +175,13 @@ enum FileId {
     /// The framework pack's `System.Runtime.dll` (a copy of the real reference
     /// assembly), which gives `string` its members.
     Dll,
+    /// The `Lib` package's DLL in the world's package folder (`pkgs/`), which
+    /// an assets file may name: outside every installed version, so the env
+    /// confirms it by its stamp.
+    LibDll,
 }
 
-const FILES: [FileId; 11] = [
+const FILES: [FileId; 12] = [
     FileId::Src(Src::A),
     FileId::Src(Src::B),
     FileId::Src(Src::C),
@@ -186,12 +193,17 @@ const FILES: [FileId; 11] = [
     FileId::Assets(Proj::P),
     FileId::Assets(Proj::Q),
     FileId::Dll,
+    FileId::LibDll,
 ];
 
 /// Where the stub framework pack keeps its one assembly, under the session's
 /// `$DOTNET_ROOT` (`<root>/dotnet`).
 const DLL_REL: &str =
     "dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0/ref/net10.0/System.Runtime.dll";
+
+/// Where the `Lib` package keeps its one assembly, under the package folder
+/// the assets files name (`pkgs/`).
+const LIB_DLL_REL: &str = "pkgs/lib/1.0.0/lib/net10.0/Lib.dll";
 
 impl FileId {
     fn rel(self) -> &'static str {
@@ -202,6 +214,7 @@ impl FileId {
             FileId::Assets(Proj::O | Proj::P) => "P/obj/project.assets.json",
             FileId::Assets(Proj::Q) => "Q/obj/project.assets.json",
             FileId::Dll => DLL_REL,
+            FileId::LibDll => LIB_DLL_REL,
         }
     }
 
@@ -262,6 +275,10 @@ enum Expr {
     /// `M.x.Length` — a member whose receiver's type is decided by another file
     /// (and by which of its `#if` branches is active).
     QualLength(Src, Name),
+    /// `System.Console.Out` — a member of a type only the `Lib` package's DLL
+    /// defines, when it is the real `System.Console.dll` and an assets file
+    /// names it.
+    ConsoleOut,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -309,11 +326,27 @@ enum Content {
     Project(ProjectSpec),
     Props(PropsSpec),
     /// A minimal `project.assets.json` naming the `Microsoft.NETCore.App`
-    /// framework reference.
-    Assets,
+    /// framework reference, and the `Lib` package when `lib`.
+    Assets {
+        lib: bool,
+    },
     /// The real `System.Runtime.dll`.
     Dll,
+    /// What the `Lib` package's DLL holds.
+    LibDll(LibDll),
 }
+
+/// What the `Lib` package's DLL holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibDll {
+    /// A copy of the real reference-pack `System.Console.dll`.
+    Console,
+    /// Bytes that are not an assembly, which the env skips.
+    Junk,
+}
+
+/// What [`LibDll::Junk`] writes.
+const JUNK_DLL: &[u8] = b"not an assembly\n";
 
 fn render_items(out: &mut String, items: &[Item]) {
     for item in items {
@@ -326,6 +359,7 @@ fn render_items(out: &mut String, items: &[Item]) {
                     Expr::Bare(n) => n.text().to_string(),
                     Expr::Qual(m, n) => format!("{}.{}", m.module(), n.text()),
                     Expr::QualLength(m, n) => format!("{}.{}.Length", m.module(), n.text()),
+                    Expr::ConsoleOut => "System.Console.Out".to_string(),
                 };
                 out.push_str(&format!("let {} = {rhs}\n", name.text()));
             }
@@ -417,38 +451,83 @@ impl Content {
                 out.push_str("</Project>\n");
                 out
             }
-            (Content::Assets, FileId::Assets(_)) => json!({
-                "version": 3,
-                "targets": { "net10.0": {} },
-                "libraries": {},
-                "packageFolders": { "../../pkgs/": {} },
-                "project": {
-                    "frameworks": {
-                        "net10.0": { "frameworkReferences": { "Microsoft.NETCore.App": {} } }
+            (Content::Assets { lib }, FileId::Assets(_)) => {
+                let (targets, libraries) = if *lib {
+                    (
+                        json!({ "Lib/1.0.0": {
+                            "type": "package",
+                            "compile": { "lib/net10.0/Lib.dll": {} },
+                        }}),
+                        json!({ "Lib/1.0.0": { "type": "package", "path": "lib/1.0.0" } }),
+                    )
+                } else {
+                    (json!({}), json!({}))
+                };
+                json!({
+                    "version": 3,
+                    "targets": { "net10.0": targets },
+                    "libraries": libraries,
+                    // NuGet writes the folder absolute, and the resolver reads
+                    // it as written: [`Content::bytes`] puts the root in.
+                    "packageFolders": { format!("{ROOT}/pkgs/"): {} },
+                    "project": {
+                        "frameworks": {
+                            "net10.0": { "frameworkReferences": { "Microsoft.NETCore.App": {} } }
+                        }
                     }
-                }
-            })
-            .to_string(),
+                })
+                .to_string()
+            }
             (Content::Dll, FileId::Dll) => "<System.Runtime.dll>".to_string(),
+            (Content::LibDll(LibDll::Console), FileId::LibDll) => {
+                "<System.Console.dll>".to_string()
+            }
+            (Content::LibDll(LibDll::Junk), FileId::LibDll) => "<not an assembly>".to_string(),
             _ => unreachable!("content generated for the wrong kind of file"),
         }
     }
 
-    /// The bytes written to disk for this content at `file`.
-    fn bytes(&self, file: FileId) -> Vec<u8> {
+    /// The bytes written to disk for this content at `file`, in the world
+    /// rooted at `root`.
+    fn bytes(&self, file: FileId, root: &Path) -> Vec<u8> {
         match self {
             Content::Dll => {
                 crate::common::host_fs::read(system_runtime_dll()).expect("read System.Runtime.dll")
             }
-            _ => self.render(file).into_bytes(),
+            Content::LibDll(LibDll::Console) => {
+                crate::common::host_fs::read(system_console_dll()).expect("read System.Console.dll")
+            }
+            Content::LibDll(LibDll::Junk) => JUNK_DLL.to_vec(),
+            _ => self
+                .render(file)
+                .replace(ROOT, root.to_str().expect("a UTF-8 world root"))
+                .into_bytes(),
         }
     }
 }
+
+/// Where an assets file names the world's root ([`Content::bytes`]).
+const ROOT: &str = "<root>";
 
 /// The real reference-pack `System.Runtime.dll` the stub framework pack copies.
 fn system_runtime_dll() -> &'static Path {
     static DLL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DLL.get_or_init(crate::common::ensure_system_runtime_dll)
+}
+
+/// The real reference-pack `System.Console.dll` beside it, which the `Lib`
+/// package's DLL copies.
+fn system_console_dll() -> &'static Path {
+    static DLL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DLL.get_or_init(|| system_runtime_dll().with_file_name("System.Console.dll"))
+}
+
+/// The bytes [`LibDll::Console`] writes.
+fn system_console_bytes() -> &'static [u8] {
+    static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BYTES.get_or_init(|| {
+        crate::common::host_fs::read(system_console_dll()).expect("read System.Console.dll")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +692,7 @@ fn expr_strategy(src: Src) -> impl Strategy<Value = Expr> {
         2 => name_strategy().prop_map(Expr::Bare),
         5 => (module_strategy(src), name_strategy()).prop_map(|(m, n)| Expr::Qual(m, n)),
         2 => (module_strategy(src), name_strategy()).prop_map(|(m, n)| Expr::QualLength(m, n)),
+        1 => Just(Expr::ConsoleOut),
     ]
 }
 
@@ -749,6 +829,7 @@ fn disk_file_strategy() -> impl Strategy<Value = FileId> {
         1 => Just(FileId::Assets(Proj::P)),
         1 => Just(FileId::Assets(Proj::Q)),
         1 => Just(FileId::Dll),
+        1 => Just(FileId::LibDll),
     ]
 }
 
@@ -761,9 +842,16 @@ fn content_for(file: FileId) -> BoxedStrategy<Content> {
             .prop_map(Content::Project)
             .boxed(),
         FileId::Props => props_strategy().prop_map(Content::Props).boxed(),
-        FileId::Assets(_) => Just(Content::Assets).boxed(),
+        FileId::Assets(_) => any::<bool>()
+            .prop_map(|lib| Content::Assets { lib })
+            .boxed(),
         FileId::Dll => Just(Content::Dll).boxed(),
+        FileId::LibDll => lib_dll_strategy().prop_map(Content::LibDll).boxed(),
     }
+}
+
+fn lib_dll_strategy() -> impl Strategy<Value = LibDll> {
+    prop_oneof![3 => Just(LibDll::Console), 1 => Just(LibDll::Junk)]
 }
 
 fn with_content(file: impl Strategy<Value = FileId>) -> impl Strategy<Value = (FileId, Content)> {
@@ -861,6 +949,33 @@ fn unwatched_ownership_cmd_strategy() -> impl Strategy<Value = Cmd> {
     ]
 }
 
+/// An input to the assembly env's reference resolution outside every
+/// installed version, for the writes and deletes of a script that never
+/// flushes: every one is [`InputClass::ReferenceResolution`].
+fn assembly_file_strategy() -> impl Strategy<Value = FileId> {
+    prop_oneof![
+        2 => Just(FileId::Assets(Proj::P)),
+        2 => Just(FileId::Assets(Proj::Q)),
+        3 => Just(FileId::LibDll),
+    ]
+}
+
+/// Commands that write and delete the assets files and the `Lib` package's
+/// DLL (and write sources) behind the server's back and never deliver the
+/// watch events, and comparisons are frequent.
+fn unwatched_assembly_cmd_strategy() -> impl Strategy<Value = Cmd> {
+    prop_oneof![
+        3 => source_file_strategy().prop_map(Cmd::Open),
+        2 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Edit(f, c)),
+        1 => source_file_strategy().prop_map(Cmd::Close),
+        6 => with_content(assembly_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        2 => assembly_file_strategy().prop_map(Cmd::Delete),
+        1 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        4 => Just(Cmd::Check),
+        3 => src_strategy().prop_map(Cmd::Peek),
+    ]
+}
+
 fn case_strategy() -> impl Strategy<Value = Case> {
     case_strategy_with(cmd_strategy().boxed(), buffer_file_strategy().boxed())
 }
@@ -887,8 +1002,10 @@ fn case_strategy_with(
             items_strategy(Src::S, Damage::None).prop_map(Some),
         ),
         prop::collection::vec(prop::bool::weighted(0.8), 3),
+        prop::collection::vec(any::<bool>(), 2),
+        prop::option::weighted(0.8, lib_dll_strategy()),
     )
-        .prop_map(|(p, o, q, props, sources, restored)| {
+        .prop_map(|(p, o, q, props, sources, restored, libs, lib_dll)| {
             let mut disk = vec![(FileId::Proj(Proj::P), Content::Project(p))];
             if let Some(o) = o {
                 disk.push((FileId::Proj(Proj::O), Content::Project(o)));
@@ -914,13 +1031,16 @@ fn case_strategy_with(
             .zip(restored)
             {
                 if present {
-                    let content = if file == FileId::Dll {
-                        Content::Dll
-                    } else {
-                        Content::Assets
+                    let content = match file {
+                        FileId::Assets(Proj::Q) => Content::Assets { lib: libs[1] },
+                        FileId::Assets(_) => Content::Assets { lib: libs[0] },
+                        _ => Content::Dll,
                     };
                     disk.push((file, content));
                 }
+            }
+            if let Some(lib_dll) = lib_dll {
+                disk.push((FileId::LibDll, Content::LibDll(lib_dll)));
             }
             disk
         });
@@ -1240,9 +1360,17 @@ enum InputClass {
     /// is remembered with the listings its walk read, and confirmed by their
     /// directories' stamps.
     DirectoryMembership,
-    /// The assets file and the framework DLL: inputs to the assembly env's
-    /// reference resolution.
-    ReferencedAssemblies,
+    /// The assets files and the `Lib` package's DLL: inputs to the assembly
+    /// env's reference resolution that lie outside every installed version,
+    /// which an env confirms against the disk in each generation that reads
+    /// it.
+    ReferenceResolution,
+    /// The framework pack's DLL, rewritten or deleted in place inside an
+    /// installed pack version. What an installed version holds is immutable
+    /// at its path (`docs/incremental-lsp-plan.md`, D3), so an env trusts
+    /// what it read there without confirming it: a watch event naming the
+    /// file is what covers a change, and nothing else is meant to.
+    InstalledVersionContents,
 }
 
 /// The input classes the server notices without a watch event. Stage 2b
@@ -1251,12 +1379,15 @@ enum InputClass {
 /// set (its project files, imports, SDK resolution and `<Compile>` glob
 /// listings) in every generation that reads the evaluation; Stage 4b
 /// validates each remembered owner's directory listings and consulted
-/// evaluations in every generation that asks for it.
+/// evaluations in every generation that asks for it; Stage 6b validates
+/// each cached env's read set, bar the contents of installed versions, in
+/// every generation that reads the env.
 const WITNESSED: &[InputClass] = &[
     InputClass::SourceContent,
     InputClass::ProjectFiles,
     InputClass::GlobMembership,
     InputClass::DirectoryMembership,
+    InputClass::ReferenceResolution,
 ];
 
 /// A watch event the server has not yet been sent, and what its write changed.
@@ -1286,13 +1417,22 @@ impl World {
             .to_string()
     }
 
-    /// The file's disk text; the binary DLL reads as its placeholder.
+    /// The file's disk text; a binary DLL reads as its placeholder.
     fn disk(&self, file: FileId) -> Option<String> {
         match file {
             FileId::Dll => self
                 .path(file)
                 .host_exists()
                 .then(|| Content::Dll.render(file)),
+            FileId::LibDll => {
+                let bytes = crate::common::host_fs::read(self.path(file)).ok()?;
+                let lib = if bytes == system_console_bytes() {
+                    LibDll::Console
+                } else {
+                    LibDll::Junk
+                };
+                Some(Content::LibDll(lib).render(file))
+            }
             _ => crate::common::host_fs::read_to_string(self.path(file)).ok(),
         }
     }
@@ -1336,7 +1476,8 @@ impl World {
             }
             FileId::Proj(_) if existence => InputClass::DirectoryMembership,
             FileId::Proj(_) | FileId::Props => InputClass::ProjectFiles,
-            FileId::Assets(_) | FileId::Dll => InputClass::ReferencedAssemblies,
+            FileId::Assets(_) | FileId::LibDll => InputClass::ReferenceResolution,
+            FileId::Dll => InputClass::InstalledVersionContents,
         }
     }
 
@@ -1638,11 +1779,16 @@ struct Coverage {
     /// Of those, the ones with a `.fsproj` created or deleted, which moves
     /// ownership, pending.
     unflushed_ownership_checks: usize,
+    /// Of those, the ones with an assets file's or the `Lib` package DLL's
+    /// write pending.
+    unflushed_assembly_checks: usize,
     queries: usize,
     /// A definition landing in a different file from the one asked about.
     cross_file_definitions: usize,
     /// A hover on a member of a referenced-assembly type.
     assembly_member_hovers: usize,
+    /// A hover on something the `Lib` package's DLL defines.
+    package_hovers: usize,
     completions: usize,
     nonempty_diagnostics: usize,
     references: usize,
@@ -1664,6 +1810,9 @@ impl Coverage {
                 let text = result["contents"]["value"].as_str().unwrap_or("");
                 if text.contains("from System.Runtime") {
                     self.assembly_member_hovers += 1;
+                }
+                if text.contains("from System.Console") {
+                    self.package_hovers += 1;
                 }
             }
             "textDocument/completion" if !empty => self.completions += 1,
@@ -1799,6 +1948,9 @@ fn check(
             if pending(InputClass::DirectoryMembership) {
                 coverage.unflushed_ownership_checks += 1;
             }
+            if pending(InputClass::ReferenceResolution) {
+                coverage.unflushed_assembly_checks += 1;
+            }
         }
         for q in ordered {
             let got = warm.request(q.method, q.params.clone());
@@ -1852,7 +2004,7 @@ fn write_initial_disk(root: &Path, disk: &[(FileId, Content)]) {
     for (file, content) in disk {
         let path = root.join(file.rel());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, content.bytes(*file)).unwrap();
+        fs::write(&path, content.bytes(*file, root)).unwrap();
     }
 }
 
@@ -1947,7 +2099,7 @@ fn apply(
             world.write(*file, text.as_bytes());
         }
         Cmd::Write(file, content) => {
-            world.write(*file, &content.bytes(*file));
+            world.write(*file, &content.bytes(*file, &world.root.clone()));
         }
         Cmd::Install(rel, text) => {
             world.install(rel, text);
@@ -2270,6 +2422,44 @@ fn unwatched_project_creations_agree_with_a_fresh_session() {
     );
 }
 
+/// For all generated scripts that write and delete the assets files and the
+/// `Lib` package's DLL (and write sources) and never deliver a watch event,
+/// every answer agrees with fresh sessions at every comparison, and so does
+/// what the client displays: an env's reads outside the installed versions
+/// are a [`WITNESSED`] input, so the server notices the writes itself
+/// (`docs/incremental-lsp-plan.md`, Stage 6b). Every env here records all
+/// its reads: the world has no C# project and restores nothing on demand.
+#[test]
+fn unwatched_assembly_writes_agree_with_a_fresh_session() {
+    let cases = env_u64("BORZOI_LSP_STATE_MACHINE_CASES").map_or(DEFAULT_CASES, |n| n as u32);
+    let seed = env_u64("BORZOI_LSP_STATE_MACHINE_SEED").unwrap_or(DEFAULT_SEED);
+    let coverage = RefCell::new(Coverage::default());
+    let strategy = case_strategy_with(
+        unwatched_assembly_cmd_strategy().boxed(),
+        source_file_strategy().boxed(),
+    );
+    let result = runner(cases, seed).run(&strategy, |case| run_case(&case, &coverage));
+    let coverage = coverage.into_inner();
+    eprintln!("seed {seed}: {coverage:#?}");
+    match result {
+        Ok(()) => {}
+        Err(TestError::Fail(_, case)) => {
+            let (case, message) = minimise(case);
+            panic!("seed {seed}: {message}\n\nminimal script: {case:?}");
+        }
+        Err(err) => panic!("seed {seed}: {err}"),
+    }
+    // Non-vacuity: comparisons were made with an assets file's or the
+    // package DLL's write still unannounced, and they compared answers that
+    // read the package.
+    assert!(
+        coverage.unflushed_assembly_checks > 0
+            && coverage.package_hovers > 0
+            && coverage.assembly_member_hovers > 0,
+        "the generated cases made no comparison with an assembly input written: {coverage:#?}"
+    );
+}
+
 /// The reference must be a function of the world, or the property above is
 /// noise: a session that has just opened every buffer — with no history but
 /// that — agrees with the per-group fresh sessions, even though it answers every
@@ -2481,7 +2671,7 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                         FileId::Src(Src::A),
                         source(vec![Item::StrPair(Name::X, Name::Y)]),
                     ),
-                    (FileId::Assets(Proj::P), Content::Assets),
+                    (FileId::Assets(Proj::P), Content::Assets { lib: false }),
                     (FileId::Dll, Content::Dll),
                 ],
                 cmds: vec![Cmd::Open(FileId::Src(Src::A)), Cmd::Delete(FileId::Dll)],
@@ -2819,7 +3009,95 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                 ],
             },
         ),
+        (
+            // An env served without validating its read set: `P`'s env is
+            // built over a package DLL that is not an assembly, the DLL is
+            // replaced by `System.Console.dll` with no watch event, and
+            // `System.Console.Out` stays unresolved.
+            "an unwatched package DLL rewrite reaches the env",
+            Case {
+                mode: Mode::Pull,
+                disk: console_out_world(Some(true), Some(LibDll::Junk)),
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::LibDll, Content::LibDll(LibDll::Console)),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // The same, for an assets file rewritten to name the package.
+            "an unwatched assets file rewrite reaches the env",
+            Case {
+                mode: Mode::Push,
+                disk: console_out_world(Some(false), Some(LibDll::Console)),
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::Assets(Proj::P), Content::Assets { lib: true }),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // The env records the package DLL it looked for and did not
+            // find: creating it, with no watch event, must reach the env.
+            "an unwatched package DLL created where the env found none reaches it",
+            Case {
+                mode: Mode::Pull,
+                disk: console_out_world(Some(true), None),
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::LibDll, Content::LibDll(LibDll::Console)),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // And deleting it, or the assets file naming it.
+            "an unwatched package DLL or assets file deletion reaches the env",
+            Case {
+                mode: Mode::Push,
+                disk: console_out_world(Some(true), Some(LibDll::Console)),
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Delete(FileId::LibDll),
+                    Cmd::Check,
+                    Cmd::Write(FileId::LibDll, Content::LibDll(LibDll::Console)),
+                    Cmd::Check,
+                    Cmd::Delete(FileId::Assets(Proj::P)),
+                    Cmd::Check,
+                ],
+            },
+        ),
     ]
+}
+
+/// `P` compiling `A`, which reads `System.Console.Out`, over `P`'s assets
+/// file (naming the `Lib` package when `Some(true)`), the framework pack,
+/// and the `Lib` package's DLL holding `lib_dll`.
+fn console_out_world(assets_lib: Option<bool>, lib_dll: Option<LibDll>) -> Vec<(FileId, Content)> {
+    let mut disk = vec![
+        (FileId::Proj(Proj::P), project(vec![], vec![Src::A])),
+        (
+            FileId::Src(Src::A),
+            source(vec![
+                Item::Let(Name::X, Expr::ConsoleOut),
+                Item::StrPair(Name::Y, Name::Z),
+            ]),
+        ),
+        (FileId::Dll, Content::Dll),
+    ];
+    if let Some(lib) = assets_lib {
+        disk.push((FileId::Assets(Proj::P), Content::Assets { lib }));
+    }
+    if let Some(lib_dll) = lib_dll {
+        disk.push((FileId::LibDll, Content::LibDll(lib_dll)));
+    }
+    disk
 }
 
 /// Every pinned script agrees with the fresh-session reference.
