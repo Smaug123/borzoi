@@ -108,6 +108,10 @@
 //!   answers, and the event is all the server is told. Each round is then
 //!   followed by the keystroke's requests, and its rows report what the
 //!   measured project paid for a change it does not depend on.
+//!   `own-save` saves the measured project's own `.fsproj` without changing
+//!   it, as an editor's save of an unmodified buffer does: it writes the
+//!   file's bytes back in place (no truncation, so a concurrent reader of
+//!   the shared corpus never sees it short) and reports the write.
 //! * `EDIT_COUNTS_UNRELATED`: the other project for those scripts. Default:
 //!   `WoofWare.Incremental.Test` beside the default project, which references
 //!   it rather than the other way round.
@@ -861,12 +865,14 @@ enum Script {
     UnrelatedBuild,
     /// Report another project's `.fsproj` changed, as a save of it does.
     UnrelatedSave,
+    /// Write the measured project's `.fsproj` back unchanged, and report it.
+    OwnSave,
 }
 
 /// The files a round of `script` reports changed in the project at
 /// `unrelated`: its `bin` and `obj` output DLLs under the Debug
 /// configuration, or its `.fsproj`.
-fn unrelated_changes(script: Script, unrelated: &Path) -> Vec<PathBuf> {
+fn unrelated_changes(script: Script, unrelated: &Path, project: &Path) -> Vec<PathBuf> {
     let dir = unrelated.parent().expect("a project directory");
     let name = unrelated
         .file_stem()
@@ -876,6 +882,7 @@ fn unrelated_changes(script: Script, unrelated: &Path) -> Vec<PathBuf> {
     match script {
         Script::Keystroke => Vec::new(),
         Script::UnrelatedSave => vec![unrelated.to_path_buf()],
+        Script::OwnSave => vec![project.to_path_buf()],
         Script::UnrelatedBuild => {
             let tfm = Workspace::new()
                 .target_framework_for_project(unrelated)
@@ -979,6 +986,16 @@ mod client_fs {
     /// The file's length, or 0 if it cannot be read.
     pub fn len(path: &Path) -> u64 {
         std::fs::metadata(path).map_or(0, |m| m.len())
+    }
+
+    /// Write the file's bytes back over themselves: a save that changes
+    /// nothing. Opened without truncation, so the file never reads short.
+    pub fn rewrite_in_place(path: &Path) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let bytes = std::fs::read(path)?;
+        let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()
     }
 
     /// The file's text as a client holds it: without a byte-order mark.
@@ -1114,8 +1131,9 @@ fn main() {
         Ok("keystroke") | Err(_) => Script::Keystroke,
         Ok("unrelated-build") => Script::UnrelatedBuild,
         Ok("unrelated-save") => Script::UnrelatedSave,
+        Ok("own-save") => Script::OwnSave,
         Ok(other) => panic!(
-            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build` or `unrelated-save`, not {other:?}"
+            "EDIT_COUNTS_SCRIPT is `keystroke`, `unrelated-build`, `unrelated-save` or `own-save`, not {other:?}"
         ),
     };
 
@@ -1184,7 +1202,7 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("WoofWare.Incremental.Test/WoofWare.Incremental.Test.fsproj"));
     let unrelated = std::path::absolute(&unrelated).expect("an absolute project path");
-    let changes = unrelated_changes(script, &unrelated);
+    let changes = unrelated_changes(script, &unrelated, &project);
     if script != Script::Keystroke {
         assert!(
             client_fs::is_file(&unrelated),
@@ -1287,7 +1305,10 @@ fn main() {
             Script::Keystroke => {
                 next(&mut client, "didChange E", did_change(&e, k as i32 + 1));
             }
-            Script::UnrelatedBuild | Script::UnrelatedSave => {
+            Script::UnrelatedBuild | Script::UnrelatedSave | Script::OwnSave => {
+                if script == Script::OwnSave {
+                    client_fs::rewrite_in_place(&project).expect("rewrite the project file");
+                }
                 next(
                     &mut client,
                     "didChangeWatchedFiles",
