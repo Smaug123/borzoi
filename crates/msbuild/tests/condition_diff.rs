@@ -24,8 +24,8 @@ mod common;
 
 use common::case_axis::{CaseContext, gen_case_comparison, respell_case, respell_keys};
 use common::{
-    Oracle, SplitMix64, Verdict, check_certain_implies_exact, gen_bool_expr, gen_props,
-    soak_parameters,
+    Oracle, SplitMix64, Verdict, breaks_inside_quote, check_certain_implies_exact, gen_bool_expr,
+    gen_props, respell_whitespace, soak_parameters,
 };
 
 fn props(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -223,6 +223,31 @@ fn hand_picked_corners() {
             "'$(S)' == 'true' and '$(V)' != '' and !$(V.Contains('{'))",
             props(&[("S", "true"), ("V", "8.0.0")]),
             Verdict::True,
+        ),
+        // MSBuild's scanner rejects an unquoted reference holding whitespace
+        // but nothing outside an XML name, before `and` could short-circuit
+        // past it; with punctuation beside the whitespace it is legal.
+        ("false and $(A B)", props(&[]), Verdict::Unsupported),
+        ("false and $(A\nB)", props(&[]), Verdict::Unsupported),
+        (
+            "false and $([System.String]::Concat($(A B)))",
+            props(&[]),
+            Verdict::Unsupported,
+        ),
+        (
+            "$(A.Contains('x y'))",
+            props(&[("A", "x y")]),
+            Verdict::True,
+        ),
+        // A line break or tab inside a quoted string is itself, not a space.
+        ("'x\ny' == 'x y'", props(&[]), Verdict::False),
+        ("'x\ty' == 'x\ty'", props(&[]), Verdict::True),
+        // It scans parentheses without regard to quotes, so a quoted `)`
+        // ends the reference early.
+        (
+            "false and $(A.Contains(')'))",
+            props(&[]),
+            Verdict::Unsupported,
         ),
     ];
 
@@ -428,4 +453,72 @@ fn case_variant_sweep_soak() {
     let mut rng = SplitMix64(seed);
     let census = case_variant_sweep(&mut oracle, &mut rng, cases);
     eprintln!("case-variant soak: {census:?}");
+}
+
+/// What one run of [`whitespace_variant_sweep`] saw.
+#[derive(Default, Debug)]
+struct WhitespaceCensus {
+    /// Committed cases whose respelling put a tab or line feed somewhere.
+    committed_respelt: usize,
+    /// Of those, cases with one inside a quoted string, where MSBuild reads it
+    /// as itself.
+    committed_inside_quote: usize,
+}
+
+fn whitespace_variant_sweep(
+    oracle: &mut Oracle,
+    rng: &mut SplitMix64,
+    cases: usize,
+) -> WhitespaceCensus {
+    let mut census = WhitespaceCensus::default();
+    for _ in 0..cases {
+        let props = gen_props(rng);
+        let condition = if rng.below(2) == 0 {
+            let depth = rng.below(3) as u32;
+            gen_bool_expr(rng, depth)
+        } else {
+            gen_case_comparison(rng, &props)
+        };
+        let respelt = respell_whitespace(rng, &condition);
+        let verdict = check_certain_implies_exact(oracle, &respelt, &props);
+        if verdict != Verdict::Unsupported && respelt != condition {
+            census.committed_respelt += 1;
+            census.committed_inside_quote += usize::from(breaks_inside_quote(&respelt));
+        }
+    }
+    census
+}
+
+/// The whitespace axis, at a fixed seed: each generated condition with its
+/// spaces respelt as tabs and line feeds, which MSBuild reads literally (it
+/// does not normalise attribute values), held to certain-implies-exact. Between
+/// tokens they are whitespace; inside a quoted string they are characters.
+#[test]
+fn whitespace_variant_sweep_fixed_seed() {
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(0x0007_ab1f_5eed);
+    let census = whitespace_variant_sweep(&mut oracle, &mut rng, 3000);
+    eprintln!("whitespace-variant sweep: {census:?}");
+    // Observed at this seed: 882 respelt, 273 inside a quote.
+    assert!(
+        census.committed_respelt >= 500,
+        "only {} committed cases were respelt — the check is testing nothing",
+        census.committed_respelt
+    );
+    assert!(
+        census.committed_inside_quote >= 100,
+        "only {} committed cases broke a line inside a quote",
+        census.committed_inside_quote
+    );
+}
+
+/// Fresh-seed twin of [`whitespace_variant_sweep_fixed_seed`].
+#[test]
+#[ignore = "fresh-seed soak; run it when touching condition.rs"]
+fn whitespace_variant_sweep_soak() {
+    let (seed, cases) = soak_parameters("condition whitespace-variant", 50_000);
+    let mut oracle = Oracle::spawn();
+    let mut rng = SplitMix64(seed);
+    let census = whitespace_variant_sweep(&mut oracle, &mut rng, cases);
+    eprintln!("whitespace-variant soak: {census:?}");
 }
