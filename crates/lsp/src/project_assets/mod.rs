@@ -22,6 +22,11 @@ use crate::project_assets::enumerate::lookup_target_for_tfm;
 pub struct ResolvedAssemblies {
     /// Absolute paths to compile-time DLLs from NuGet packages, deduplicated.
     pub package_dlls: Vec<PathBuf>,
+    /// The root assets file's `packageFolders`, in document order: the
+    /// folders NuGet extracted the packages into (the global packages folder
+    /// first), whose `<id>/<version>/` directories an installer never changes
+    /// in place.
+    pub package_folders: Vec<PathBuf>,
     /// Absolute paths to reference assemblies from shared frameworks.
     pub framework_dlls: Vec<PathBuf>,
     /// The producer TFM (short form, e.g. `net10.0`) NuGet's restore selected
@@ -124,6 +129,7 @@ fn resolve_assemblies_impl(
     let mut project_ref_tfms: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut project_ref_assembly_names: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut frameworks_resolved: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut package_folders: Option<Vec<PathBuf>> = None;
 
     let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
     let mut worklist: Vec<PathBuf> = vec![root_assets_path.to_path_buf()];
@@ -149,6 +155,7 @@ fn resolve_assemblies_impl(
                 path: canon.clone(),
                 source: e,
             })?;
+        package_folders.get_or_insert_with(|| assets.package_folders.clone());
         let assets_dir = canon
             .parent()
             .expect("assets file has parent")
@@ -265,6 +272,7 @@ fn resolve_assemblies_impl(
 
     Ok(ResolvedAssemblies {
         package_dlls: package_dlls.into_iter().collect(),
+        package_folders: package_folders.unwrap_or_default(),
         framework_dlls: framework_dlls.into_iter().collect(),
         project_ref_tfms,
         project_ref_assembly_names,

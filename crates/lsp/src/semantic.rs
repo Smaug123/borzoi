@@ -1193,7 +1193,13 @@ impl SemanticState {
         // Borrow `assembly_cache` (shared) and `sidecar` (mut) as disjoint
         // fields — the sidecar drives any C# `.csproj` references this project
         // has, lazily spawning on first need, when the host opted into them.
-        let (env, dlls, retryable, unrecorded) = build_assembly_env(
+        let BuiltEnv {
+            env,
+            dlls,
+            retryable,
+            unrecorded,
+            package_folders,
+        } = build_assembly_env(
             project,
             dotnet_root,
             target_framework,
@@ -1205,7 +1211,7 @@ impl SemanticState {
             &observer,
         );
         let (reads, counts) = observer.finish();
-        let checks = workspace.env_checks(&id, dotnet_root, &reads, started);
+        let checks = workspace.env_checks(&id, dotnet_root, &package_folders, &reads, started);
         let reads = EnvReads { reads, unrecorded };
         crate::observed::report_env_resolution(counts, &reads);
         self.envs_built += 1;
@@ -2215,6 +2221,17 @@ pub const UNRECORDED_RESTORE: &str = "an on-demand restore's scratch output";
 /// it delivered metadata or not.
 pub const UNRECORDED_CSHARP: &str = "the C# sources the sidecar compiled";
 
+/// What [`build_assembly_env`] built: the env, the DLLs it was built from,
+/// its *retryable* flag, the readers it could not record, and the package
+/// folders its packages came from.
+struct BuiltEnv {
+    env: AssemblyEnv,
+    dlls: Vec<PathBuf>,
+    retryable: bool,
+    unrecorded: Vec<&'static str>,
+    package_folders: Vec<PathBuf>,
+}
+
 /// Build the assembly env for a fresh cache miss. Always returns *some*
 /// env — empty if anything went wrong (D5 degrades to under-resolution) — and
 /// the reference-DLL list it was built from.
@@ -2235,7 +2252,7 @@ fn build_assembly_env(
     recovered_ref_tfms: &BTreeMap<PathBuf, String>,
     restore_env: Option<&SdkDiscoveryEnv>,
     observer: &Observer,
-) -> (AssemblyEnv, Vec<PathBuf>, bool, Vec<&'static str>) {
+) -> BuiltEnv {
     let _span = tracing::info_span!("build_assembly_env", project = %project.display()).entered();
     let refs = resolve_reference_dlls(
         project,
@@ -2281,7 +2298,13 @@ fn build_assembly_env(
             "project references have no built output; their types are unavailable until built"
         );
     }
-    (env, kept, refs.retryable, refs.unrecorded)
+    BuiltEnv {
+        env,
+        dlls: kept,
+        retryable: refs.retryable,
+        unrecorded: refs.unrecorded,
+        package_folders: refs.package_folders,
+    }
 }
 
 /// What one declared `<ProjectReference>` edge contributed to the env.
@@ -2354,6 +2377,9 @@ struct ReferenceSet {
     /// The readers whose queries the resolution could not record
     /// ([`EnvReads::unrecorded`]).
     unrecorded: Vec<&'static str>,
+    /// The package folders the assets file the packages came from names
+    /// ([`crate::project_assets::ResolvedAssemblies::package_folders`]).
+    package_folders: Vec<PathBuf>,
 }
 
 impl ReferenceSet {
@@ -2368,6 +2394,7 @@ impl ReferenceSet {
             edges: Vec::new(),
             retryable,
             unrecorded: Vec::new(),
+            package_folders: Vec::new(),
         }
     }
 
@@ -2758,6 +2785,7 @@ fn resolve_reference_dlls(
         edges,
         retryable,
         unrecorded,
+        package_folders: resolved.package_folders,
     };
     ReferenceSet {
         retryable: set.retryable || set.has_transient_failure(),
@@ -6130,6 +6158,7 @@ mod tests {
             edges,
             retryable: false,
             unrecorded: Vec::new(),
+            package_folders: Vec::new(),
         };
         assert_eq!(set.unread().count(), 1);
         assert!(
@@ -6150,6 +6179,7 @@ mod tests {
             ),
             retryable: false,
             unrecorded: Vec::new(),
+            package_folders: Vec::new(),
         };
         assert_eq!(set.unread().count(), 1);
         assert!(!set.has_transient_failure());
@@ -6375,6 +6405,7 @@ mod tests {
             edges,
             retryable: false,
             unrecorded: Vec::new(),
+            package_folders: Vec::new(),
         };
         assert_eq!(
             set.unread().collect::<Vec<_>>(),
@@ -6408,6 +6439,7 @@ mod tests {
             edges,
             retryable: false,
             unrecorded: Vec::new(),
+            package_folders: Vec::new(),
         };
 
         let unbuilt = set(vec![edge("A.fsproj", ReferenceOutcome::NotBuilt)]);

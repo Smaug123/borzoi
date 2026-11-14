@@ -866,12 +866,16 @@ impl Workspace {
     /// except the contents of the installed versions it trusts, by the rule
     /// a cached evaluation follows (`Evaluation::checks`). The installed
     /// versions are those under the dotnet root the env was resolved
-    /// against, and under every root and the NuGet folder `project`'s cached
-    /// evaluation names, if there is one.
+    /// against, under every package folder its assets file names
+    /// (`package_folders`: NuGet extracts a package version into
+    /// `<id>/<version>/` there and never changes it in place, whichever
+    /// settings chose the folder), and under every root and the NuGet folder
+    /// `project`'s cached evaluation names, if there is one.
     pub fn env_checks(
         &self,
         project: &ProjectId,
         dotnet_root: Option<&Path>,
+        package_folders: &[PathBuf],
         reads: &ReadSet,
         started: Option<Nanos>,
     ) -> EnvChecks {
@@ -881,6 +885,12 @@ impl Workspace {
             .map(|cached| cached.immutable.clone())
             .unwrap_or_default();
         immutable.dotnet.extend(dotnet_root.map(lexically_normalize));
+        immutable.nuget.extend(
+            package_folders
+                .iter()
+                .filter(|folder| folder.is_absolute())
+                .map(|folder| lexically_normalize(folder)),
+        );
         let checker = &self.checker;
         let reads = reads.reads();
         let confirming = confirming_reads(reads, &immutable, |version| {
