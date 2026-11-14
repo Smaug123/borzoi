@@ -2700,7 +2700,8 @@ fn a_request_cancelled_while_its_shared_run_runs_is_refused_alone() {
 /// run, which may have read the disk before the request was sent: here `A`
 /// is rewritten on disk, with no notification, after the hover on `C` has
 /// computed its answer and before it is sent, and the identical hover sent
-/// then reads the new `A`.
+/// then reads the new `A`. A request on `B` waits behind the first hover, so
+/// the epoch holds the handled hover beside the identical one read after it.
 #[test]
 fn a_request_read_while_an_identical_one_runs_runs_again() {
     on_server_stack(|| {
@@ -2738,7 +2739,14 @@ fn a_request_read_while_an_identical_one_runs_runs_again() {
         crate::common::with_subscriber(
             Counter(Arc::clone(&seen), Some(Arc::clone(&mid_run))),
             || {
-                session.dispatcher.admit([hover_c(&world, "h1")]);
+                session.dispatcher.admit([
+                    hover_c(&world, "h1"),
+                    request(
+                        "s",
+                        "textDocument/documentSymbol",
+                        json!({ "textDocument": { "uri": world.uri(Doc::Src(Src::B)) } }),
+                    ),
+                ]);
                 session.run_out();
             },
         );
@@ -2748,10 +2756,10 @@ fn a_request_read_while_an_identical_one_runs_runs_again() {
             "sent before h1 was answered"
         );
         assert_eq!(session.stops, 0, "a request stops nothing");
-        assert_eq!(seen.lock().unwrap().requests_run, 2);
+        assert_eq!(seen.lock().unwrap().requests_run, 3);
         let answered = responses(&session);
         let ids: Vec<String> = answered.iter().map(|r| r.id.to_string()).collect();
-        assert_eq!(ids, ["\"h1\"", "\"h2\""]);
+        assert_eq!(ids, ["\"h1\"", "\"s\"", "\"h2\""]);
         assert_eq!(outcome(&answered[0]), before, "h1 read `A` as it was");
         let after = start(&world).ask("textDocument/hover", {
             let Message::Request(hover) = hover_c(&world, "probe") else {
@@ -2760,7 +2768,7 @@ fn a_request_read_while_an_identical_one_runs_runs_again() {
             hover.params
         });
         assert_ne!(before, after, "the rewrite moves the hover");
-        assert_eq!(outcome(&answered[1]), after, "h2 reads the rewritten `A`");
+        assert_eq!(outcome(&answered[2]), after, "h2 reads the rewritten `A`");
     });
 }
 

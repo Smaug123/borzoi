@@ -1199,17 +1199,20 @@ impl Dispatcher {
                             // Synchronous request: reply immediately, to it
                             // and to every request it answers for.
                             Dispatch::Reply(response) => {
-                                let shared: Vec<Response> = member_ids
-                                    .into_iter()
-                                    .map(|id| Response {
+                                // One copy is made per member as the one
+                                // before it is sent, so the writer's
+                                // backpressure bounds what is held at two
+                                // answers, however many share it.
+                                let mut next = response;
+                                for id in member_ids {
+                                    let following = Response {
                                         id,
-                                        ..response.clone()
-                                    })
-                                    .collect();
-                                enqueue_response(connection, &method, response)?;
-                                for response in shared {
-                                    enqueue_response(connection, &method, response)?;
+                                        ..next.clone()
+                                    };
+                                    enqueue_response(connection, &method, next)?;
+                                    next = following;
                                 }
+                                enqueue_response(connection, &method, next)?;
                             }
                             Dispatch::Defer { .. } | Dispatch::Sweep { .. }
                                 if !member_ids.is_empty() =>
