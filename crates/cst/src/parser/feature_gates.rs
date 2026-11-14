@@ -2,11 +2,17 @@
 //! [`LanguageFeature`] introduced draws a diagnostic when parsed at a version
 //! below that feature's.
 //!
-//! FCS checks these with `CheckLanguageFeatureAndRecover` (or, for the dotless
-//! `float32` literal, a lexer check) and then parses the construct anyway, so
-//! the tree is the same at every version and only the diagnostics move. That
-//! is how they are modelled here: a walk over the finished tree, which never
-//! alters it.
+//! Most are checks FCS makes with `CheckLanguageFeatureAndRecover` before
+//! parsing the construct anyway, so its tree is the same at every version and
+//! only the diagnostics move. That is how every gate is modelled here: a walk
+//! over the finished tree, which never alters it. Two gate a feature whose
+//! tree FCS does change below its version, and here keep the newer tree: the
+//! dotless `float32` literal, which FCS's lexer replaces with `0.0f`, and the
+//! nullness annotation, whose `|` FCS's lex-filter does not relabel. Which is
+//! which is the feature table's `fcs_effect`, and each diagnostic's
+//! [`DiagnosticClass`](super::DiagnosticClass) is read off it
+//! ([`ParseDiagnostic::gate`]): `Legality` for the first kind, `Recovery` for
+//! the second.
 //!
 //! Each gate reports at the range FCS's check is given, which is not always the
 //! construct's: a `while!` reports its keyword, a `module [<A>] M` the token
@@ -24,7 +30,7 @@ use std::ops::Range;
 use crate::language_version::{LanguageFeature, LanguageVersion};
 use crate::syntax::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, kind_feature};
 
-use super::ParseError;
+use super::ParseDiagnostic;
 
 /// FCS's FS1153 (`lexInvalidFloat`), the lexer's error for a dotless `float32`
 /// literal below [`LanguageFeature::DotlessFloat32Literal`].
@@ -34,7 +40,7 @@ const INVALID_FLOAT: &str = "Invalid floating point number";
 pub(super) fn feature_gate_diagnostics(
     root: &SyntaxNode,
     lang: LanguageVersion,
-) -> Vec<ParseError> {
+) -> Vec<ParseDiagnostic> {
     let mut out = Vec::new();
     // The common case — a project at F# 10.0, or an orphan buffer at preview —
     // has every feature gated here, so skip the walk. `POSITIONAL_GATES` is
@@ -48,10 +54,11 @@ pub(super) fn feature_gate_diagnostics(
     }
     let mut gate = |feature: LanguageFeature, span: Range<usize>| {
         if !lang.supports(feature) {
-            out.push(ParseError {
-                message: feature.not_available_message(lang),
+            out.push(ParseDiagnostic::gate(
+                feature,
+                feature.not_available_message(lang),
                 span,
-            });
+            ));
         }
     };
     for node in root.descendants() {
@@ -98,10 +105,11 @@ pub(super) fn feature_gate_diagnostics(
             .filter_map(SyntaxElement::into_token)
         {
             if let Some(span) = dotless_float32_span(&token) {
-                out.push(ParseError {
-                    message: INVALID_FLOAT.to_string(),
+                out.push(ParseDiagnostic::gate(
+                    LanguageFeature::DotlessFloat32Literal,
+                    INVALID_FLOAT.to_string(),
                     span,
-                });
+                ));
             }
         }
     }

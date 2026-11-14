@@ -21,3 +21,4 @@ crates/cst/tests/manifests/parser_corpus_diff.txt merge=borzoi-manifest
 crates/cst/tests/manifests/feature_gate_corpus.txt merge=borzoi-manifest
 crates/cst/tests/manifests/recovery_sweep.txt merge=borzoi-manifest
 crates/cst/tests/manifests/decl_sequence_grid_streams.txt merge=borzoi-manifest
+crates/cst/tests/manifests/version_dependence_census.txt merge=borzoi-manifest

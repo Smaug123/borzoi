@@ -38672,7 +38672,7 @@ tests/service/data/SyntaxTree/Binding/RangeOfAttributeShouldBeIncludedInSynMembe
 tests/service/data/SyntaxTree/Binding/RangeOfLetKeywordShouldBePresentInSynModuleDeclLetBinding.fs	compared fcs-clean
 tests/service/data/SyntaxTree/Binding/RangeOfLetKeywordShouldBePresentInSynModuleDeclLetBinding.fs:2:5-2:6	v Value { is_function: false } def agree-none
 tests/service/data/SyntaxTree/ConditionalDirective/IfElifElseEndif.fs	compared fcs-clean
-tests/service/data/SyntaxTree/ConditionalDirective/IfElifElseEndif.fs:8:5-8:6	x Value { is_function: false } def declined ParseErrors fcs-none
+tests/service/data/SyntaxTree/ConditionalDirective/IfElifElseEndif.fs:8:5-8:6	x Value { is_function: false } def agree-none
 tests/service/data/SyntaxTree/Expression/AnonRecd - Quotation 01.fs	compared fcs-clean
 tests/service/data/SyntaxTree/Expression/AnonymousRecords-10.fs	compared fcs-clean
 tests/service/data/SyntaxTree/Expression/Binary - Plus 03.fs	compared fcs-check-errors

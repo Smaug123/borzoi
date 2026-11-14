@@ -43,8 +43,8 @@ use borzoi_cst::syntax::{TextRange, TextSize};
 /// path of least resistance is how the conflation gets reintroduced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyntaxRecovery {
-    /// Exactly the spans [`Parse::errors`] reported. Empty **proves** the file
-    /// parsed cleanly.
+    /// Exactly the spans of the [`Parse::recovery_errors`]. Empty **proves**
+    /// the file parsed with no recovery: the tree is the one FCS builds.
     Reported(Arc<[TextRange]>),
     /// The parse's errors were not kept, so no declaration in this file can be
     /// shown to have parsed cleanly.
@@ -57,12 +57,16 @@ impl SyntaxRecovery {
     ///
     /// Warnings are not errors and are not read — a warning means the parser
     /// understood the text and disapproved, which is not the failure mode this
-    /// type exists for.
+    /// type exists for. Nor are the legality errors
+    /// ([`DiagnosticClass::Legality`](borzoi_cst::parser::DiagnosticClass::Legality)):
+    /// a construct newer than the pinned language version is an error FCS
+    /// reports over the very tree it would build at a newer version, and type-checks
+    /// that tree all the same (`infer_legality_pin_diff`), so it leaves nothing
+    /// under it unparsed.
     pub fn of(parse: &Parse) -> Self {
         SyntaxRecovery::Reported(
             parse
-                .errors
-                .iter()
+                .recovery_errors()
                 .map(|e| {
                     // `TextRange::new` panics on an inverted span, and this runs
                     // inside a language server on whatever the user is halfway
@@ -87,22 +91,24 @@ impl SyntaxRecovery {
     /// is trusted (`sdk_project_fold_e2e::ordinary_sdk_projects_have_trusted_langversion_provenance`
     /// in the `borzoi` crate), so its fold reads [`of`](Self::of) instead.
     ///
-    /// A version-gated legality check reports a feature error and parses the
-    /// construct anyway, so a guess landing on the wrong side of a feature
-    /// threshold turns a rejected file into a clean-looking one *from the same
-    /// tree*: `#elif` is an error at F# 10 and silent at preview, and the
-    /// nested-type FS0058 fires at F# 10 and is silent below. Reading the
-    /// guess's empty error list as proof would license exactly the commitment
-    /// this type exists to withhold.
+    /// A guess landing on the wrong side of a version threshold can turn a
+    /// rejected file into a clean-looking one, or change its tree: the
+    /// nested-type FS0058 fires at F# 10 and is silent below, a nullness
+    /// annotation is a recovery below F# 9, and strict indentation reshapes
+    /// offside code across F# 8. Reading the guess's empty error list as proof
+    /// would license exactly the commitment this type exists to withhold.
     ///
-    /// So the source is asked whether its diagnostics depend on the version at
-    /// all — by comparing whole diagnostic sets across the version ladder, which
-    /// costs two extra parses and is why this is not the default constructor.
-    /// Few files' diagnostics do depend on it, which is what makes this a
-    /// per-file question rather than a blanket
-    /// [`Unretained`](Self::Unretained) for every guessed version: an
-    /// orphan buffer is always a guess, so a blanket answer would withhold
-    /// every annotation from every one of them.
+    /// So the source is asked whether its tree and its recovery diagnostics
+    /// depend on the version at all
+    /// ([`diagnostics_are_version_invariant`](borzoi_cst::parser::diagnostics_are_version_invariant),
+    /// which re-parses across the version ladder and is why this is not the
+    /// default constructor). The legality errors are no part of that question,
+    /// as [`of`](Self::of) reads none: `#elif` is an error at F# 10 and silent
+    /// at preview, over the same tree either way. Few files depend on the
+    /// version otherwise, which is what makes this a per-file question rather
+    /// than a blanket [`Unretained`](Self::Unretained) for every guessed
+    /// version: an orphan buffer is always a guess, so a blanket answer would
+    /// withhold every annotation from every one of them.
     pub fn of_guessed_version(
         parse: &Parse,
         source: &str,
@@ -380,5 +386,54 @@ mod tests {
         assert_eq!(slots.len(), 2, "one annotation per member");
         assert!(recovery.declaration_is_intact(&slots[0]));
         assert!(!recovery.declaration_is_intact(&slots[1]));
+    }
+
+    fn parse_at(source: &str, lang: borzoi_cst::language_version::LanguageVersion) -> Parse {
+        borzoi_cst::parser::parse_with_options(
+            source,
+            borzoi_cst::parser::ParseOptions {
+                file_kind: FileKind::Impl,
+                symbols: &HashSet::new(),
+                lang,
+            },
+        )
+    }
+
+    /// A legality error is no recovery: attributes after `module` are an
+    /// error at F# 5 over the tree F# 6 builds, so the declarations under them
+    /// keep their annotations. A gate whose feature FCS parses differently
+    /// below its version is a recovery like any other: below F# 9 a nullness
+    /// annotation condemns its declaration.
+    #[test]
+    fn only_recovery_errors_condemn_a_declaration() {
+        use borzoi_cst::language_version::LanguageVersion;
+        use borzoi_cst::parser::DiagnosticClass;
+
+        let legal = parse_at(
+            "module [<AutoOpen>] M\nlet v : System.String = failwith \"\"\n",
+            LanguageVersion::V5_0,
+        );
+        assert!(
+            matches!(
+                legal.errors.as_slice(),
+                [e] if matches!(e.class, DiagnosticClass::Legality { .. })
+            ),
+            "one legality error: {:?}",
+            legal.errors
+        );
+        let root = ImplFile::cast(legal.root.clone()).expect("impl file");
+        assert!(SyntaxRecovery::of(&legal).declaration_is_intact(&annotation(root.syntax())));
+
+        let reshaped = parse_at(
+            "module M\nlet v : System.String | null = null\n",
+            LanguageVersion::V8_0,
+        );
+        assert!(
+            !reshaped.errors.is_empty() && reshaped.errors.iter().all(|e| e.is_recovery()),
+            "recovery errors only: {:?}",
+            reshaped.errors
+        );
+        let root = ImplFile::cast(reshaped.root.clone()).expect("impl file");
+        assert!(!SyntaxRecovery::of(&reshaped).declaration_is_intact(&annotation(root.syntax())));
     }
 }
