@@ -11,6 +11,7 @@
 //! first safe point past each height.
 
 use super::*;
+use crate::tokens::lex_full_trivia;
 
 /// `parser_panic_sweep`'s `CORE` alphabet: the punctuation and keywords the
 /// productions' guards branch on.

@@ -117,7 +117,24 @@ fn cst_member_sig_access(
 }
 
 pub fn normalise_parse(parse: &Parse) -> NormalisedRoot {
-    let root = &parse.root;
+    let extended = parse
+        .lang
+        .supports(borzoi_cst::language_version::LanguageFeature::ExtendedStringInterpolation);
+    let before = EXTENDED_INTERPOLATION.replace(extended);
+    let root = normalise_root(&parse.root);
+    EXTENDED_INTERPOLATION.set(before);
+    root
+}
+
+thread_local! {
+    /// Whether the parse being normalised has `ExtendedStringInterpolation`
+    /// (F# 8.0), which decides how a `$$"""` chain's text decodes
+    /// ([`detect_interp_style`]). Set by [`normalise_parse`]; a projection of a
+    /// bare node reads the latest language's answer.
+    static EXTENDED_INTERPOLATION: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+fn normalise_root(root: &borzoi_cst::syntax::SyntaxNode) -> NormalisedRoot {
     match root.kind() {
         SyntaxKind::IMPL_FILE => {
             let file = ImplFile::cast(root.clone()).expect("kind already checked");
@@ -2862,7 +2879,10 @@ fn normalise_interp_string(node: &InterpStringExpr, counter: &mut u32) -> Normal
     let style = raw_parts
         .first()
         .and_then(|p| match p {
-            InterpStringPart::Fragment(tok) => Some(detect_interp_style(tok.text())),
+            InterpStringPart::Fragment(tok) => Some(detect_interp_style(
+                tok.text(),
+                EXTENDED_INTERPOLATION.get(),
+            )),
             InterpStringPart::Fill { .. } => None,
         })
         .unwrap_or(InterpFragmentStyle::Single);

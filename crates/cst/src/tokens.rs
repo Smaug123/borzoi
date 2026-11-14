@@ -22,8 +22,11 @@ use std::ops::{Bound, Range, RangeBounds};
 
 use crate::directives::driver::{CoreItem, Sink};
 #[cfg(feature = "token-reference")]
-use crate::directives::lex_with_symbols_full_trivia;
+use crate::directives::lex_with_symbols_full_trivia_at;
 use crate::directives::{LineDirectiveStore, PreprocError, Preprocessed, TriviaToken};
+#[cfg(doc)]
+use crate::language_version::LanguageFeature;
+use crate::language_version::LanguageVersion;
 use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{FilteredItem, FilteredToken, Virtual};
 use crate::syntax::SyntaxKind;
@@ -369,13 +372,29 @@ pub struct LexedSource<'src> {
 /// offsets), or if the driver's stream does not tile the source, which the
 /// lossless syntax tree depends on.
 pub fn lex_full_trivia<'src>(source: &'src str, symbols: &HashSet<String>) -> LexedSource<'src> {
+    lex_full_trivia_at(source, symbols, LanguageVersion::Preview)
+}
+
+/// [`lex_full_trivia`], lexing as FCS's lexer does at `lang`. The one lexer
+/// gate is [`LanguageFeature::ExtendedStringInterpolation`] (F# 8.0): below
+/// it a `$$"""` opener is lexed as a `$"""` one, so the tokens of such a
+/// string, and of its fills, differ.
+///
+/// # Panics
+///
+/// As [`lex_full_trivia`].
+pub fn lex_full_trivia_at<'src>(
+    source: &'src str,
+    symbols: &HashSet<String>,
+    lang: LanguageVersion,
+) -> LexedSource<'src> {
     let mut writer = TableWriter::new(source);
     let (elif_directives, line_directives) =
-        crate::directives::driver::lex_full_trivia_into(source, symbols, &mut writer);
+        crate::directives::driver::lex_full_trivia_into(source, symbols, lang, &mut writer);
     let lexed = writer.finish(elif_directives, line_directives);
     #[cfg(feature = "token-reference")]
     {
-        let mut driver = lex_with_symbols_full_trivia(source, symbols);
+        let mut driver = lex_with_symbols_full_trivia_at(source, symbols, lang);
         let mut stream: Vec<RawItem<'src>> = Vec::new();
         let mut preproc_errors = Vec::new();
         for (res, span) in driver.by_ref() {
@@ -393,7 +412,7 @@ pub fn lex_full_trivia<'src>(source: &'src str, symbols: &HashSet<String>) -> Le
         );
         assert_eq!(
             lexed.preprocessed,
-            crate::directives::preprocess(source, symbols),
+            crate::directives::preprocess_at(source, symbols, lang),
             "the full-trivia lex does not report what the swallow-mode driver does for {source:?}"
         );
     }

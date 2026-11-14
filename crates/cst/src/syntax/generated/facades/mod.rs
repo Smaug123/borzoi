@@ -13,17 +13,11 @@ pub mod preview;
 pub mod v10;
 #[cfg(feature = "v11")]
 pub mod v11;
-#[cfg(any(
-    feature = "v4_6",
-    feature = "v4_7",
-    feature = "v5",
-    feature = "v6",
-    feature = "v7"
-))]
+#[cfg(any(feature = "v4_6", feature = "v4_7"))]
 pub mod v4_6;
 #[cfg(feature = "v4_7")]
 pub mod v4_7;
-#[cfg(feature = "v5")]
+#[cfg(any(feature = "v5", feature = "v6", feature = "v7"))]
 pub mod v5;
 #[cfg(feature = "v6")]
 pub mod v6;

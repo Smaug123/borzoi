@@ -49,6 +49,7 @@ use crate::directives::line::{
     recognise_warn_directive_mid_line,
 };
 use crate::directives::line_store::{LineDirective, LineDirectiveStore, line_index};
+use crate::language_version::{LanguageFeature, LanguageVersion};
 use crate::lexer::interp::{Frame as InterpFrame, InterpDriver};
 use crate::lexer::{LexError, Token};
 use crate::syntax::SyntaxKind;
@@ -391,6 +392,9 @@ struct DriverCore<'a, 'b> {
     /// independent of language version; the parser turns each into an FS3350
     /// diagnostic when the pinned version predates 11.0. In source order.
     elif_directives: Vec<Range<usize>>,
+    /// Whether the lexer reads a `$$"""` opener as F# 8.0 does
+    /// ([`InterpDriver`]'s `extended_interpolation`).
+    extended_interpolation: bool,
 }
 
 type DriverItem<'a> = (Result<Token<'a>, PreprocError>, Range<usize>);
@@ -421,7 +425,7 @@ struct LexerState<'a> {
 /// symbol set (FCS `skip=true`). `#line` / `#nowarn` / `#warnon` directives
 /// are recognised and dropped without emitting a token.
 pub fn lex_with_symbols<'a, 'b>(source: &'a str, symbols: &'b HashSet<String>) -> Driver<'a, 'b> {
-    Driver(Queued::new(DriverCore::new(source, symbols, false)))
+    Driver(Queued::new(DriverCore::new(source, symbols, false, true)))
 }
 
 /// Construct a *full-trivia* driver iterator over `source` (FCS
@@ -435,20 +439,42 @@ pub fn lex_with_symbols_full_trivia<'a, 'b>(
     source: &'a str,
     symbols: &'b HashSet<String>,
 ) -> FullTriviaDriver<'a, 'b> {
-    FullTriviaDriver(Queued::new(DriverCore::new(source, symbols, true)))
+    lex_with_symbols_full_trivia_at(source, symbols, LanguageVersion::Preview)
 }
 
-/// Run the full-trivia state machine over `source` to the end, writing every
-/// item into `sink` as it is produced, and return the `#elif` spans
-/// ([`FullTriviaDriver::elif_directives`]) and the active-branch `#line`
-/// directives ([`FullTriviaDriver::line_directives`]). The items are exactly
-/// those [`lex_with_symbols_full_trivia`] yields, in the same order.
+/// [`lex_with_symbols_full_trivia`], lexing as FCS's lexer does at `lang`:
+/// below F# 8.0 a `$$"""` opener is read as a `$"""` one
+/// ([`LanguageFeature::ExtendedStringInterpolation`]).
+pub fn lex_with_symbols_full_trivia_at<'a, 'b>(
+    source: &'a str,
+    symbols: &'b HashSet<String>,
+    lang: LanguageVersion,
+) -> FullTriviaDriver<'a, 'b> {
+    FullTriviaDriver(Queued::new(DriverCore::new(
+        source,
+        symbols,
+        true,
+        lang.supports(LanguageFeature::ExtendedStringInterpolation),
+    )))
+}
+
+/// Run the full-trivia state machine over `source` to the end, lexing as at
+/// `lang`, writing every item into `sink` as it is produced, and return the
+/// `#elif` spans ([`FullTriviaDriver::elif_directives`]) and the active-branch
+/// `#line` directives ([`FullTriviaDriver::line_directives`]). The items are
+/// exactly those [`lex_with_symbols_full_trivia_at`] yields, in the same order.
 pub(crate) fn lex_full_trivia_into<'a>(
     source: &'a str,
     symbols: &HashSet<String>,
+    lang: LanguageVersion,
     sink: &mut impl Sink<'a>,
 ) -> (Vec<Range<usize>>, LineDirectiveStore) {
-    let mut core = DriverCore::new(source, symbols, true);
+    let mut core = DriverCore::new(
+        source,
+        symbols,
+        true,
+        lang.supports(LanguageFeature::ExtendedStringInterpolation),
+    );
     while core.step(sink) {}
     (core.elif_directives, core.line_directives)
 }
@@ -476,7 +502,23 @@ pub struct Preprocessed {
 /// makes reports the same (checked under the `token-reference` feature on
 /// every lex, and by `preprocessed_reference` over generated sources).
 pub fn preprocess(source: &str, symbols: &HashSet<String>) -> Preprocessed {
-    let mut driver = lex_with_symbols(source, symbols);
+    preprocess_at(source, symbols, LanguageVersion::Preview)
+}
+
+/// [`preprocess`], lexing as FCS's lexer does at `lang`
+/// ([`lex_with_symbols_full_trivia_at`]): the lexer errors in active code can
+/// differ below F# 8.0, where a `$$"""` opener is read as a `$"""` one.
+pub fn preprocess_at(
+    source: &str,
+    symbols: &HashSet<String>,
+    lang: LanguageVersion,
+) -> Preprocessed {
+    let mut driver = Driver(Queued::new(DriverCore::new(
+        source,
+        symbols,
+        false,
+        lang.supports(LanguageFeature::ExtendedStringInterpolation),
+    )));
     let errors = driver
         .by_ref()
         .filter_map(|(res, span)| res.err().map(|err| (err, span)))
@@ -597,7 +639,12 @@ impl<'a, 'b> DriverCore<'a, 'b> {
 }
 
 impl<'a, 'b> DriverCore<'a, 'b> {
-    fn new(source: &'a str, symbols: &'b HashSet<String>, trivia_mode: bool) -> Self {
+    fn new(
+        source: &'a str,
+        symbols: &'b HashSet<String>,
+        trivia_mode: bool,
+        extended_interpolation: bool,
+    ) -> Self {
         DriverCore {
             source,
             symbols,
@@ -613,6 +660,7 @@ impl<'a, 'b> DriverCore<'a, 'b> {
             trivia_mode,
             covered_end: 0,
             elif_directives: Vec::new(),
+            extended_interpolation,
         }
     }
 
@@ -847,7 +895,11 @@ impl<'a, 'b> DriverCore<'a, 'b> {
             // `}` closes the frame, we don't want a later recreation to
             // resurrect it.
             let frames = std::mem::take(&mut self.pending_interp_frames);
-            let iter = InterpDriver::new_with_frames(&self.source[self.pos..], frames);
+            let iter = InterpDriver::new_with_frames(
+                &self.source[self.pos..],
+                frames,
+                self.extended_interpolation,
+            );
             self.lexer = Some(LexerState {
                 base: self.pos,
                 next_pos: self.pos,

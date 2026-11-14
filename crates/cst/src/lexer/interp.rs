@@ -108,11 +108,19 @@ pub struct InterpDriver<'a> {
     /// Stack of active interp frames. Empty ⇒ not inside any fill ⇒
     /// transparent pass-through over `inner`.
     frames: Vec<Frame>,
+    /// Whether [`LanguageFeature::ExtendedStringInterpolation`] (F# 8.0) is
+    /// on. Below it FCS's lexer reads a `$$"""` opener as a `$"""` one
+    /// (`lex.fsl`): single braces delimit a fill and `{{` is a literal brace,
+    /// so the driver lexes it with the triple-quoted rules, as a
+    /// `TripleBegin` / `TripleBeginEnd` whose text keeps its `$`s.
+    ///
+    /// [`LanguageFeature::ExtendedStringInterpolation`]: crate::language_version::LanguageFeature::ExtendedStringInterpolation
+    extended_interpolation: bool,
 }
 
 impl<'a> InterpDriver<'a> {
     pub fn new(source: &'a str) -> Self {
-        Self::new_with_frames(source, Vec::new())
+        Self::new_with_frames(source, Vec::new(), true)
     }
 
     /// Construct an `InterpDriver` over `source` with a pre-populated frame
@@ -121,13 +129,51 @@ impl<'a> InterpDriver<'a> {
     /// before invalidation, hand them back here on the rebuild so the
     /// closing `}` of a straddling fill is still recognised as
     /// [`InterpKind::End`] rather than a stray `RBrace`.
-    pub(crate) fn new_with_frames(source: &'a str, frames: Vec<Frame>) -> Self {
+    pub(crate) fn new_with_frames(
+        source: &'a str,
+        frames: Vec<Frame>,
+        extended_interpolation: bool,
+    ) -> Self {
         Self {
             source,
             inner: Token::lexer(source).spanned(),
             base: 0,
             frames,
+            extended_interpolation,
         }
+    }
+
+    /// The `$` count of an extended interpolated-string opener (`$$"""`, two
+    /// `$` or more) starting at `start`, if one does.
+    fn extended_opener_dollars(&self, start: usize) -> Option<usize> {
+        let bytes = &self.source.as_bytes()[start..];
+        let n = bytes.iter().take_while(|&&b| b == b'$').count();
+        (n >= 2 && bytes[n..].starts_with(b"\"\"\"")).then_some(n)
+    }
+
+    /// Lex the body of a triple-quoted interpolated string from `start`, just
+    /// past its opener, up to its first fill (`TripleBegin`) or its closer
+    /// (`TripleBeginEnd`): [`super::callbacks::lex_interp_triple_opener`]'s
+    /// rules, for an opener the Logos arm did not lex as triple-quoted.
+    /// Returns the kind and the end of the token.
+    fn scan_triple_opener(&self, start: usize) -> (Result<InterpKind, LexError>, usize) {
+        let bytes = self.source.as_bytes();
+        let mut i = start;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' | b'}' if bytes.get(i + 1) == Some(&bytes[i]) => i += 2,
+                b'{' => return (Ok(InterpKind::TripleBegin), i + 1),
+                b'"' if bytes.get(i + 1) == Some(&b'"') && bytes.get(i + 2) == Some(&b'"') => {
+                    let is_byte = bytes.get(i + 3) == Some(&b'B');
+                    return (
+                        Ok(InterpKind::TripleBeginEnd { is_byte }),
+                        i + 3 + usize::from(is_byte),
+                    );
+                }
+                _ => i += 1,
+            }
+        }
+        (Err(LexError::UnterminatedString), bytes.len())
     }
 
     /// Clone the current frame stack. See [`Self::new_with_frames`].
@@ -269,6 +315,28 @@ impl<'a> Iterator for InterpDriver<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let (tok, rel_span) = self.inner.next()?;
         let abs: Range<usize> = (rel_span.start + self.base)..(rel_span.end + self.base);
+
+        // An extended opener below F# 8.0, whether or not the Logos arm found
+        // its end: lex it as triple-quoted.
+        if !self.extended_interpolation
+            && matches!(
+                tok,
+                Ok(Token::InterpString(
+                    InterpKind::ExtendedBegin { .. } | InterpKind::ExtendedBeginEnd { .. }
+                )) | Err(LexError::UnterminatedString)
+            )
+            && let Some(n) = self.extended_opener_dollars(abs.start)
+        {
+            let (kind, end) = self.scan_triple_opener(abs.start + n + 3);
+            self.restart_inner(end);
+            if kind == Ok(InterpKind::TripleBegin) {
+                self.frames.push(Frame {
+                    brace_depth: 0,
+                    style: InterpStyle::Triple,
+                });
+            }
+            return Some((kind.map(Token::InterpString), abs.start..end));
+        }
 
         match tok {
             Ok(Token::InterpString(InterpKind::Begin)) => {

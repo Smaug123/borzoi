@@ -29,14 +29,19 @@ pub(super) enum InterpFragmentStyle {
 /// `VerbatimBeginEnd` start with `$@"` or `@$"` (verbatim). The triple and
 /// verbatim openers are disjoint, so order between their tests doesn't
 /// matter; the single `$"` is the fallback.
-pub(super) fn detect_interp_style(text: &str) -> InterpFragmentStyle {
+///
+/// `extended_interpolation` is whether the parse's language version has
+/// `ExtendedStringInterpolation` (F# 8.0): below it a `$$"""` opener is lexed
+/// as a `$"""` one, so its chain is triple-quoted.
+pub(super) fn detect_interp_style(text: &str, extended_interpolation: bool) -> InterpFragmentStyle {
     let bytes = text.as_bytes();
     // Extended (`$$"""…`, ≥2 `$` + `"""`) is disjoint from the single `$"""`
     // test below (which needs exactly one `$`). `n` = leading `$` count.
     let dollars = bytes.iter().take_while(|&&c| c == b'$').count();
-    if dollars >= 2 && bytes[dollars..].starts_with(b"\"\"\"") {
+    let triple_quoted = dollars >= 1 && bytes[dollars..].starts_with(b"\"\"\"");
+    if dollars >= 2 && triple_quoted && extended_interpolation {
         InterpFragmentStyle::Extended { n: dollars }
-    } else if bytes.starts_with(b"$\"\"\"") {
+    } else if triple_quoted {
         InterpFragmentStyle::Triple
     } else if bytes.starts_with(b"$@\"") || bytes.starts_with(b"@$\"") {
         InterpFragmentStyle::Verbatim
@@ -132,7 +137,10 @@ fn interp_fragment_body(text: &str, style: InterpFragmentStyle) -> &str {
             (start, text.len() - 1)
         }
         InterpFragmentStyle::Triple => {
-            let start = if bytes.starts_with(b"$\"\"\"") { 4 } else { 1 };
+            // A leading fragment opens with `$"""` (or, lexed below F# 8.0,
+            // `$$"""`); a continuation fragment with `}`.
+            let dollars = bytes.iter().take_while(|&&c| c == b'$').count();
+            let start = if dollars > 0 { dollars + 3 } else { 1 };
             let end = if bytes.ends_with(b"\"\"\"") {
                 text.len() - 3
             } else {

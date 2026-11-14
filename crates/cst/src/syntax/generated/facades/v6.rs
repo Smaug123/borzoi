@@ -2,8 +2,8 @@
 //! Regenerate with `cargo run -p borzoi-astgen --example generate`; kept honest
 //! by borzoi-astgen's `tests/up_to_date.rs` staleness test.
 //!
-//! The **F# 6.0** typed facade. Its surface equals [`v4_6`](super::v4_6)'s,
+//! The **F# 6.0** typed facade. Its surface equals [`v5`](super::v5)'s,
 //! so it is that module's types (`crates/cst/facades/v6.lock` is
-//! `alias-of v4_6`).
+//! `alias-of v5`).
 
-pub use super::v4_6::*;
+pub use super::v5::*;

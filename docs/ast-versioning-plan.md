@@ -1,15 +1,15 @@
 # AST versioning plan
 
-> **Status (2026-11-13).** A living plan. The decisions below are settled; the
+> **Status (2026-11-14).** A living plan. The decisions below are settled; the
 > work is an eight-PR sequence ([PR sequence](#pr-sequence)), of which PR 1 (the
-> feature table, #15), PR 2 (diagnostic classes), PR 4 (the union behind
-> `unstable-union`, #13, #670), PR 5 (astgen owns every node) and PR 6 (a deep
-> facade per language version, `Parse::view`) have landed. Earlier stages that
-> still stand: `LanguageVersion` as a parse input (#592/#597/#606) and the
-> LSP's `<LangVersion>` wiring (#613). The goal: before the next F# compiler
-> upgrade (a new language version), every earlier language version has a
-> stable, exhaustive typed facade, and the upgrade itself is the proof that the
-> scheme extends.
+> feature table, #15), PR 2 (diagnostic classes), PR 3 (faithful gates, #21),
+> PR 4 (the union behind `unstable-union`, #13, #670), PR 5 (astgen owns every
+> node) and PR 6 (a deep facade per language version, `Parse::view`) have
+> landed. Earlier stages that still stand: `LanguageVersion` as a parse input
+> (#592/#597/#606) and the LSP's `<LangVersion>` wiring (#613). The goal:
+> before the next F# compiler upgrade (a new language version), every earlier
+> language version has a stable, exhaustive typed facade, and the upgrade
+> itself is the proof that the scheme extends.
 > Companion to [`parser-plan.md`](parser-plan.md), which owns the parser; this
 > doc owns the *public typed-AST surface* and how it stays stable as F# evolves.
 
@@ -109,11 +109,12 @@ The version has two parser roles:
   (FS3350 and friends). Gates are **per feature**, each against its own
   introduction version, so an unusual pin is gated correctly. Which features
   are gated, and how, is the [feature table](#the-feature-table).
-- **Parse divergence.** Some features change what the lex-filter produces:
-  `RelaxWhitespace2` (6.0: the `+1` offside grace and `CtxtMatch` pops) and
-  `StrictIndentation` (8.0: offside pushes abort rather than warn) reshape the
-  token stream and so the tree. A parse records reaching such a point in
-  `Parse::shape_depends_on_language_version`, and
+- **Parse divergence.** Some features change what the lexer or the lex-filter
+  produces: `RelaxWhitespace2` (6.0: the `+1` offside grace and `CtxtMatch`
+  pops), `StrictIndentation` (8.0: offside pushes abort rather than warn) and
+  `ExtendedStringInterpolation` (8.0: below it the lexer reads `$$"""` as
+  `$"""`) reshape the token stream and so the tree. A parse records reaching
+  such a point in `Parse::shape_depends_on_language_version`, and
   `LanguageVersion::SHAPE_REPRESENTATIVES` names one version per band. These
   are the table's `Shape` rows.
 
@@ -251,25 +252,25 @@ feature also compiles, and so exposes, the module it aliases. `preview` is
 never an alias and never aliased, and sits behind `unstable-preview` (D11), so
 no stable facade's `VERSIONS` names the preview version.
 
-The distinct surfaces today are {4.6, 4.7, 5, 6, 7} (`v4_6`), {8} (`v8`:
-`Expr::WhileBang`, `Type::Intersection`), {9, 10, 11} (`v9`: `Type::WithNull`)
-and `preview`, whose surface is `v9`'s. The table's three deferred `Kind` rows
-give no interval until PR 3 makes them live; then regeneration splits them
-into the expected {4.6, 4.7}, {5, 6, 7} (`Expr::InterpString`), {8}
-(`Expr::DotLambda` too), {9, 10, 11} and preview (`Expr::IndexFromEnd`). A
+The distinct surfaces are {4.6, 4.7} (`v4_6`), {5, 6, 7} (`v5`, adding
+`Expr::InterpString`), {8} (`v8`, adding `Expr::DotLambda`, `Expr::WhileBang`
+and `Type::Intersection`), {9, 10, 11} (`v9`, adding `Type::WithNull`) and
+`preview` (adding `Expr::IndexFromEnd`). A
 kind with no FCS `LanguageFeature` gets no interval, so it is in every facade
 (`Expr::Typar` is in all of them).
 
 ### D9. Gate and surface are different questions; diagnostics carry a class
 
 The table separates them: `introduced` alone drives the **surface**;
-`fcs_stage`, `fcs_effect` and `borzoi` drive the **gate**. FCS checks some
+`fcs_stage`, `fcs_effect` and `borzoi` drive the **gate**. FCS checks two
 features that have syntax kinds only in the type checker (`StringInterpolation`
-5.0, `FromEndSlicing` preview), and one, which we have so far left ungated, in
-the parser (`AccessorFunctionShorthand` 8.0, `_.M`). Each such kind still gets
-a borzoi **parse-phase legality diagnostic**, graded against FCS's parse *plus
-check* diagnostics, because without it `view::<V>()` would have an uncovered
-hole.
+5.0, FS3350; `FromEndSlicing` preview, FS3303 and only for a `^` index
+argument). Each still gets a borzoi **parse-phase legality diagnostic**,
+graded against FCS's check diagnostics (sema's
+`check_time_gates_report_what_fcs_checks_report`), because without it
+`view::<V>()` would have an uncovered hole. A `^e` that is not an index
+argument, which FCS's checker rejects at every version (FS3534), draws that
+error below preview as `FromEndSlicing`'s gate, so it lies under one too.
 
 Every diagnostic carries a class (`parser::DiagnosticClass`, on each
 `ParseDiagnostic`):
@@ -281,13 +282,15 @@ Every diagnostic carries a class (`parser::DiagnosticClass`, on each
 
 A gate's class is not chosen by hand: `DiagnosticClass::of_gate` reads it off
 the table's `fcs_effect`, `Legality` exactly when every effect is `Diagnose`
-(vacuously so for a `check` row, which is what PR 3's check-time gates will
-be). Only the two gate producers (`parser::feature_gates` and the `#elif`
-side channel) build a classed diagnostic; every other producer's problem
-reaches `Parse` as `Recovery` by construction. So today the dotless `float32`
-literal and the nullness annotation, whose trees FCS changes below their
-versions, report `Recovery`, and the other gated parse-time features report
-`Legality`.
+(vacuously so for a `check` row, as the two check-time gates are). Only the
+gate producers (`parser::feature_gates`, the lex-filter's `FilterRun::gates`,
+the `#elif` side channel, the `$$"""` lexer gate and
+`parser::warn_directives`) build a classed diagnostic; every other producer's
+problem reaches `Parse` as `Recovery` by construction. So the dotless
+`float32` literal, the nullness annotation, `_.` patterns, `for _ =` and
+`$$"""`, whose trees FCS changes below their versions, and the `#nowarn` /
+`#warnon` features, which move other diagnostics' severity, report
+`Recovery`; the other gated features report `Legality`.
 
 `Parse::errors` minus the `Legality` ones stays FCS-*parse*-faithful
 (`Parse::recovery_errors`). Every gate diagnostic also names its feature,
@@ -297,12 +300,12 @@ P2 is restated over that field: `view::<V>()` is total when there are no gate
 diagnostics, and otherwise every hole lies under one for its own kind's
 feature.
 
-Held by cst's `diagnostic_classes` tests: every live parse-time row of the
-table has a fixture, and at every version below the feature's a `Legality`
-row's fixture parses to the tree it parses to at the feature's version, with
-the same `Recovery` diagnostics and only `Legality` errors naming that
-feature, while a `Reshape` or `Severity` row's fixture moves across its
-version and never reports a `Legality` diagnostic.
+Held by cst's `diagnostic_classes` tests: every live row of the table has a
+fixture, and at every version below the feature's a `Legality` row's fixture
+parses to the tree it parses to at the feature's version, with the same
+`Recovery` diagnostics and only `Legality` errors naming that feature, while a
+`Reshape` or `Severity` row's fixture moves across its version and never
+reports a `Legality` diagnostic naming its feature.
 
 ### D10. Version invariance compares Recovery only
 
@@ -312,13 +315,14 @@ and `SyntaxRecovery` reads only `Recovery` errors.
 ends of the ladder and the tree: an unflagged
 `shape_depends_on_language_version` proves the tree the same everywhere, and a
 flagged one is compared at both ends and at every shape band between them. So a
-faithful legality gate (`#elif` today; `_.M` and interpolated strings in PR 3)
-does not make every file using the construct version-dependent — the trade-off
-that kept those gates unmodelled. A `Reshape` gate (nullness below 9.0; `_.`
-patterns and `for _ =`, where FCS raises a parse error and recovers) is
-`Recovery` and stays version-dependent, and so does a tree the lex-filter
-reshapes with no diagnostic moving (a closer dedented to its `let`'s column,
-across F# 6).
+faithful legality gate (`#elif`, `_.M`, interpolated strings, `>|}`) does not
+make every file using the construct version-dependent. A `Reshape` gate
+(nullness below 9.0; `_.` patterns and `for _ =`, where FCS raises a parse
+error and recovers; `$$"""`, which FCS's lexer reads differently) is
+`Recovery` and stays version-dependent: every file holding a `member _.M` is
+one, so a guessed version retains no diagnostics for it. So does a tree the
+lex-filter reshapes with no diagnostic moving (a closer dedented to its
+`let`'s column, across F# 6).
 
 Two checks hold this:
 
@@ -328,6 +332,10 @@ Two checks hold this:
   the feature's own. FCS's parse reports only FS3350 at the old pin, and every
   expression and binder type it reports is the same at both versions, and
   every type inference commits over our tree at the old pin is FCS's there.
+  For a check-time feature FCS's parse reports nothing and its check only the
+  feature's error. FCS's check of `StringInterpolation` abandons the string
+  (`checkLanguageFeatureError` raises), typing it and what binds it as `obj`,
+  so there our inference is held to FCS at 5.0 instead (`CHECK_ABANDONS`).
   The oracle's FCS (the `FSharp.Compiler.Service` package `tools/fcs-dump`
   references) predates the `#elif` check, so for `PreprocessorElif` it shows
   the types only (`ORACLE_PREDATES`). The oracle needs
@@ -337,11 +345,11 @@ Two checks hold this:
   file parsed at every version, each version graded against preview as a
   moved tree, a moved `Recovery` diagnostic, a moved `Legality` diagnostic
   only, or no change, and every file that moves pinned in
-  `tests/manifests/version_dependence_census.txt`. On the pinned corpus 345
-  files are version-dependent and 59 move only in `Legality` diagnostics, so
-  a guessed version keeps their reading. The census also asserts that two
-  versions agreeing on every `Recovery`-class feature parse every file
-  identically, and that `diagnostics_are_version_invariant` agrees with the
+  `tests/manifests/version_dependence_census.txt`. On the pinned corpus
+  691 files are version-dependent and 274 move only in `Legality`
+  diagnostics, so a guessed version keeps their reading. The census also
+  asserts that two versions agreeing on every `Recovery`-class feature parse
+  every file identically, and that `diagnostics_are_version_invariant` agrees with the
   verdict read off all ten versions.
 
 ### D11. Feature flags and the remaining issue decisions
@@ -405,13 +413,27 @@ Each failure prints the cell to write. A compiler bump therefore lands as a
 list of table edits: new rows (a ready-to-paste line for each), moved versions,
 and new or moved parse-time sites to classify.
 
-**Deferred rows.** `INTERP_STRING_EXPR` (`StringInterpolation`, 5.0),
-`DOT_LAMBDA_EXPR` (`AccessorFunctionShorthand`, 8.0) and `INDEX_FROM_END_EXPR`
-(`FromEndSlicing`, preview) are recorded as `Kind` rows with
-`engaged = deferred(PR 3 …)`. They drive neither a gate nor a facade
-interval, so every facade holds their kinds and no gate fires on them. They
-go live in PR 3, with D9's legality diagnostics, and the facades follow by
-regeneration.
+**Deferred rows.** A row recorded `engaged = deferred(reason)` drives neither
+a gate nor a facade interval (`DEFERRED_KIND_FEATURES` lists its kinds). Every
+row is live or `Unmodelled` today: `INTERP_STRING_EXPR` (`StringInterpolation`,
+5.0), `DOT_LAMBDA_EXPR` (`AccessorFunctionShorthand`, 8.0) and
+`INDEX_FROM_END_EXPR` (`FromEndSlicing`, preview) went live in PR 3, so each
+facade leaves out the kinds introduced after its version (PR 6).
+
+**What each parse-relevant feature does** (PR 3; the `Unmodelled` rows are all
+`checker-only`):
+
+| Feature | Version | FCS | borzoi | Class |
+|---|---|---|---|---|
+| `SingleUnderscorePattern` | 4.7 | FS0010 at the `.` of `_.M` in a pattern, parse error and recovery | the error, over the 4.7 tree | `Recovery` |
+| `WildCardInForLoop` | 4.7 | FS0525 at the `_` of `for _ =`, parse error and recovery | the error, over the 4.7 tree | `Recovery` |
+| `StringInterpolation` | 5.0 | FS3350 at each interpolated string, in the checker | the same, while parsing | `Legality` |
+| `ExtendedStringInterpolation` | 8.0 | lexes `$$"""` as `$"""`, FS1251 at the lexeme | the same | `Recovery` |
+| `AccessorFunctionShorthand` | 8.0 | FS3350 at the `_.` of `_.M` | the same | `Legality` |
+| `ParsedHashDirectiveArgumentNonQuotes` | 9.0 | FS3350 at an unquoted `#nowarn` argument, FS0203 at an `FS`-prefixed one, severity of FS0203 | the same | `Recovery` |
+| `BetterAnonymousRecordParsing` | 10.0 | FS3350 as the lex-filter splits `>|}` / `@>|}`, at its lexbuf lexeme | the same (a model of the lexbuf lexeme) | `Legality` |
+| `ScopedNowarn` | 10.0 | FS3350 at a top-level `#warnon`, FS0236 in a nested module, severity of FS0203 | the same | `Recovery` |
+| `FromEndSlicing` | preview | FS3303 at a `^` index argument, in the checker (elsewhere FS3534 at every version) | the same, while parsing, and FS3534 elsewhere | `Legality` |
 
 ## The central invariant (and how it is enforced)
 
@@ -486,6 +508,13 @@ diagnostic for its feature" rather than "under a `Legality` one".
   `diagnostics_are_version_invariant` over `Recovery` diagnostics and the tree;
   the `diagnostic_classes` fixtures, the `infer_legality_pin_diff` inference
   differential, and the `version_dependence_census` corpus manifest.
+- **PR 3 — faithful gates** (#21): every parse-relevant feature gated (the
+  table above), the three deferred `Kind` rows live, the lex-filter's lexbuf
+  model, the version-aware lexer (`tokens::lex_full_trivia_at`), the
+  `#nowarn` / `#warnon` diagnostics (`parser::warn_directives`), and their
+  differentials: `parser_diff_feature_gates` (including the `Reshape` gates'
+  recovered trees), `diagnostic_classes` over every live row, and sema's
+  check-time span differential.
 - **PR 4 — the union behind `unstable-union`** (#13, #670): the hand-written
   union in a private `syntax::union`, re-exported only under the feature, with a
   featureless clippy and doc step in CI.
@@ -508,7 +537,7 @@ diagnostic for its feature" rather than "under a `Legality` one".
 3. **Faithful gates** (#21's remainder): `_.M`, interpolated strings, `^`
    from-end indexing, `_.` patterns, `for _ =`, `$$"""`, `>|}`
    (`BetterAnonymousRecordParsing`) — each gated, or `Unmodelled` with its
-   reason. The three deferred `Kind` rows go live.
+   reason. The three deferred `Kind` rows go live. *Landed.*
 4. **Union behind `unstable-union`** (#13). Independent of 1–3. *Landed*
    (#670).
 5. **astgen owns every node** and reads accessor signatures (D4); it emits the
@@ -523,11 +552,15 @@ diagnostic for its feature" rather than "under a `Legality` one".
 
 ## Still to do
 
-Everything in PRs 3, 7 and 8 above. Beyond them:
+Everything in PRs 7 and 8 above. Beyond them:
 
-- **Stale issues.** #21's text predates the relax-whitespace and `#nowarn`
-  work; its remaining scope is PR 3's list. #14 (facades below 8.0) and #12
-  (`Parse::view`) are done by PR 6, and #17 (preview) is decided (D11).
+- **Stale issues.** #14 (facades below 8.0) and #12 (`Parse::view`) are done
+  by PR 6, and #17 (preview) is decided (D11).
+- **The upstream `_.` check is gone.** dotnet/fsharp#20222 removes
+  `SingleUnderscorePattern`'s parse error; once the table transcribes a
+  compiler with it, the row's `fcs_sites` empties, `language_features` says to
+  make it a `check` row, and every `member _.M` file stops being
+  version-dependent.
 - **`display_name` is FSComp.txt's text as FCS returns it**: the quoted text
   after `String.Format` with no arguments, which is what FCS's resource
   generator applies (so `builder {{ }}` reads `builder { }`). For the gated
@@ -538,7 +571,9 @@ Everything in PRs 3, 7 and 8 above. Beyond them:
   `FSharp.Compiler.Service` 43.12.204, which reports nothing for `#elif`
   below 11.0; the table transcribes the `fsharp-src` compiler, which reports
   FS3350. No differential holds the `#elif` gate to FCS until the package
-  moves.
+  moves. It also starts an indented `#nowarn`'s directive range at the start
+  of the line, where the table's compiler starts it at the `#`, which we
+  follow (`an_indented_directive_range_starts_at_its_hash`).
 - **The project oracles below F# 8.0.** `uses-project-batch` and
   `xmldoc-batch` pass `--langversion` without `SKIP_VERSION_SUPPORTED_CHECK`,
   so a project pinned below 8.0 is checked at FCS's default (FS3880); only

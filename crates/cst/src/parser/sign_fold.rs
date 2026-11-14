@@ -127,18 +127,24 @@ fn folds_at(raw_tokens: &RawTokens<'_>, filtered: &FilteredTokens<'_>, i: usize)
 /// ([`super::Parser::bump_into`]) reclaims both underlying raw tokens and the
 /// tree stays lossless. Non-foldable `+`/`-` (spaced, glued-left, or a
 /// non-literal/unsigned operand) are left untouched for the parser's existing
-/// prefix/infix/`ADJACENT_PREFIX_OP` handling.
-pub(super) fn fold_adjacent_signs(raw_tokens: &RawTokens<'_>, filtered: &mut FilteredTokens<'_>) {
+/// prefix/infix/`ADJACENT_PREFIX_OP` handling. Returns the merged tokens' spans, in
+/// source order.
+pub(super) fn fold_adjacent_signs(
+    raw_tokens: &RawTokens<'_>,
+    filtered: &mut FilteredTokens<'_>,
+) -> Vec<Range<usize>> {
     // In-place left-compaction: a fold merges two tokens into one, so the
     // output is never longer than the input. A `write` cursor trails a `read`
     // cursor, so `[write, read)` only ever holds already-consumed entries and
     // overwriting them loses nothing.
     let mut read = 0;
     let mut write = 0;
+    let mut merged_spans = Vec::new();
     while read < filtered.len() {
         if folds_at(raw_tokens, filtered, read) {
             let merged = filtered.span(read).start..filtered.span(read + 1).end;
-            filtered.set(write, filtered.kind(read + 1), merged);
+            filtered.set(write, filtered.kind(read + 1), merged.clone());
+            merged_spans.push(merged);
             read += 2;
         } else {
             if write != read {
@@ -149,6 +155,7 @@ pub(super) fn fold_adjacent_signs(raw_tokens: &RawTokens<'_>, filtered: &mut Fil
         write += 1;
     }
     filtered.truncate(write);
+    merged_spans
 }
 
 #[cfg(test)]

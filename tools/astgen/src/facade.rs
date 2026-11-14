@@ -1163,12 +1163,18 @@ mod tests {
         let v8 = derived_lock(&union, &rows, 8.0);
         assert!(!v8.names().nodes.contains("WithNullType"));
         assert!(v8.names().nodes.contains("IntersectionType"));
+        assert!(v8.names().nodes.contains("DotLambdaExpr"));
         let v7 = derived_lock(&union, &rows, 7.0);
         assert!(!v7.names().nodes.contains("WhileBangExpr"));
-        assert_eq!(derived_lock(&union, &rows, 9999.0).lines.len(), {
-            let v9 = derived_lock(&union, &rows, 9.0);
-            v9.lines.len()
-        });
+        assert!(!v7.names().nodes.contains("DotLambdaExpr"));
+        assert!(v7.names().nodes.contains("InterpStringExpr"));
+        let v4_7 = derived_lock(&union, &rows, 4.7);
+        assert!(!v4_7.names().nodes.contains("InterpStringExpr"));
+        let v9 = derived_lock(&union, &rows, 9.0);
+        assert!(!v9.names().nodes.contains("IndexFromEndExpr"));
+        let preview = derived_lock(&union, &rows, 9999.0);
+        assert!(preview.names().nodes.contains("IndexFromEndExpr"));
+        assert!(v9.lines.is_subset(&preview.lines));
     }
 
     /// The facade generator refuses, naming it, a facade type or accessor the

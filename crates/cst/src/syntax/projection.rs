@@ -14,8 +14,9 @@
 //! the same table rows, so gate and facade agree by construction.
 //!
 //! The kinds with an interval are the live `Kind` rows of the table:
-//! `WHILE_BANG_EXPR` and `INTERSECTION_TYPE` (F# 8.0) and [`WITH_NULL_TYPE`]
-//! (F# 9.0, FCS `LanguageFeature.NullnessChecking`); see
+//! `INTERP_STRING_EXPR` (F# 5.0), `DOT_LAMBDA_EXPR`, `WHILE_BANG_EXPR` and
+//! `INTERSECTION_TYPE` (F# 8.0), [`WITH_NULL_TYPE`] (F# 9.0, FCS
+//! `LanguageFeature.NullnessChecking`) and `INDEX_FROM_END_EXPR` (preview); see
 //! [`docs/completed/ast-versioning-nullness-proof.md`] for the mechanism proof
 //! this productionises.
 //!
@@ -49,13 +50,13 @@ pub fn type_kind_in_surface(kind: SyntaxKind, lang: LanguageVersion) -> bool {
 /// and/or drops to [`SyntaxNode`] for that node (the D7 "incomplete, never
 /// wrong" floor).
 ///
-/// It gates against [`kind_in_surface`], which knows only the feature table's
-/// live `Kind` rows. The deferred ones ([`DEFERRED_KIND_FEATURES`]: interpolated
-/// strings at 5.0, `_.M` at 8.0, from-end indexing at preview) are in surface at
-/// every version until they go live, so below their version this
-/// **under-reports** them (`docs/ast-versioning-plan.md`, "The feature table").
-/// Below 8.0 it also finds `WHILE_BANG_EXPR`, which is not a `Type`, so there it
-/// can find a node [`first_out_of_surface_type`] does not.
+/// It gates against [`kind_in_surface`], which knows the feature table's live
+/// `Kind` rows; a deferred one ([`DEFERRED_KIND_FEATURES`]) is in surface at
+/// every version until it goes live (`docs/ast-versioning-plan.md`, "The
+/// feature table"). Below 8.0 it also finds `WHILE_BANG_EXPR`, which is not a
+/// `Type`, so there it can find a node [`first_out_of_surface_type`] does not.
+///
+/// Every node it finds lies under the parse's gate diagnostic for its feature.
 pub fn first_out_of_surface(root: &SyntaxNode, lang: LanguageVersion) -> Option<SyntaxNode> {
     root.descendants()
         .find(|n| !kind_in_surface(n.kind(), lang))

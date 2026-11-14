@@ -18,7 +18,9 @@
 //! - FCS's parse reports only FS3350 at the old pin (for a feature in
 //!   [`ORACLE_PREDATES`], nothing), its check nothing more, and neither
 //!   anything at the feature's version, and every expression and binder type
-//!   it reports is the same at both;
+//!   it reports is the same at both. For a feature FCS checks only in its type
+//!   checker (interpolated strings, `^` index arguments), its parse reports
+//!   nothing and its check only the feature's error;
 //! - every type inference commits at the old pin is FCS's there.
 //!
 //! The fixtures put the gated construct inside an annotated declaration, so a
@@ -27,8 +29,11 @@
 //! class at all.
 //!
 //! Which features need a fixture is read off the generated feature table:
-//! every one FCS consults while parsing whose gate is `Legality`, less those
-//! the parser does not gate yet ([`NOT_GATED`]).
+//! every one whose gate is `Legality` and that FCS consults while parsing or
+//! the parser gates, less those the parser does not gate yet ([`NOT_GATED`]).
+//!
+//! [`check_time_gates_report_what_fcs_checks_report`] holds the gates of the
+//! check-time features to FCS's check, span and message, at every version.
 
 use std::sync::Arc;
 
@@ -45,6 +50,10 @@ use crate::common::{
 /// holds the gated construct.
 const FIXTURES: &[(LanguageFeature, &str)] = &[
     (
+        LanguageFeature::StringInterpolation,
+        "module M\nlet v : int =\n    let s = $\"a{1}b\"\n    1\n",
+    ),
+    (
         LanguageFeature::AttributesToRightOfModuleKeyword,
         "module M\nmodule [<AutoOpen>] N =\n    let v : int = 1\n",
     ),
@@ -57,6 +66,10 @@ const FIXTURES: &[(LanguageFeature, &str)] = &[
         "module M\nlet v : int =\n    let h (x: #System.IDisposable & #System.IComparable) = x.Dispose()\n    1\n",
     ),
     (
+        LanguageFeature::AccessorFunctionShorthand,
+        "module M\nlet v : int =\n    let f = [ \"a\" ] |> List.map _.Length\n    1\n",
+    ),
+    (
         LanguageFeature::WhileBang,
         "module M\nlet v : int =\n    let a = async { while! async { return false } do () }\n    1\n",
     ),
@@ -65,31 +78,22 @@ const FIXTURES: &[(LanguageFeature, &str)] = &[
         "module M\nlet v : int =\n    let a =\n        async {\n            let! x: int = async { return 1 }\n            return x\n        }\n    1\n",
     ),
     (
+        LanguageFeature::BetterAnonymousRecordParsing,
+        "module M\nlet v : int =\n    let r = {| A = id<int>|}\n    1\n",
+    ),
+    (
         LanguageFeature::PreprocessorElif,
         "module M\nlet v : int =\n#if FOO\n    1\n#elif BAR\n    2\n#else\n    3\n#endif\n",
+    ),
+    (
+        LanguageFeature::FromEndSlicing,
+        "module M\nlet v : int =\n    let xs = [| 1; 2 |]\n    xs.[^1]\n",
     ),
 ];
 
 /// `Legality` features FCS consults while parsing that the parser does not
-/// gate, so no legality error exists to grade.
-const NOT_GATED: &[(LanguageFeature, &str)] = &[
-    (
-        LanguageFeature::AccessorFunctionShorthand,
-        "`_.M` is accepted at every version until its gate goes live",
-    ),
-    (
-        LanguageFeature::BetterAnonymousRecordParsing,
-        "`>|}` and `@>|}` split at every version",
-    ),
-    (
-        LanguageFeature::ScopedNowarn,
-        "`#nowarn` and `#warnon` are not consumed",
-    ),
-    (
-        LanguageFeature::ParsedHashDirectiveArgumentNonQuotes,
-        "its FS3350 is not reported",
-    ),
-];
+/// gate, so no legality error exists to grade. The parser gates every one.
+const NOT_GATED: &[(LanguageFeature, &str)] = &[];
 
 /// Fixtures whose feature error the oracle's FCS (the `FSharp.Compiler.Service`
 /// package `tools/fcs-dump` references) does not report, though the compiler
@@ -99,6 +103,17 @@ const NOT_GATED: &[(LanguageFeature, &str)] = &[
 const ORACLE_PREDATES: &[(LanguageFeature, &str)] = &[(
     LanguageFeature::PreprocessorElif,
     "the oracle's FCS reports nothing for `#elif` at 10.0",
+)];
+
+/// Features FCS checks only in its type checker whose check, below the
+/// feature's version, abandons the construct (`checkLanguageFeatureError`
+/// raises, where `CheckLanguageFeatureAndRecover` reports and goes on): FCS
+/// then types the construct, and what binds it, as an error (`obj`). Our
+/// inference types it as the feature's version does, so it is held to FCS
+/// there, and FCS's types are not compared across the two versions.
+const CHECK_ABANDONS: &[(LanguageFeature, &str)] = &[(
+    LanguageFeature::StringInterpolation,
+    "CheckExpressions.fs checks it with checkLanguageFeatureError",
 )];
 
 /// The numbered version just below `feature`'s.
@@ -129,6 +144,29 @@ fn key(range: TextRange) -> (usize, usize) {
 
 /// FS3350, FCS's error for a feature newer than the language version.
 const FEATURE_ERROR: u32 = 3350;
+
+/// FS3303, the error FCS's checker reports for a `^` index argument below
+/// [`LanguageFeature::FromEndSlicing`] in place of FS3350.
+const FROM_END_SLICING_ERROR: u32 = 3303;
+
+/// FS3534, the error FCS's checker reports at every version for a `^e` that is
+/// not an index argument, which the parser reports below preview as
+/// [`LanguageFeature::FromEndSlicing`]'s gate.
+const STATIC_CONSTRAINT_INVOCATION_ERROR: u32 = 3534;
+
+/// The error FCS reports for `feature` below its version.
+fn feature_error(feature: LanguageFeature) -> u32 {
+    if feature == LanguageFeature::FromEndSlicing {
+        FROM_END_SLICING_ERROR
+    } else {
+        FEATURE_ERROR
+    }
+}
+
+/// Whether FCS checks `feature` only in its type checker.
+fn checked_only(feature: LanguageFeature) -> bool {
+    feature.fcs_stages() == [FcsStage::Check]
+}
 
 /// FCS's expression and binder types for `source` checked at `lang`, with
 /// its check errors, and the codes of its parse errors.
@@ -190,7 +228,7 @@ fn every_parse_time_legality_feature_has_a_fixture() {
     let needed: Vec<LanguageFeature> = LanguageFeature::ALL
         .into_iter()
         .filter(|&f| {
-            f.fcs_stages() != [FcsStage::Check]
+            (!checked_only(f) || LanguageFeature::POSITIONAL_GATES.contains(&f))
                 && DiagnosticClass::of_gate(f) == DiagnosticClass::Legality { feature: f }
         })
         .collect();
@@ -210,11 +248,16 @@ fn every_parse_time_legality_feature_has_a_fixture() {
             failures.push(format!("{f:?} is in ORACLE_PREDATES but has no fixture"));
         }
     }
+    for (f, _) in CHECK_ABANDONS {
+        if !checked_only(*f) || !FIXTURES.iter().any(|(g, _)| g == f) {
+            failures.push(format!(
+                "{f:?} is in CHECK_ABANDONS, which is for a check-time feature with a fixture"
+            ));
+        }
+    }
     for (f, _) in FIXTURES.iter().chain(NOT_GATED) {
         if !needed.contains(f) {
-            failures.push(format!(
-                "{f:?} is not a parse-time Legality feature; remove it"
-            ));
+            failures.push(format!("{f:?} is not a gated Legality feature; remove it"));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -246,7 +289,18 @@ fn fcs_types_a_legality_gated_file_as_it_does_at_the_features_version() {
 
         let (fcs_old, parsed_old) = fcs(source, old);
         let (fcs_new, parsed_new) = fcs(source, new);
-        if ORACLE_PREDATES.iter().any(|(f, _)| *f == feature) {
+        let code = feature_error(feature);
+        if checked_only(feature) {
+            if !parsed_old.is_empty() {
+                fail(format!(
+                    "FCS checks the feature only in its type checker, but its parse at {old} \
+                     reports {parsed_old:?}"
+                ));
+            }
+            if fcs_old.errors.is_empty() {
+                fail(format!("FCS's check at {old} reports nothing"));
+            }
+        } else if ORACLE_PREDATES.iter().any(|(f, _)| *f == feature) {
             if !parsed_old.is_empty() {
                 fail(format!(
                     "FCS's parse at {old} now reports {parsed_old:?}; take the feature out of \
@@ -258,9 +312,9 @@ fn fcs_types_a_legality_gated_file_as_it_does_at_the_features_version() {
                 "FCS's parse at {old} must report only FS3350: {parsed_old:?}"
             ));
         }
-        if fcs_old.errors.iter().any(|e| e.code != FEATURE_ERROR) {
+        if fcs_old.errors.iter().any(|e| e.code != code) {
             fail(format!(
-                "FCS's check at {old} must report nothing but FS3350: {:?}",
+                "FCS's check at {old} must report nothing but FS{code}: {:?}",
                 fcs_old.errors
             ));
         }
@@ -270,7 +324,8 @@ fn fcs_types_a_legality_gated_file_as_it_does_at_the_features_version() {
                 fcs_new.errors
             ));
         }
-        if fcs_old.types != fcs_new.types || fcs_old.binders != fcs_new.binders {
+        let abandons = CHECK_ABANDONS.iter().any(|(f, _)| *f == feature);
+        if !abandons && (fcs_old.types != fcs_new.types || fcs_old.binders != fcs_new.binders) {
             fail(format!(
                 "FCS types the file differently at {old} and {new}:\n  types {:?}\n  vs    {:?}\n  \
                  binders {:?}\n  vs      {:?}",
@@ -278,19 +333,27 @@ fn fcs_types_a_legality_gated_file_as_it_does_at_the_features_version() {
             ));
         }
 
+        // Where FCS's check abandons the construct below its version, our
+        // inference, which types it as the feature's version does, is held to
+        // FCS there.
+        let (reference, at) = if abandons {
+            (&fcs_new, new)
+        } else {
+            (&fcs_old, old)
+        };
         let (types, binders, v) = ours(&at_old, &SyntaxRecovery::of(&at_old));
         for (map, theirs, what) in [
-            (&types, &fcs_old.types, "expression"),
-            (&binders, &fcs_old.binders, "binder"),
+            (&types, &reference.types, "expression"),
+            (&binders, &reference.binders, "binder"),
         ] {
             for (range, ty) in map {
-                if fcs_old.is_ungraded(*range) {
+                if reference.is_ungraded(*range) {
                     continue;
                 }
                 committed += 1;
                 if theirs.get(range) != Some(ty) {
                     fail(format!(
-                        "we commit the {what} type `{ty}` at {range:?} (`{}`), FCS at {old} says \
+                        "we commit the {what} type `{ty}` at {range:?} (`{}`), FCS at {at} says \
                          {:?}",
                         &source[range.0..range.1],
                         theirs.get(range)
@@ -324,5 +387,113 @@ fn fcs_types_a_legality_gated_file_as_it_does_at_the_features_version() {
         old_reading_declines > 0,
         "no fixture's `v` declines when the legality error is read as a recovery, so the \
          fixtures do not exercise the class"
+    );
+}
+
+/// The gates of the features FCS checks only in its type checker report what
+/// that checker reports: for each fixture at each version, the gate
+/// diagnostics of our parse are the feature errors of FCS's check, span and
+/// message (FCS's checker reports some more than once), FS3534 for a `^e` that
+/// is not an index argument included below preview.
+#[test]
+fn check_time_gates_report_what_fcs_checks_report() {
+    use std::collections::BTreeSet;
+
+    // Each fixture with the version it is graded from. FCS's checker reports
+    // nothing at a `^e` inside an application it rejects (FS3217 for a value
+    // applied to `[^1]` that is not a function, as `xs[^1]` is below 6.0), where
+    // the gate reports FS3534 so that the node lies under a diagnostic naming
+    // its feature (`docs/fcs-divergences.md`); such a fixture is graded where
+    // FCS reaches it.
+    const CHECKED: &[(&str, LanguageVersion)] = &[
+        (
+            "module M\nlet a = $\"x{1}y\"\nlet b = $\"\"\"z\"\"\"\nlet c = $@\"w{2}\"\nlet d = <@ $\"q{3}\" @>\nlet e = $\"{1}\".Length\n",
+            LanguageVersion::V4_6,
+        ),
+        (
+            "module M\nlet xs = [| 1; 2; 3 |]\nlet arr = Array2D.zeroCreate<int> 2 2\nlet a = xs.[^1]\nlet d = xs.[^2..^1]\nlet e = arr.[^1, 0]\nxs.[^1] <- 2\nlet f = xs.[(^1)]\nlet h = id [^1]\n",
+            LanguageVersion::V4_6,
+        ),
+        (
+            "module M\nlet xs = [| 1; 2; 3 |]\nlet b = xs[^1]\nlet c = xs[..^1]\nlet d = xs[0..^1]\n",
+            LanguageVersion::V6_0,
+        ),
+    ];
+    const VERSIONS: [LanguageVersion; 7] = [
+        LanguageVersion::V4_6,
+        LanguageVersion::V4_7,
+        LanguageVersion::V5_0,
+        LanguageVersion::V6_0,
+        LanguageVersion::V10_0,
+        LanguageVersion::V11_0,
+        LanguageVersion::Preview,
+    ];
+    let checked_features: Vec<LanguageFeature> = LanguageFeature::POSITIONAL_GATES
+        .into_iter()
+        .filter(|&f| checked_only(f))
+        .collect();
+    let mut failures = Vec::new();
+    let mut gated = 0usize;
+    for &(source, from) in CHECKED {
+        assert!(source.is_ascii(), "columns are read as bytes");
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        let offset = |line: u64, col: u64| line_starts[line as usize - 1] + col as usize;
+        let path = temp_fs_file("check_time_gates", source);
+        for lang in VERSIONS.into_iter().filter(|&v| v >= from) {
+            let ours: BTreeSet<(usize, usize, String)> = parse_at(source, lang)
+                .errors
+                .into_iter()
+                .filter(|e| {
+                    matches!(e.class, DiagnosticClass::Legality { feature }
+                        if checked_features.contains(&feature))
+                })
+                .map(|e| (e.span.start, e.span.end, e.message))
+                .collect();
+            let json =
+                invoke_fcs_dump_at_langversion("check-diagnostics", &path, &lang.to_string());
+            let json: serde_json::Value = serde_json::from_str(&json).expect("check-diagnostics");
+            let theirs: BTreeSet<(usize, usize, String)> = json["Diagnostics"]
+                .as_array()
+                .expect("a Diagnostics array")
+                .iter()
+                .filter(|d| {
+                    let code = d["Code"].as_u64().expect("a code") as u32;
+                    code == FROM_END_SLICING_ERROR
+                        || (code == STATIC_CONSTRAINT_INVOCATION_ERROR
+                            && !lang.supports(LanguageFeature::FromEndSlicing))
+                        || (code == FEATURE_ERROR
+                            && checked_features.iter().any(|f| {
+                                d["Message"].as_str() == Some(&f.not_available_message(lang))
+                            }))
+                })
+                .map(|d| {
+                    let at = |line: &str, col: &str| {
+                        offset(
+                            d[line].as_u64().expect("a line"),
+                            d[col].as_u64().expect("a column"),
+                        )
+                    };
+                    (
+                        at("StartLine", "StartCol"),
+                        at("EndLine", "EndCol"),
+                        d["Message"].as_str().expect("a message").to_string(),
+                    )
+                })
+                .collect();
+            gated += theirs.len();
+            if ours != theirs {
+                failures.push(format!(
+                    "at {lang}, {source:?}:\n  ours: {ours:?}\n  fcs:  {theirs:?}"
+                ));
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(
+        gated > 0,
+        "FCS's check reported no feature error, so nothing was graded"
     );
 }
