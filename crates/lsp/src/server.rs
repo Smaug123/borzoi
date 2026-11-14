@@ -1205,10 +1205,7 @@ impl Dispatcher {
                                 // answers, however many share it.
                                 let mut next = response;
                                 for id in member_ids {
-                                    let following = Response {
-                                        id,
-                                        ..next.clone()
-                                    };
+                                    let following = Response { id, ..next.clone() };
                                     enqueue_response(connection, &method, next)?;
                                     next = following;
                                 }
