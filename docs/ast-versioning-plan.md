@@ -338,9 +338,10 @@ Two checks hold this:
   so there our inference is held to FCS at 5.0 instead (`CHECK_ABANDONS`).
   The oracle's FCS (the `FSharp.Compiler.Service` package `tools/fcs-dump`
   references) predates the `#elif` check, so for `PreprocessorElif` it shows
-  the types only (`ORACLE_PREDATES`). The oracle needs
-  `SKIP_VERSION_SUPPORTED_CHECK` to check below 8.0 at all: without it FCS
-  refuses the version (FS3880) and checks at its default.
+  the types only (`ORACLE_PREDATES`). FCS refuses a version below 8.0
+  (FS3880) unless `SKIP_VERSION_SUPPORTED_CHECK` is set, so every
+  `tools/fcs-dump` oracle that pins a version sets it (the LSP crate's
+  `fcs_dump_langversion_pin` holds each one to checking at 7.0).
 - **The corpus census** (cst's `version_dependence_census`): every corpus
   file parsed at every version, each version graded against preview as a
   moved tree, a moved `Recovery` diagnostic, a moved `Legality` diagnostic
@@ -574,10 +575,6 @@ Everything in PRs 7 and 8 above. Beyond them:
   moves. It also starts an indented `#nowarn`'s directive range at the start
   of the line, where the table's compiler starts it at the `#`, which we
   follow (`an_indented_directive_range_starts_at_its_hash`).
-- **The project oracles below F# 8.0.** `uses-project-batch` and
-  `xmldoc-batch` pass `--langversion` without `SKIP_VERSION_SUPPORTED_CHECK`,
-  so a project pinned below 8.0 is checked at FCS's default (FS3880); only
-  the single-file `file-batch` sets it.
 
 ## Open questions
 

@@ -246,6 +246,31 @@ let private langVersionEnv () : string option =
     | Some s when s.Trim() = "" -> None
     | Some s -> Some(s.Trim())
 
+/// The `--langversion` switch a check pinned to `requested` takes, empty when
+/// nothing is pinned. Every oracle that type-checks at a caller's version builds
+/// its switch here and nowhere else.
+///
+/// FCS refuses a version below 8.0 as out of support (FS3880,
+/// `LanguageVersion.IsVersionSupported`) unless `SKIP_VERSION_SUPPORTED_CHECK`
+/// is `1`: a single-file check reports FS3880 and checks at FCS's default, and
+/// a project check's script resolution fails outright. An oracle must check at
+/// the version it was asked for, so a pin sets the variable. FCS reads it on
+/// every options parse, and an oracle process only ever checks at versions it
+/// was asked for, so leaving it set for the rest of the process is harmless.
+let private pinnedLangVersionArgs (requested: string option) : string[] =
+    match requested |> Option.map (fun s -> s.Trim()) with
+    | Some s when s <> "" ->
+        Environment.SetEnvironmentVariable("SKIP_VERSION_SUPPORTED_CHECK", "1")
+        [| "--langversion:" + s |]
+    | _ -> [||]
+
+/// A request's optional `langversion` string field, `None` when absent or not a
+/// string.
+let private requestLangVersion (root: JsonElement) : string option =
+    match root.TryGetProperty("langversion") with
+    | true, v when v.ValueKind = JsonValueKind.String -> Option.ofObj (v.GetString())
+    | _ -> None
+
 /// Apply the [`langVersionEnv`] pin to a parsing-options record's
 /// `LangVersionText`, leaving it untouched when unset.
 let private withLangVersion (opts: FSharpParsingOptions) : FSharpParsingOptions =
@@ -6379,11 +6404,7 @@ let private dumpUsesProject () =
             s.Split([| ';'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
             |> Array.map (fun d -> "--define:" + d.Trim())
 
-    let langVersionArgs : string[] =
-        match Option.ofObj (Environment.GetEnvironmentVariable "BORZOI_FCS_LANGVERSION") with
-        | None -> [||]
-        | Some s when s.Trim() = "" -> [||]
-        | Some s -> [| "--langversion:" + s.Trim() |]
+    let langVersionArgs = pinnedLangVersionArgs (langVersionEnv ())
 
     // `BORZOI_FCS_EXCLUSIVE_REFS=1`: the caller's refs are the whole set. The
     // resident sibling takes it per request instead (`exclusiveRefs`).
@@ -6433,13 +6454,7 @@ let private usesProjectBatchCore () =
                 failwith "no paths in request"
             let refArgs = strArray "refs" |> Array.toList |> extraRefArgsOf
             let defineArgs = strArray "defines" |> Array.map (fun d -> "--define:" + d.Trim())
-            let langVersionArgs =
-                match root.TryGetProperty("langversion") with
-                | true, v when v.ValueKind = JsonValueKind.String ->
-                    match Option.ofObj (v.GetString()) with
-                    | Some s when s.Trim() <> "" -> [| "--langversion:" + s.Trim() |]
-                    | _ -> [||]
-                | _ -> [||]
+            let langVersionArgs = pinnedLangVersionArgs (requestLangVersion root)
             let exclusiveRefs =
                 match root.TryGetProperty("exclusiveRefs") with
                 | true, v when v.ValueKind = JsonValueKind.True -> true
@@ -7408,6 +7423,26 @@ let private typesProjectFiles (checker: FSharpChecker) (paths: string[]) (refArg
            Errors = errors
            Unconverted = unconverted |})
 
+/// Every entry of `diagnostics`, with its full range: `{ Code, Severity,
+/// Message, StartLine, StartCol, EndLine, EndCol }` (lines 1-based, columns
+/// 0-based UTF-16, as FCS reports them).
+let private rangedRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    diagnostics
+    |> Array.map (fun d ->
+        {| Code = d.ErrorNumber
+           Severity = string d.Severity
+           Message = d.Message
+           StartLine = d.StartLine
+           StartCol = d.StartColumn
+           EndLine = d.EndLine
+           EndCol = d.EndColumn |})
+
+/// The error-severity entries of `diagnostics`, as `{ Line, Code, Message }`.
+let private errorRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    diagnostics
+    |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    |> Array.map (fun d -> {| Line = d.StartLine; Code = d.ErrorNumber; Message = d.Message |})
+
 /// Resident, multi-projection single-file oracle: the amortised-startup engine
 /// behind `sema`'s per-case differential loops (`resolve_diff`, `infer_*_diff`,
 /// `attr_resolution_diff`, `overloads_oracle`, …). Each of those otherwise spawns
@@ -7431,43 +7466,6 @@ let private typesProjectFiles (checker: FSharpChecker) (paths: string[]) (refArg
 /// would respawn-storm and eventually panic every *later* request too. The Rust
 /// driver turns the sentinel back into the loud panic the one-shot's `failwith`
 /// would have raised, so a genuinely broken case still fails its own test, alone.
-/// The `--langversion` switch a `file-batch` request's optional `langversion`
-/// asks for, empty when it asks for none. FCS refuses a version below 8.0 as
-/// out of support (FS3880) and checks at its default instead, unless
-/// `SKIP_VERSION_SUPPORTED_CHECK` is set (`LanguageVersion.IsVersionSupported`),
-/// so a request that pins a version sets it: an oracle must check at the
-/// version it was asked for.
-let private fileBatchLangVersionArgs (root: JsonElement) : string[] =
-    let requested =
-        match root.TryGetProperty("langversion") with
-        | true, v when v.ValueKind = JsonValueKind.String -> Option.ofObj (v.GetString())
-        | _ -> None
-    match requested with
-    | Some s when s.Trim() <> "" ->
-        Environment.SetEnvironmentVariable("SKIP_VERSION_SUPPORTED_CHECK", "1")
-        [| "--langversion:" + s.Trim() |]
-    | _ -> [||]
-
-/// Every entry of `diagnostics`, with its full range: `{ Code, Severity,
-/// Message, StartLine, StartCol, EndLine, EndCol }` (lines 1-based, columns
-/// 0-based UTF-16, as FCS reports them).
-let private rangedRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
-    diagnostics
-    |> Array.map (fun d ->
-        {| Code = d.ErrorNumber
-           Severity = string d.Severity
-           Message = d.Message
-           StartLine = d.StartLine
-           StartCol = d.StartColumn
-           EndLine = d.EndLine
-           EndCol = d.EndColumn |})
-
-/// The error-severity entries of `diagnostics`, as `{ Line, Code, Message }`.
-let private errorRecords (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
-    diagnostics
-    |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
-    |> Array.map (fun d -> {| Line = d.StartLine; Code = d.ErrorNumber; Message = d.Message |})
-
 let private fileBatchCore () =
     // `keepAssemblyContents` so the `types` / `binder-types` / `overloads`
     // projections can read the elaborated implementation file; harmless to the
@@ -7524,7 +7522,7 @@ let private fileBatchCore () =
                 checker.GetProjectOptionsFromScript(
                     absolute, sourceText, assumeDotNetFramework = false, useSdkRefs = true)
                 |> Async.RunSynchronously
-            let langVersionArgs = fileBatchLangVersionArgs root
+            let langVersionArgs = pinnedLangVersionArgs (requestLangVersion root)
             let scriptSwitches =
                 if Array.isEmpty langVersionArgs then opts0.OtherOptions
                 else
@@ -7920,13 +7918,7 @@ let private xmlDocBatchCore () =
             if Array.isEmpty paths then
                 failwith "no paths in request"
             let defineArgs = strArray "defines" |> Array.map (fun d -> "--define:" + d.Trim())
-            let langVersionArgs =
-                match root.TryGetProperty("langversion") with
-                | true, v when v.ValueKind = JsonValueKind.String ->
-                    match Option.ofObj (v.GetString()) with
-                    | Some s when s.Trim() <> "" -> [| "--langversion:" + s.Trim() |]
-                    | _ -> [||]
-                | _ -> [||]
+            let langVersionArgs = pinnedLangVersionArgs (requestLangVersion root)
             let refArgs = strArray "refs" |> Array.toList |> extraRefArgsOf
             let exclusiveRefs =
                 match root.TryGetProperty("exclusiveRefs") with
