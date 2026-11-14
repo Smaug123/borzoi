@@ -170,8 +170,8 @@ impl Walk {
 
 /// What a term is at its top, once a variable is looked through: the term
 /// itself or the term a variable is bound to, or a variable's unbound root.
-#[derive(Clone, Copy)]
-enum Head {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Head {
     Term(Ty),
     Root(TyVid),
 }
@@ -346,6 +346,13 @@ impl<'t> InferTable<'t> {
             }
             TyKind::Param(_) | TyKind::Var(_) => Ok(()),
         }
+    }
+
+    /// Look through the variable `v` one level ([`Self::head`]), without a
+    /// walk: what a caller asking whether `v`'s class is bound, and to what,
+    /// pays for in constant time.
+    pub(crate) fn var_head(&mut self, v: TyVid) -> Head {
+        self.head(self.tys.var(v))
     }
 
     /// Look through `ty` one level: a variable to the term it is bound to, or

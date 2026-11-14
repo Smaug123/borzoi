@@ -3666,7 +3666,7 @@ fn evaluate_item_condition_silent_with_sdk_taint(
     (gate, condition_tainted || sdk_tainted)
 }
 
-fn expand_silent(raw: &str, state: &State<'_>) -> Expansion {
+pub(super) fn expand_silent(raw: &str, state: &State<'_>) -> Expansion {
     let (value, issues) = if state.follow_imports {
         properties::substitute_with_fs(raw, &state.lookup, state.observer)
     } else {

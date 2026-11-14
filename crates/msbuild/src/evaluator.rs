@@ -513,6 +513,10 @@ fn walk_once<'r>(
         state.directory_build_props_splice_path = Some(canonicalise_or_normalise(observer, &path));
     }
 
+    // The entry root offers its `DefaultTargets` before its implicit SDK
+    // imports, as each imported root does in [`walk_external_file`].
+    latch_default_targets(root, &mut state);
+
     // Resolve the project root's SDK shorthand (if any). The returned
     // paths, when `Some`, are spliced as the OUTERMOST pair around the
     // Directory.Build.* splice, matching MSBuild's effective ordering:
@@ -1433,6 +1437,15 @@ struct State<'r> {
     /// definition) may be about any list.
     #[cfg(any(test, feature = "test-support"))]
     package_cause_owners: HashMap<usize, item_pass::PackageItemKind>,
+    /// Whether the walk has spliced in a `Directory.Build.*` file itself
+    /// ([`walk_directory_build_file`]), standing in for an import an SDK's
+    /// `Microsoft.Common.*` makes, which MSBuild makes only when an SDK chain
+    /// reaches it (#676).
+    directory_build_file_spliced: bool,
+    /// Whether `MSBuildProjectDefaultTargets` is settled ([`latch_default_targets`]):
+    /// set from a root's `DefaultTargets`, or left unset because a root's
+    /// could not be decided.
+    default_targets_decided: bool,
     /// MSBuild's batch of `Update`s for each item type whose `Update`s the walk
     /// models (`Compile`, `PackageReference`), as far as the walk can follow it
     /// ([`item_pass`]'s `update_strands_late`), keyed by lowercased item type.
@@ -2175,6 +2188,8 @@ impl<'r> State<'r> {
             package_cause_owners: HashMap::new(),
             package_versions: Vec::new(),
             package_versions_untracked: false,
+            default_targets_decided: false,
+            directory_build_file_spliced: false,
             update_batches: HashMap::new(),
             global_package_references: Vec::new(),
             framework_references: Vec::new(),
@@ -2738,6 +2753,8 @@ impl<'r> State<'r> {
                 global_package_references_mutated: _,
             #[cfg(any(test, feature = "test-support"))]
                 package_cause_owners: _,
+            default_targets_decided: _,
+            directory_build_file_spliced: _,
             update_batches: _,
             package_versions,
             package_versions_untracked,
@@ -3335,6 +3352,13 @@ impl<'r> State<'r> {
     fn latch_walk_opaque(&mut self, cause: OpacityCause) {
         if self.walk_opaque.is_none() {
             self.walk_opaque = Some(cause);
+        }
+        // Content the walk could not see may hold the root that settles
+        // `MSBuildProjectDefaultTargets` ([`latch_default_targets`]): an offer
+        // still open settles with the property unset.
+        if !self.default_targets_decided {
+            self.default_targets_decided = true;
+            self.lookup.remove("MSBuildProjectDefaultTargets");
         }
     }
 
@@ -6343,6 +6367,61 @@ fn resolve_property_import_target(
 /// `state.depth`; a duplicate of an already-performed import returns
 /// silently (see below). The depth increment/decrement pair only runs
 /// on the happy path.
+/// Offer `root`'s `DefaultTargets` to `MSBuildProjectDefaultTargets`, as
+/// MSBuild's `Evaluator.UpdateDefaultTargets` does. Roots are offered in
+/// depth-first import order, each before its own implicit imports. A root
+/// whose `DefaultTargets` expands (properties only) to anything sets the
+/// property to that text, unescaped and untrimmed; MSBuild stores the
+/// unescaped text as the escaped value. The offer settles at the first root
+/// whose expansion lists a target (split on `;`, each trimmed before it is
+/// unescaped), and nothing
+/// changes the property after; a root that sets it to blanks or separators
+/// alone leaves the offer open.
+///
+/// A root the walk cannot vouch for settles the offer with the property
+/// unset, so reads of it stay inexact. That is one whose expansion reads an
+/// undecided or unpinned value, one reached after the walk passed content it
+/// could not see (which may have set it first), and one in a
+/// `Directory.Build.*` file the walk spliced in itself, which MSBuild
+/// imports only when an SDK chain reaches the point that file stands for.
+/// So is any root outside an SDK's files once such a splice has run, since
+/// the properties it wrote may not exist in MSBuild's build (#676).
+fn latch_default_targets(root: Node<'_, '_>, state: &mut State<'_>) {
+    if state.default_targets_decided {
+        return;
+    }
+    let Some(raw) = root.attribute("DefaultTargets") else {
+        return;
+    };
+    let expansion = item_pass::expand_silent(raw, state);
+    if expansion.had_issue()
+        || expansion.unpinned_root.is_some()
+        || state.walk_opaque.is_some()
+        || state.active_directory_build_splice.is_some()
+        // What a splice wrote may be what no MSBuild build holds (#676): only a
+        // root in an SDK's own files, which a real chain reaches, is past it.
+        || (state.directory_build_file_spliced && !state.in_sdk_subtree)
+    {
+        state.default_targets_decided = true;
+        state.lookup.remove("MSBuildProjectDefaultTargets");
+        return;
+    }
+    if expansion.value.is_empty() {
+        return;
+    }
+    let value = expansion.value.unescape();
+    state.default_targets_decided = expansion
+        .value
+        .as_escaped()
+        .split(';')
+        // Trimmed in the escaped domain, before unescaping: `%20` lists the
+        // target " " (`EscapingUtilities.UnescapeAll(…, trim: true)`).
+        .any(|target| !target.trim().is_empty());
+    state
+        .lookup
+        .insert_escaped("MSBuildProjectDefaultTargets", Escaped::from_xml(value));
+}
+
 fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // MSBuild's duplicate-import skip: an import that resolves to an
     // already-imported path (same lexically-normalised, case-insensitive
@@ -6583,6 +6662,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // the entry *has* an SDK, the eager before-body splice already ran
     // and `pending_directory_build_props` is `None`, so nothing fires
     // here.)
+    latch_default_targets(doc.root_element(), state);
     let nested_sdk = resolve_project_sdk(doc.root_element(), state);
     if let Some(paths) = nested_sdk.as_ref() {
         walk_external_file(&paths.props, doc.root_element().range(), state);
@@ -6739,6 +6819,7 @@ fn walk_directory_build_file(
     kind: DirectoryBuildFile,
     state: &mut State<'_>,
 ) {
+    state.directory_build_file_spliced = true;
     #[cfg(any(test, feature = "test-support"))]
     match kind {
         DirectoryBuildFile::Props => state.directory_build_splices.props_spliced = true,

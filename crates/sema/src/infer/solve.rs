@@ -67,6 +67,9 @@ struct WorklistOutcome {
     discharged: usize,
     /// How many argument checks fired and failed to unify.
     failed: usize,
+    /// The worst of the constraint gaps for which a fired argument check was
+    /// refused ([`Refusal::Constraint`]), if one was.
+    refused: Option<ConstraintGap>,
     /// Whether a member access was resolved after an argument check that ends
     /// after it in the source had discharged — so possibly through that check,
     /// which FCS had not yet applied at the access.
@@ -93,8 +96,9 @@ impl<'a> Gen<'a> {
     /// - **`ArgCheck`** fires once the enclosing
     ///   binding is walk-complete **and** its domain `dom` resolves to a
     ///   [no-subsumption](Self::no_subsumption_domain) type or a
-    ///   [function type](Solver::function_domain), unifying `arg` with `dom`. An
-    ///   `ArgCheck` that never fires, or whose unification fails, is
+    ///   [function type](Solver::function_domain), unifying `arg` with `dom`
+    ///   ([`Solver::unify_checked`]). An `ArgCheck` that never fires, or whose
+    ///   unification fails or breaks a constraint, is
     ///   **undischarged** and — after the fixpoint — poisons `arg`, `dom`, and
     ///   the application result `r`, so an unwoken arg relation never
     ///   generalises.
@@ -128,8 +132,14 @@ impl<'a> Gen<'a> {
         self.out.begin_trial();
         let outcome = self.run_worklist(scope, Fire::All);
         let log = self.out.end_trial();
-        let speculative = self.probed_constraint_verdict(scope, &outcome);
-        let outcome = if outcome.discharged == 0 || self.verified(scope, &outcome, speculative) {
+        // A check refused for breaking a constraint is a violation the
+        // solve met as surely as one it left in the table.
+        let speculative = worse(
+            outcome.refused.map_or(Verdict::Holds, Verdict::from),
+            self.probed_constraint_verdict(scope, &outcome),
+        );
+        let nothing_fired = outcome.discharged == 0 && outcome.refused.is_none();
+        let outcome = if nothing_fired || self.verified(scope, &outcome, speculative) {
             self.solver.table.commit(snapshot);
             outcome
         } else {
@@ -210,50 +220,29 @@ impl<'a> Gen<'a> {
     }
 
     /// The worst verdict ([`satisfies`]) over the current binding's
-    /// constrained instantiations ([`Scope::constrained`]) in the table as it
-    /// stands.
-    fn constraint_verdict(&mut self, scope: &Scope) -> Verdict {
-        constraint_verdict_of(
-            &mut self.solver.table,
-            self.facts.env,
-            self.solver.tys,
-            &scope.constrained,
-        )
-    }
-
-    /// [`Self::constraint_verdict`] once every relation the solve left
-    /// unapplied — the argument checks still pending and the check-mode
-    /// relations the walk dropped ([`Scope::dropped`]) — is applied too, as
-    /// [`Self::verified`]'s probe applies them: a constrained instantiation
-    /// that only such a relation fixes is met there and nowhere else. The table
-    /// is left as it was.
+    /// constrained instantiations ([`Scope::constraints`]) once every relation
+    /// the solve left unapplied — the argument checks still pending and the
+    /// check-mode relations the walk dropped ([`Scope::dropped`]) — is
+    /// applied too, as [`Self::verified`]'s probe applies them: a constrained
+    /// instantiation that only such a relation fixes is met there and nowhere
+    /// else. The table is left as it was.
     fn probed_constraint_verdict(&mut self, scope: &Scope, outcome: &WorklistOutcome) -> Verdict {
+        // A relation that does not unify fails the speculation in `verified`
+        // on its own; the rest still decide the verdict.
         let relations: Vec<(TyVid, TyVid)> = outcome
             .args
             .iter()
             .map(|ac| (ac.arg, ac.dom))
             .chain(scope.dropped.iter().map(|&(a, b, _)| (a, b)))
             .collect();
-        let env = self.facts.env;
-        let constrained = &scope.constrained;
-        let mut verdict = Verdict::Holds;
-        let tys = self.solver.tys;
-        let _ = self.solver.table.probe(|t| -> Result<(), ()> {
-            for (a, b) in &relations {
-                // A relation that does not unify fails the speculation in
-                // `verified` on its own; the rest still decide the verdict.
-                let _ = t.unify(tys.var(*a), tys.var(*b));
-            }
-            verdict = constraint_verdict_of(t, env, tys, constrained);
-            Err(())
-        });
-        verdict
+        self.solver
+            .probed_constraint_verdict(self.facts.env, scope.constraints, &relations)
     }
 
     /// Record in the census what the binding just solved did to its
-    /// constrained instantiations ([`Scope::constrained`]): the worse of
-    /// `speculative`, their verdict under the speculative solve, and their
-    /// verdict now.
+    /// constrained instantiations ([`Scope::constraints`]): the worse of
+    /// `speculative`, their verdict under the speculative solve (a check it
+    /// refused for breaking one included), and their verdict now.
     ///
     /// The check is over a whole substitution, so the order FCS meets the uses
     /// in cannot matter to it. A violation, or a type not known either way,
@@ -262,7 +251,10 @@ impl<'a> Gen<'a> {
     /// speculative solve that produced it. A variable left open needs nothing
     /// here: it was poisoned when it was made, so it does not generalise.
     fn check_constraints(&mut self, scope: &mut Scope, speculative: Verdict) {
-        match worse(speculative, self.constraint_verdict(scope)) {
+        let now = self
+            .solver
+            .constraint_verdict(self.facts.env, scope.constraints);
+        match worse(speculative, now) {
             Verdict::Holds | Verdict::Open => {}
             Verdict::Fails => {
                 scope.mark_incomplete(Incomplete::Constraint(ConstraintGap::Violated))
@@ -287,7 +279,9 @@ impl<'a> Gen<'a> {
     /// - no member to have been resolved through a check FCS applies only
     ///   after it ([`WorklistOutcome::late_member`]): FCS rejects a member
     ///   access on a receiver it does not know yet (FS0072), consistent or not;
-    /// - every constrained instantiation ([`Scope::constrained`]) to satisfy
+    /// - no fired check to have been refused for breaking a constraint
+    ///   ([`Refusal::Constraint`]), and every constrained instantiation
+    ///   ([`Scope::constraints`]) to satisfy
     ///   its constraint, or be open, with the relations above applied
     ///   (`constraints`, [`Self::probed_constraint_verdict`]): a branch that
     ///   joins an open parameter to a function can be what fixes one. A
@@ -514,22 +508,34 @@ impl<'a> Gen<'a> {
                     && self.arg_check_binds_only_current_vars(scope, ac)
                 {
                     // Fire: discharge the arg↔param relation as a genuine equality,
-                    // unified now, so we learn the outcome now. On success the check discharged (poison
-                    // nothing — the relation is modelled). On failure (ill-typed
-                    // code) the atomic rollback leaves no trace, and the check is
+                    // unified now, so we learn the outcome now. On success the check
+                    // discharged (poison nothing — the relation is modelled). On
+                    // failure (ill-typed code), or where the equality breaks a
+                    // constraint, the rollback leaves no trace, and the check is
                     // *undischarged*, so its `arg`/`dom`/`r` are poisoned. Either
                     // way the check has fired and is not re-parked.
-                    if self
-                        .solver
-                        .table
-                        .unify_atomic(self.solver.tys.var(ac.arg), self.solver.tys.var(ac.dom))
-                        .is_err()
-                    {
-                        self.poison_arg_check(scope, ac);
-                        outcome.failed += 1;
-                    } else {
-                        outcome.discharged += 1;
-                        latest_discharge = latest_discharge.max(Some(ac.span.end()));
+                    let tys = self.solver.tys;
+                    match self.solver.unify_checked(
+                        self.facts.env,
+                        tys.var(ac.arg),
+                        tys.var(ac.dom),
+                        scope.constraints,
+                    ) {
+                        Ok(()) => {
+                            outcome.discharged += 1;
+                            latest_discharge = latest_discharge.max(Some(ac.span.end()));
+                        }
+                        Err(Refusal::Mismatch) => {
+                            self.poison_arg_check(scope, ac);
+                            outcome.failed += 1;
+                        }
+                        Err(Refusal::Constraint(gap)) => {
+                            self.poison_arg_check(scope, ac);
+                            outcome.refused = match outcome.refused {
+                                Some(ConstraintGap::Violated) => Some(ConstraintGap::Violated),
+                                _ => Some(gap),
+                            };
+                        }
                     }
                     woke = true;
                 } else {

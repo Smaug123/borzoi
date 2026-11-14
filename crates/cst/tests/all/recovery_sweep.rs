@@ -578,7 +578,7 @@ fn recover_file(file: &CleanFile) -> Option<FileRecovery> {
                         d.lines().next().unwrap_or("")
                     ));
                 }
-                v.token()
+                v.token_with_offenders()
             }
             Err(_) => "grade-panicked".to_string(),
         };
