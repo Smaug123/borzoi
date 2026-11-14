@@ -32,6 +32,11 @@
 //! Every diagnostic is also held to the gate field's own contract: a gate's
 //! class is [`DiagnosticClass::of_gate`] of its feature, and a `Legality`
 //! diagnostic is a gate on the feature it names.
+//!
+//! A frozen facade may depart from the union and the table where astgen's
+//! `ACCEPTED_DIVERGENCES` says so. The table carries what each acceptance
+//! touches ([`FacadeCase::exempt_kinds`], [`FacadeCase::exempt_values`]), and
+//! the properties hold those kinds and accessors to the round trip alone.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -121,7 +126,8 @@ macro_rules! cast_case {
 }
 
 /// One accessor of a facade: on a node its owner casts, the facade's result
-/// and the union accessor's, printed.
+/// and the union accessor's it delegates to (its lock line's `union.<method>`),
+/// printed.
 pub struct Accessor {
     pub owner: &'static str,
     pub name: &'static str,
@@ -131,7 +137,7 @@ pub struct Accessor {
 }
 
 macro_rules! accessor_case {
-    ($module:ident, $owner:ident, $name:ident, one, $shape:literal) => {
+    ($module:ident, $owner:ident, $name:ident, $delegate:ident, one, $shape:literal) => {
         Accessor {
             owner: stringify!($owner),
             shape: $shape,
@@ -146,12 +152,12 @@ macro_rules! accessor_case {
                 )?;
                 Some((
                     format!("{:?}", facade.$name()),
-                    format!("{:?}", union.$name()),
+                    format!("{:?}", union.$delegate()),
                 ))
             },
         }
     };
-    ($module:ident, $owner:ident, $name:ident, iter, $shape:literal) => {
+    ($module:ident, $owner:ident, $name:ident, $delegate:ident, iter, $shape:literal) => {
         Accessor {
             owner: stringify!($owner),
             shape: $shape,
@@ -166,7 +172,7 @@ macro_rules! accessor_case {
                 )?;
                 Some((
                     format!("{:?}", facade.$name().collect::<Vec<_>>()),
-                    format!("{:?}", union.$name().collect::<Vec<_>>()),
+                    format!("{:?}", union.$delegate().collect::<Vec<_>>()),
                 ))
             },
         }
@@ -179,6 +185,12 @@ pub struct FacadeCase {
     pub versions: &'static [LanguageVersion],
     pub casts: &'static [Cast],
     pub accessors: &'static [Accessor],
+    /// Kinds this frozen facade's accepted divergences let it read apart
+    /// from the union and the table (astgen's `facade::Exemption`).
+    pub exempt_kinds: &'static [SyntaxKind],
+    /// Value enums its accepted divergences let it read apart from the
+    /// union: an accessor whose shape names one is not compared.
+    pub exempt_values: &'static [&'static str],
 }
 
 mod matrix;
@@ -279,24 +291,58 @@ pub fn check_gate_field(d: &ParseDiagnostic, lang: LanguageVersion, what: &str) 
     }
 }
 
+/// Whether the facade's accessor is held to the union's: not when its shape
+/// names a value enum an accepted divergence exempts.
+fn compared(facade: &FacadeCase, accessor: &Accessor) -> bool {
+    !accessor
+        .shape
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| facade.exempt_values.contains(&word))
+}
+
 /// Checks P2–P4 on one parse for every distinct facade, panicking with `what`
 /// and the facade on the first violation. Returns how many holes it met.
 fn check_parse(parse: &Parse, what: &str, indexes: &mut [Index], only_serving: bool) -> usize {
+    check_parse_with(FACADES, parse, what, indexes, only_serving)
+}
+
+/// [`check_parse`] over `facades`.
+///
+/// A node whose kind the facade's accepted divergences exempt
+/// ([`FacadeCase::exempt_kinds`]) is held to nothing beyond P3's round trip of
+/// the casts the facade makes of it: it may be a hole the table does not
+/// predict, with no gate over it, or a kind the facade's dispatch enum leaves
+/// out though the union's holds it. Like a hole, it keeps the accessors of
+/// the nodes above it from being compared; its own are compared, so an
+/// exemption costs no accessor its coverage.
+fn check_parse_with(
+    facades: &[FacadeCase],
+    parse: &Parse,
+    what: &str,
+    indexes: &mut [Index],
+    only_serving: bool,
+) -> usize {
     for d in parse.errors.iter().chain(&parse.warnings) {
         check_gate_field(d, parse.lang, what);
     }
     let mut holes_met = 0;
     let nodes: Vec<SyntaxNode> = parse.root.descendants().collect();
-    for (facade, index) in FACADES.iter().zip(indexes.iter_mut()) {
+    for (facade, index) in facades.iter().zip(indexes.iter_mut()) {
         let module = facade.module;
         if only_serving && !facade.versions.contains(&parse.lang) {
             continue;
         }
         let surface_version = facade.versions[0];
-        // Holes, and every node with a hole at or below it.
+        let exempt = |kind: SyntaxKind| facade.exempt_kinds.contains(&kind);
+        // Holes, the exempt nodes, and every node with either at or below it.
         let mut holes = Vec::new();
+        let mut exempted = Vec::new();
         for node in &nodes {
             let kind = node.kind();
+            if exempt(kind) {
+                exempted.push(node.clone());
+                continue;
+            }
             let facade_casts = !index.casts(facade, kind).is_empty();
             let hole = index.in_union(kind) && !facade_casts;
             assert_eq!(
@@ -308,15 +354,22 @@ fn check_parse(parse: &Parse, what: &str, indexes: &mut [Index], only_serving: b
                 holes.push(node.clone());
             }
         }
-        assert_eq!(
-            first_out_of_surface(&parse.root, surface_version),
-            holes.first().cloned(),
-            "{what}: {module}: the projection gate finds the first hole",
-        );
+        if exempted.is_empty() {
+            assert_eq!(
+                first_out_of_surface(&parse.root, surface_version),
+                holes.first().cloned(),
+                "{what}: {module}: the projection gate finds the first hole",
+            );
+        }
         holes_met += holes.len();
         let mut above_hole: HashSet<SyntaxNode> = HashSet::new();
         for hole in &holes {
             above_hole.extend(hole.ancestors());
+        }
+        // An exempt node's own accessors read what the union's do, but an
+        // accessor above it may reach it through a narrowed type.
+        for node in &exempted {
+            above_hole.extend(node.ancestors().skip(1));
         }
 
         // P2.
@@ -362,6 +415,9 @@ fn check_parse(parse: &Parse, what: &str, indexes: &mut [Index], only_serving: b
                     "{what}: {module}::{} lowers to another node",
                     cast.name
                 );
+                if exempt(kind) {
+                    continue;
+                }
                 let union = (cast.union)(node).unwrap_or_else(|| {
                     panic!(
                         "{what}: {module}::{} casts {kind:?}, the union's does not",
@@ -376,7 +432,7 @@ fn check_parse(parse: &Parse, what: &str, indexes: &mut [Index], only_serving: b
             }
             // Exactness: away from holes, a facade type takes what the
             // union's takes.
-            if index.in_union(kind) && !index.casts(facade, kind).is_empty() {
+            if !exempt(kind) && index.in_union(kind) && !index.casts(facade, kind).is_empty() {
                 for cast in facade.casts {
                     assert_eq!(
                         (cast.can_cast)(kind),
@@ -392,6 +448,9 @@ fn check_parse(parse: &Parse, what: &str, indexes: &mut [Index], only_serving: b
             }
             for &i in index.accessors(facade, kind).to_vec().iter() {
                 let accessor = &facade.accessors[i];
+                if !compared(facade, accessor) {
+                    continue;
+                }
                 index.ran.insert(i);
                 let (got, want) = (accessor.call)(node).unwrap_or_else(|| {
                     panic!(
@@ -575,6 +634,121 @@ fn a_hole_reads_as_an_absent_child() {
     assert!(matches!(paren.inner(), Some(syntax::v9::Type::WithNull(_))));
 }
 
+/// An accepted divergence holds end to end. A frozen `v8` whose `Expr` lacks
+/// the `DotLambda` and `WhileBang` variants the union has (astgen accepting
+/// both) is simulated with `v5`'s `Expr` in place of `v8`'s: the exemptions
+/// astgen derives from the acceptances let the properties pass on trees
+/// holding both constructs, and without them the properties fail.
+#[test]
+fn an_accepted_divergence_is_exempt_from_the_properties() {
+    use borzoi_astgen::{facade, features, lock};
+
+    let rows = features::feature_table();
+    let union = borzoi_astgen::union_lock();
+    let versions = facade::versions();
+    let v8 = *versions.iter().find(|v| v.module() == "v8").unwrap();
+    let mut frozen = lock::parse(&facade::checked_in_lock(&v8).unwrap()).unwrap();
+    let dropped = [
+        "enum\tExpr\tDotLambda\tDotLambdaExpr",
+        "enum\tExpr\tWhileBang\tWhileBangExpr",
+    ];
+    frozen
+        .lines
+        .retain(|l| !dropped.contains(&l.render().as_str()));
+    let text = lock::render_published("v8", &frozen, facade::FREEZE_EPOCH);
+    let accepted = dropped.map(|line| facade::Accepted {
+        module: "v8",
+        line,
+        reason: "test",
+    });
+    let generation = facade::facade_locks(&facade::Inputs {
+        rows: &rows,
+        union: &union,
+        versions: &versions,
+        freeze: facade::Freeze {
+            published: facade::PUBLISHED,
+            epoch: facade::FREEZE_EPOCH,
+            accepted: &accepted,
+        },
+        on_disk: &|v| {
+            if v.module() == "v8" {
+                Some(text.clone())
+            } else {
+                facade::checked_in_lock(v)
+            }
+        },
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+    let exempt_names = facade::exemptions(&generation.locks, &union, &generation.accepted)["v8"]
+        .kinds
+        .clone();
+    assert_eq!(
+        exempt_names,
+        ["DOT_LAMBDA_EXPR", "WHILE_BANG_EXPR"]
+            .map(String::from)
+            .into()
+    );
+
+    let src = "let f () = async { while! cond () do () }\nlet y = xs |> List.map _.ToString()\n";
+    let parse = parse_at(src, FileKind::Impl, LanguageVersion::V8_0);
+    let mut exempt_kinds: Vec<SyntaxKind> = parse
+        .root
+        .descendants()
+        .map(|n| n.kind())
+        .filter(|k| exempt_names.contains(&format!("{k:?}")))
+        .collect();
+    exempt_kinds.sort();
+    exempt_kinds.dedup();
+    assert_eq!(exempt_kinds.len(), 2, "the tree holds both constructs");
+
+    let real = FACADES.iter().find(|f| f.module == "v8").unwrap();
+    let mut casts: Vec<Cast> = real
+        .casts
+        .iter()
+        .filter(|c| c.name != "Expr")
+        .map(|c| Cast {
+            name: c.name,
+            can_cast: c.can_cast,
+            union_can_cast: c.union_can_cast,
+            facade: c.facade,
+            union: c.union,
+        })
+        .collect();
+    casts.push(cast_case!(v5, Expr));
+    let casts: &'static [Cast] = Box::leak(casts.into_boxed_slice());
+    let facade_with = |exempt_kinds: &'static [SyntaxKind]| FacadeCase {
+        module: "v8 (frozen without two Expr variants)",
+        versions: real.versions,
+        casts,
+        accessors: real.accessors,
+        exempt_kinds,
+        exempt_values: &[],
+    };
+    let exempted = [facade_with(Box::leak(exempt_kinds.into_boxed_slice()))];
+    let mut index = [Index::default()];
+    check_parse_with(&exempted, &parse, src, &mut index, true);
+    // The exempt nodes' own accessors still run, so an exemption leaves the
+    // corpus sweep's coverage satisfiable.
+    for owner in ["WhileBangExpr", "DotLambdaExpr"] {
+        let ran = exempted[0]
+            .accessors
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.owner == owner)
+            .all(|(i, _)| index[0].ran.contains(&i));
+        assert!(ran, "{owner}'s accessors did not all run");
+    }
+    let strict = [facade_with(&[])];
+    let failed = {
+        let _silence = borzoi_oracle_harness::panic_silence::silence_panics_here();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check_parse_with(&strict, &parse, src, &mut [Index::default()], true)
+        }))
+        .is_err()
+    };
+    assert!(failed, "without the exemptions the narrowed `Expr` fails");
+}
+
 /// Snippets the generated programs are made of: each live `Kind` row's
 /// construct, and ordinary declarations around them.
 const SNIPPETS: &[&str] = &[
@@ -640,7 +814,7 @@ fn unexercised(indexes: &[Index]) -> Vec<String> {
     let mut out = Vec::new();
     for (facade, index) in FACADES.iter().zip(indexes) {
         for (i, accessor) in facade.accessors.iter().enumerate() {
-            if !index.ran.contains(&i) {
+            if compared(facade, accessor) && !index.ran.contains(&i) {
                 out.push(format!(
                     "{}::{}::{}",
                     facade.module, accessor.owner, accessor.name
@@ -661,8 +835,12 @@ fn corpus_sample_holds() {
     corpus_holds(40, &mut indexes);
     let mut missing = Vec::new();
     for (facade, index) in FACADES.iter().zip(&indexes) {
-        let shapes: std::collections::BTreeSet<&str> =
-            facade.accessors.iter().map(|a| a.shape).collect();
+        let shapes: std::collections::BTreeSet<&str> = facade
+            .accessors
+            .iter()
+            .filter(|a| compared(facade, a))
+            .map(|a| a.shape)
+            .collect();
         for shape in shapes {
             let ran = facade
                 .accessors

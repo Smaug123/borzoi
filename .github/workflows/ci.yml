@@ -76,6 +76,31 @@ jobs:
         # closure-only change.
         run: bash tools/ci/detect-changes.sh
 
+  facade-locks:
+    name: Facade freeze
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # The published facade locks are diffed against the event's base
+          # commit, which a shallow checkout does not have.
+          fetch-depth: 0
+      # A published typed facade's lock and consumer fixture change only by
+      # additions no consumer can observe as a break, unless FREEZE_EPOCH
+      # rises (`docs/ast-versioning-plan.md` D6). Ungated: the change that
+      # breaks the freeze is a change to crates/cst or tools/astgen, but the
+      # check is a git diff and costs nothing. A scheduled or manual run has
+      # no base to compare with, and its commit is on main, which the pull
+      # request and the merge queue already checked.
+      - name: Check the published facade locks against the base
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        run: bash tools/ci/facade-lock-check.sh
+
   lint:
     name: Lint (clippy/fmt/doc)
     runs-on: ubuntu-latest
@@ -137,6 +162,9 @@ jobs:
 
       - name: Test the whole-project gate script
         run: bash tools/ci/project-corpus-gate.test.sh
+
+      - name: Test the facade freeze check
+        run: bash tools/ci/facade-lock-check.test.sh
 
       # The parser differential must compare every typed-AST accessor sema and
       # the LSP read (crates/cst/tests/all/common/accessor_coverage.rs). The
@@ -1345,6 +1373,7 @@ jobs:
     needs:
       - changes
       - corpus-diff
+      - facade-locks
       - lint
       - fcs-dump
       - test-cst

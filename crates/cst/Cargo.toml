@@ -40,8 +40,10 @@ unstable-union = []
 # of its language version's surface, and `Parse::view` reads a parse through
 # one. A version whose surface equals an earlier one's is an alias of it
 # (`pub use super::<earlier>::*`), and its feature also compiles, and so
-# exposes, the module it aliases. `borzoi-sema` and the LSP use the union and
-# turn none on; this crate's own tests turn all on.
+# exposes, the module it aliases. The facades up to `v10` are published, so
+# frozen: their surfaces only grow (`crates/cst/facades/`,
+# `docs/ast-versioning-plan.md` D6). `borzoi-sema` and the LSP use the union
+# and turn none on; this crate's own tests turn all on.
 v4_6 = []
 v4_7 = []
 v5 = []

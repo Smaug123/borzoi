@@ -25,15 +25,18 @@
 //! union accessor has been renamed keeps its own name and points the delegate
 //! at the new one. The union's lock has no delegates. A facade whose surface
 //! equals an earlier version's is an alias of it, and its lock is the single
-//! line `alias-of\t<module>`.
+//! line `alias-of\t<module>`. A published facade's lock is stamped with the
+//! freeze epoch it was written at, a comment `# freeze-epoch: N`
+//! ([`EPOCH_MARK`], [`freeze_epoch`]); the records do not carry it, so a
+//! published lock and a derived one with the same records are equal.
 //!
 //! The records are sorted by tag (in the table's order), then field by field,
 //! with no duplicates; [`parse`] refuses any other order, so a lock has one
 //! spelling and [`render`] is its inverse. Every fact is its own line, so the
-//! changes a frozen surface may take — a new accessor, a new kind for an
-//! existing node — are added lines, and everything else (a removed or changed
-//! accessor, a new variant in an exhaustively matched enum) removes or
-//! rewrites one.
+//! changes a frozen surface may take — a new accessor, a new kind for a
+//! node, a new trait on a value enum — are added lines, and everything else
+//! (a removed or changed accessor, a new variant in an exhaustively matched
+//! enum) removes or rewrites one.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -148,7 +151,8 @@ pub enum Line {
 }
 
 impl Line {
-    fn render(&self) -> String {
+    /// The record as it is spelled in a lock.
+    pub fn render(&self) -> String {
         match self {
             Line::AliasOf { target } => format!("alias-of\t{target}"),
             Line::Node { node, kind } => format!("node\t{node}\t{kind}"),
@@ -296,6 +300,55 @@ pub fn render(facade: &str, lock: &Lock) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The comment that stamps a published lock (and a consumer fixture) with the
+/// freeze epoch it was written at: `# freeze-epoch: N` (`//! freeze-epoch: N`
+/// in a fixture). `tools/ci/facade-lock-check.sh` reads the same line.
+pub const EPOCH_MARK: &str = "freeze-epoch: ";
+
+/// A published lock's text: [`render`]'s, stamped with the freeze `epoch`
+/// and saying how the lock may change.
+pub fn render_published(facade: &str, lock: &Lock, epoch: u32) -> String {
+    let records = render(facade, lock);
+    let body = records
+        .lines()
+        .skip_while(|l| l.starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect::<String>();
+    format!(
+        "# The `{facade}` typed facade's surface, one fact per line; the format is \
+         documented in\n\
+         # `tools/astgen/src/lock.rs`. PUBLISHED: `tools/astgen` generates the facade from \
+         this\n\
+         # lock and never writes it. It may change only by added `accessor`, `node` and\n\
+         # `derive` lines (`tools/ci/facade-lock-check.sh`); see \"Publishing a facade\" in\n\
+         # `docs/ast-versioning-plan.md`.\n\
+         # {EPOCH_MARK}{epoch}\n\
+         {body}"
+    )
+}
+
+/// The freeze epoch a lock's text is stamped with ([`EPOCH_MARK`]), or `None`
+/// for an unpublished lock's. Refuses a malformed or repeated stamp.
+pub fn freeze_epoch(text: &str) -> Result<Option<u32>, String> {
+    let mut epoch = None;
+    for line in text.lines() {
+        let Some(rest) = line
+            .strip_prefix('#')
+            .map(str::trim_start)
+            .and_then(|l| l.strip_prefix(EPOCH_MARK))
+        else {
+            continue;
+        };
+        let n: u32 = rest
+            .parse()
+            .map_err(|_| format!("malformed freeze-epoch stamp {line:?}"))?;
+        if epoch.replace(n).is_some() {
+            return Err("two freeze-epoch stamps".to_string());
+        }
+    }
+    Ok(epoch)
 }
 
 /// Read a lock's text, refusing a malformed record and any record out of order

@@ -25,5 +25,5 @@ pub mod v6;
 pub mod v7;
 #[cfg(feature = "v8")]
 pub mod v8;
-#[cfg(any(feature = "v9", feature = "v10", feature = "v11"))]
+#[cfg(any(feature = "v9", feature = "v10"))]
 pub mod v9;
