@@ -1011,21 +1011,31 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
         });
         let seen_sequential = std::mem::take(&mut *seen.lock().unwrap());
 
-        // Exactly once, in both sessions.
+        // Exactly once, in both sessions. A batch handed over whole is held
+        // to the specification's count; in chunks, which sweeps have started
+        // when `exit` arrives depends on the schedule, so a sweep in a batch
+        // that exits may be abandoned unanswered, and every other request
+        // read before `exit` is answered once.
+        let sweeps: BTreeSet<&RequestId> = played
+            .iter()
+            .filter_map(|p| p.request.as_ref().filter(|r| r.sweep).map(|r| &r.id))
+            .collect();
+        let exits = played.iter().any(|p| p.exit);
         for (session, answers) in [
             ("coalescing", &answers),
             ("sequential", &sequential_answers),
         ] {
             for (id, fate) in &expected {
                 let n = answers.get(id).map_or(0, Vec::len);
-                let want = if session == "coalescing" {
-                    fate.answers()
-                } else {
-                    usize::from(*fate != Fate::Unread)
+                let allowed: &[usize] = match (session, whole) {
+                    _ if *fate == Fate::Unread => &[0],
+                    ("coalescing", true) if fate.answers() == 0 => &[0],
+                    ("coalescing", false) if exits && sweeps.contains(id) => &[0, 1],
+                    _ => &[1],
                 };
-                if n != want {
+                if !allowed.contains(&n) {
                     return Err(fail(format!(
-                        "batch {b}: the {session} session answered {id} {n} times, not {want}: {:?}",
+                        "batch {b}: the {session} session answered {id} {n} times, not {allowed:?}: {:?}",
                         answers.get(id)
                     )));
                 }
@@ -1232,6 +1242,30 @@ fn on_server_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) ->
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
+/// Cases found against the property's own oracle, run before the generated
+/// ones.
+fn pinned_cases() -> Vec<Case> {
+    vec![
+        // Chunked: both sweeps start before the cancellation arrives, so the
+        // second answers the first `ServerCancelled`, and `exit` abandons the
+        // second; handed over whole, the first would be abandoned instead
+        // (found by Codex).
+        Case {
+            push: false,
+            batches: vec![Batch {
+                writes: vec![],
+                ops: vec![
+                    Op::WorkspaceDiagnostic,
+                    Op::WorkspaceDiagnostic,
+                    Op::CancelRecent(0),
+                    Op::Exit,
+                ],
+                chunks: vec![(2, 2)],
+            }],
+        },
+    ]
+}
+
 /// For all generated interleavings of text syncs, requests and
 /// cancellations, each batch handed over at once is answered as the
 /// specification says, against the newest texts, and leaves the state the
@@ -1242,6 +1276,11 @@ fn a_coalesced_batch_agrees_with_its_messages_one_at_a_time() {
         let cases = env_u64("BORZOI_COALESCING_CASES").map_or(DEFAULT_CASES, |n| n as u32);
         let seed = env_u64("BORZOI_COALESCING_SEED").unwrap_or(DEFAULT_SEED);
         let coverage = RefCell::new(Coverage::default());
+        for case in pinned_cases() {
+            if let Err(err) = run_case(&case, &coverage) {
+                panic!("pinned case failed: {err}\n\n{case:?}");
+            }
+        }
         let result = runner(cases, seed).run(&case_strategy(), |case| run_case(&case, &coverage));
         let coverage = coverage.into_inner();
         eprintln!("seed {seed}: {coverage:#?}");
