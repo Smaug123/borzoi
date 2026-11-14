@@ -3608,6 +3608,148 @@ the re-run pays one unit at most again.
   before any read later, and its fate is still decided by what arrived after
   it.
 
+The oracle, as built:
+
+- `inbox::tests::every_interleaving_answers_after_every_counted_notification`:
+  the input thread's actions (`inbox::handover`'s, performed by the real
+  `InboxSender`) against the loop's (the real `Inbox::begin_step`, each
+  notification applied in its own step, a run of three checkpoints), every
+  interleaving of up to three notifications with one request, by an explorer
+  that replays a prefix of choices: one answer, computed after every
+  notification counted before its last checkpoint; every notification
+  applied once, in order; some schedules stop the run and some do not. Its
+  first version passed both orders it exists for (a count before the push,
+  the counter read after the channel): it performed the push and the count
+  itself rather than as `send` describes them, and had no point after the
+  last, empty, read of the channel. Both are caught now.
+- `inbox::tests::a_full_inbox_holds_the_sender_back` and
+  `dispatch_coalescing::the_epoch_holds_at_most_its_bound`: the two queues
+  are bounded.
+- `incremental_state_machine::a_session_whose_requests_stop_agrees_with_a_fresh_one`:
+  the cases of `warm_session_agrees_with_a_fresh_one`, with the long-lived
+  session's requests stopping at up to sixteen checkpoints drawn from a hash
+  of the case (a notification the server ignores, sent from a subscriber
+  before the checkpoint reads the count). Every answer and everything the
+  client displays equals fresh sessions'. The default run stops 63 runs.
+- `dispatch_coalescing::a_coalesced_batch_agrees_with_its_messages_one_at_a_time`,
+  Stage 8's property, with a third delivery: a prefix handed over, and the
+  rest sent through the inbox at a generated checkpoint of whichever request
+  runs then. Exactly once, the final state, and, for every request answered
+  after the rest arrived, the whole batch's fate and the sequential
+  session's answer after the whole batch. Its non-vacuity check asks for a
+  batch in which a run stopped and an answer with a result after the
+  arrival.
+- `dispatch_coalescing::a_request_starts_no_unit_after_a_notification_arrives`:
+  the cancellation latency in units. For a hover (fold and inference),
+  references (the whole project) and semantic tokens, on a cold session, a
+  notification sent as each unit begins (`parse_compile_item`,
+  `build_env_from_dll_paths`, `resolve_project`, `infer_project`) stops the
+  request before it begins another, and the request then answers as it does
+  unstopped.
+- `dispatch_coalescing::an_edit_that_arrives_mid_request_is_answered_before_it`:
+  the gate in small. A change to `A` and a pull of `A` arrive at a hover on
+  `C`'s first checkpoint; the hover stops, the pull is answered first, and
+  the hover after it, with the type the new `A` gives.
+- `dispatch_coalescing::a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change`
+  (added for a plant that passed everything else).
+- `the_plan_is_its_specification`, with up to four restarts per epoch, and
+  `a_restarted_request_waits_behind_the_requests_read_while_it_ran`.
+- The loop tests that queue a script before the loop starts send it into the
+  inbox itself (`inbox::channel`), so all of it is waiting when the loop
+  starts, as before.
+
+Planted, each caught, then removed (each run against the `inbox` and
+`batch` unit tests, `dispatch_coalescing`, `workspace_diagnostic_sweep`,
+and the state machine's warm and stopping properties):
+
+| plant | caught by |
+|---|---|
+| no cancellation (a checkpoint never sees the count move) | the exhaustive and full-inbox tests, the coalescing property, the latency sweep, the gate in small, the stopping state machine |
+| a stale answer: no checkpoint after the handler | the latency sweep (references stops at no unit) |
+| a stopped fold's partial parses cached as the project's | the latency sweep, the stopping state machine |
+| the stale parses lost on a stop (the rebuild's refresh decision) | `a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change` (added for it: it passed everything else) |
+| an unbounded inbox | `a_full_inbox_holds_the_sender_back` |
+| an unbounded epoch | `the_epoch_holds_at_most_its_bound` |
+| a stopped request answered as well as run again | the coalescing property, the latency sweep, the gate in small, the stopping state machine |
+| a stopped request refused rather than run again | the same four |
+| a restart in its arrival position (no `Restart`) | the gate in small |
+| a restart's place taken before reading what arrived | the gate in small |
+| no checkpoint after the env | the latency sweep |
+| no checkpoint between Compile items | the latency sweep |
+| no checkpoint after the fold | the latency sweep |
+| the count before the push | the exhaustive and full-inbox tests |
+| the counter read after the channel | the exhaustive test |
+
+The last two passed the first version of the exhaustive test (above).
+
+**Measured** on the build box, under `nix develop`, each row the minimum
+over the runs of each binary: Stage 8's head (e1726d32, the content of
+1e162da1) with this stage's `edit_counts`, and this stage. Instructions are
+counted on every server thread: the process's retired instructions
+(`proc_pid_rusage`'s `ri_instructions`, which keeps the counts of threads
+that have exited, the env build's DLL readers among them) less the client
+thread's own (`thread_selfcounts`). The client hands its messages to the
+inbox itself, so no input thread runs; in the server that thread moves one
+message per channel operation. The keystroke script ran 20 keystrokes per
+run, the bursts 5 of 4 and 3 of 16, three runs each; `blocked-edit` five
+rounds per run, five runs. The on-disk assembly cache is off.
+
+| message, per keystroke (WoofWare.Incremental) | instructions 8 | 9 | allocs 8 | 9 |
+|---|---:|---:|---:|---:|
+| `didChange E` | 0.11 M | 0.13 M | 64 | 72 |
+| `diagnostic E` | 3.57 M | 3.57 M | 271 | 284 |
+| `diagnostic L` (`unchanged`) | 2.77 M | 2.75 M | 108 | 121 |
+| `semanticTokens E` | 9.74 M | 9.78 M | 5,033 | 5,044 |
+| `semanticTokens L` | 13.57 M | 13.59 M | 11,474 | 11,485 |
+| `hover L` | 8.89 M | 8.92 M | 3,918 | 3,945 |
+| **keystroke total** | **38.69 M** | **38.81 M** | 20,868 | 20,951 |
+
+A keystroke stops nothing (the client waits for each answer before it
+sends more), so it pays the checkpoints alone: each step reads the counter
+and allocates the batch it read, and each request is cloned before it runs,
+in case it stops. 0.3% in all.
+
+| burst, whole | instructions 8 | 9 | allocs 8 | 9 | answered with a result | `ContentModified` |
+|---|---:|---:|---:|---:|---:|---:|
+| 4 keystrokes | 89.6 M | 89.4 M | 29,800 | 29,957 | 14 | 6 |
+| 16 keystrokes | 300.1 M | 302.4 M | 76,615 | 77,104 | 50 | 30 |
+
+A burst is queued before the loop reads it, so it too stops nothing, and is
+planned as in Stage 8 (one fold, one parse).
+
+`blocked-edit`, from before `semanticTokens L` is sent to the arrival of
+`diagnostic E`'s answer:
+
+| project | window 8 | 9 | of which before the edit 8 | 9 | after the edit, less alone, 8 | 9 | alone 8 | 9 | **the edit waited** 8 | **9** | budget |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| WoofWare.Incremental | 3,478.0 M | 384.5 M | 297.6 M | 300.0 M | 3,125.8 M | 79.7 M | 3.9 M | 4.0 M | 3,436.2 M | **379.8 M** | 50 M |
+| WoofWare.PawPrint.Domain | 3,950.3 M | 394.3 M | 300.9 M | 299.7 M | 3,630.5 M | 43.6 M | 8.8 M | 8.9 M | 3,941.5 M | **356.4 M** | 50 M |
+
+In every round the request stopped once, and `diagnostic E` was answered
+before it. **The gate as the plan fixed it still fails, by about 7 times.**
+What the window now consists of, on WoofWare.Incremental (attributed by
+`EDIT_COUNTS_GENERATIONS` and, once, by probes at the evaluation's steps):
+
+- **300 M before the edit was sent**: the request's work up to the
+  evaluation the script holds it at, nearly all of it the re-evaluation of
+  the rewritten `.fsproj` (115 files opened). The edit had not been sent
+  then, so it cannot have waited for it, but the plan's window starts when
+  `semanticTokens L` arrives; nothing this stage does reaches it.
+- **31 M, the rest of the unit the request was in**: after the evaluation
+  returns, building its checks (`Evaluation::checks_and_exempt`) costs 31 M
+  before it is cached and the next checkpoint is reached. This is the
+  cancellation latency the gate meets.
+- **45–54 M, the first confirmation of the new evaluation**, which
+  `diagnostic E` pays: a fresh evaluation's checks have no witnesses yet, so
+  the first generation after it asks each read again (2,262 `stat`s, 32
+  listings, 31 canonicalisations) where later ones `stat` 135 paths. Stage 8
+  paid it inside the request.
+- **4 M, the edit and the pull themselves**, as alone.
+
+So the part after the edit is under the budget on WoofWare.PawPrint.Domain
+(43.6 M) and over it on WoofWare.Incremental (79.7 M), and the window is
+over it on both because of work done before the edit was sent.
+
 ## Non-goals
 
 - **Semantic diagnostics.** The server publishes syntactic diagnostics only.

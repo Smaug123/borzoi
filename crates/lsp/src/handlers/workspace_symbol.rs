@@ -120,6 +120,8 @@ pub fn handle_watched(
 
     // 1. Whole-project symbols for every project we can fold.
     for project in &projects {
+        // Each project's parses are a unit of their own.
+        watch.check()?;
         // Clone the parses out of `self` inside a tight scope: `parses_for_project`
         // borrows `semantic`/`workspace`/`docs` mutably, and we need `state.docs`
         // again below for `preferred_uri`. Cloning `ProjectParses` is cheap

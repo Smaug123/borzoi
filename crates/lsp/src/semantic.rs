@@ -1361,11 +1361,12 @@ impl SemanticState {
     }
 
     /// [`Self::resolved_prefix_and_env_for`], stopping at a checkpoint once
-    /// `watch` sees a notification ([`crate::inbox`]): after the project's
-    /// evaluation is confirmed, after each Compile item's parse
-    /// ([`Self::parses_for_project_watched`]), after the env, and after the
-    /// fold. Each unit is cached before the checkpoint that follows it, so a
-    /// run that stops keeps what it computed.
+    /// `watch` sees a notification ([`crate::inbox`]). No unit of work begins
+    /// without one just before it: before returning a cached prefix, after
+    /// the project's evaluation is confirmed, before each Compile item's
+    /// parse ([`Self::parses_for_project_watched`]), before the env, before
+    /// the fold, and after it. Each unit is cached before the checkpoint that
+    /// follows it, so a run that stops keeps what it computed.
     pub fn resolved_prefix_and_env_watched(
         &mut self,
         project: &Path,
@@ -1412,6 +1413,7 @@ impl SemanticState {
                 let (resolved, env) = (Arc::clone(resolved), Arc::clone(env));
                 if self.env_still_served(&env, workspace) {
                     lookup_span.record("cache_hit", true);
+                    watch.check()?;
                     return Ok(Some((resolved, env)));
                 }
             }
@@ -1692,6 +1694,9 @@ impl SemanticState {
         else {
             return Ok(None);
         };
+        // Before the inference: the resolved prefix may have come from the
+        // cache, with no checkpoint since the lookup began.
+        watch.check()?;
         let inferred = {
             let _span = tracing::info_span!("infer_project").entered();
             let (inferred, reused) = match &cached {
@@ -1793,7 +1798,7 @@ impl SemanticState {
         ))
     }
 
-    /// [`Self::parses_for_project`], stopping at a checkpoint after each
+    /// [`Self::parses_for_project`], stopping at a checkpoint before each
     /// Compile item it parses once `watch` sees a notification
     /// ([`crate::inbox`]). The items parsed by then stay in the per-file
     /// caches, so the next call parses only the rest.
@@ -2048,7 +2053,7 @@ impl SemanticState {
 /// Build the compile-ordered parses for a fresh cache miss. Pure (modulo
 /// disk reads for files not in `docs` and the workspace's own caching).
 ///
-/// Stops at a checkpoint before each Compile item after the first once
+/// Stops at a checkpoint before each Compile item once
 /// `watch` sees a notification: every item parsed by then is in
 /// `file_parses`, so the next build finds it there.
 fn build_parses(
@@ -2141,11 +2146,9 @@ fn build_parses(
 
     let _parse_all_span =
         tracing::info_span!("parse_compile_items", count = includes.len()).entered();
-    for (position, include) in includes.into_iter().enumerate() {
-        // A checkpoint after each item: the one before is cached.
-        if position > 0 {
-            watch.check()?;
-        }
+    for include in includes {
+        // A checkpoint before each item: each one before it is cached.
+        watch.check()?;
         let _file_span =
             tracing::info_span!("parse_compile_item", file = %include.display()).entered();
         // **Hard fail on any hole.** Sema's fold is order-sensitive: a later

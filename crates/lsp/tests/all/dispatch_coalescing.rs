@@ -1897,35 +1897,45 @@ fn a_burst_behind_a_rendezvous_transport_is_planned_together() {
 
 /// The spans that begin a unit of work whose result is cached, after which a
 /// running request passes a checkpoint (`docs/incremental-lsp-plan.md`,
-/// Stage 9).
+/// Stage 9). The env is one unit, from resolving its references to reading
+/// their DLLs (`build_env_from_dll_paths`, inside it).
 const UNIT_SPANS: [&str; 4] = [
     "parse_compile_item",
-    "build_env_from_dll_paths",
+    "build_assembly_env",
     "resolve_project",
     "infer_project",
 ];
 
-/// What [`StopAtUnit`] saw.
+/// What [`StopAtSpan`] saw.
 #[derive(Default, Debug)]
-struct UnitTrace {
-    units: Vec<&'static str>,
-    /// The index, among `units`, at which the notification was sent.
+struct SpanTrace {
+    /// Every span the first run began, by name, while it ran its handler
+    /// (inside its `lsp.request` span).
+    points: Vec<&'static str>,
+    /// The index, among `points`, at which the notification was sent.
     sent_at: Option<usize>,
     /// Units begun after the notification and before the run stopped.
     begun_after: Vec<&'static str>,
+    /// `lsp.request` spans begun: one per run.
+    runs: usize,
+    in_first_run: bool,
     stopped: usize,
 }
 
-/// A subscriber that sends a notification the server ignores when the
-/// `at`th unit begins, and records which units begin before the running
-/// request stops.
-struct StopAtUnit {
+/// The id [`StopAtSpan`] gives the `lsp.request` span, so that it can tell
+/// when the handler has returned; every other span gets 1.
+const REQUEST_SPAN_ID: u64 = 2;
+
+/// A subscriber that sends a notification the server ignores as the `at`th
+/// span the request's first run begins inside its handler does, and records
+/// which units begin before the request stops.
+struct StopAtSpan {
     at: Option<usize>,
     input: borzoi::inbox::InboxSender,
-    trace: Arc<Mutex<UnitTrace>>,
+    trace: Arc<Mutex<SpanTrace>>,
 }
 
-impl tracing::Subscriber for StopAtUnit {
+impl tracing::Subscriber for StopAtSpan {
     fn register_callsite(
         &self,
         metadata: &'static tracing::Metadata<'static>,
@@ -1937,22 +1947,29 @@ impl tracing::Subscriber for StopAtUnit {
         }
     }
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        (metadata.is_span() && UNIT_SPANS.contains(&metadata.name()))
+        metadata.is_span()
             || (metadata.is_event() && metadata.name() == borzoi::inbox::STOPPED_EVENT)
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let mut trace = self.trace.lock().unwrap();
         let name = span.metadata().name();
-        let index = trace.units.len();
-        trace.units.push(name);
-        if trace.sent_at.is_some() && trace.stopped == 0 {
+        if name == "lsp.request" {
+            trace.runs += 1;
+            trace.in_first_run = trace.runs == 1;
+            return tracing::span::Id::from_u64(REQUEST_SPAN_ID);
+        }
+        if trace.sent_at.is_some() && trace.stopped == 0 && UNIT_SPANS.contains(&name) {
             trace.begun_after.push(name);
         }
-        if self.at == Some(index) {
-            trace.sent_at = Some(index);
-            self.input
-                .send(notification("$/borzoi-test/ignored", Value::Null))
-                .unwrap();
+        if trace.in_first_run {
+            let index = trace.points.len();
+            trace.points.push(name);
+            if self.at == Some(index) {
+                trace.sent_at = Some(index);
+                self.input
+                    .send(notification("$/borzoi-test/ignored", Value::Null))
+                    .unwrap();
+            }
         }
         tracing::span::Id::from_u64(1)
     }
@@ -1963,107 +1980,179 @@ impl tracing::Subscriber for StopAtUnit {
     }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
+    fn try_close(&self, id: tracing::span::Id) -> bool {
+        if id.into_u64() == REQUEST_SPAN_ID {
+            self.trace.lock().unwrap().in_first_run = false;
+        }
+        true
+    }
 }
 
-/// The requests whose units [`a_request_starts_no_unit_after_a_notification_arrives`]
-/// sweeps: on a cold session, each folds and infers the project, or folds it
-/// whole.
-fn unit_requests(world: &World) -> Vec<Message> {
+/// A scenario for [`a_request_stops_for_a_notification_wherever_it_arrives`]:
+/// what a fresh session is sent first, unstopped, and the request it is then
+/// asked.
+struct LatencyScenario {
+    name: &'static str,
+    setup: Vec<Message>,
+    request: Message,
+}
+
+fn latency_scenarios(world: &World) -> Vec<LatencyScenario> {
+    let a = world.uri(Doc::Src(Src::A));
     let c = world.uri(Doc::Src(Src::C));
-    vec![
-        request(
-            "hover",
-            "textDocument/hover",
-            json!({
-                "textDocument": { "uri": c },
-                "position": { "line": 2, "character": 10 },
-            }),
-        ),
-        request(
-            "references",
-            "textDocument/references",
-            json!({
-                "textDocument": { "uri": c },
-                "position": { "line": 2, "character": 4 },
-                "context": { "includeDeclaration": true },
-            }),
-        ),
-        request(
-            "tokens",
-            "textDocument/semanticTokens/full",
-            json!({ "textDocument": { "uri": c } }),
-        ),
-    ]
-}
-
-/// One cold session that opens every source and asks `request`, sending a
-/// notification when unit `at` begins: what the units did, and the answer.
-fn run_unit_case(world: &World, request: &Message, at: Option<usize>) -> (UnitTrace, Response) {
-    let mut session = Session::start(&world.root, false);
     let opens: Vec<Message> = SOURCES
         .iter()
         .map(|&src| did_open(&world.uri(Doc::Src(src)), src.text(0)))
         .collect();
-    session.deliver(opens);
+    let hover_c = request(
+        "hover",
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": c },
+            "position": { "line": 2, "character": 10 },
+        }),
+    );
+    let tokens_c = |id: &str| {
+        request(
+            id,
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": c } }),
+        )
+    };
+    // A second project beside `P`, opened, so `workspace/symbol` parses two.
+    let q = world.root.join("Q");
+    std::fs::create_dir_all(&q).unwrap();
+    std::fs::write(
+        q.join("Q.fsproj"),
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"D.fs\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    std::fs::write(q.join("D.fs"), "module D\n\nlet d = 1\n").unwrap();
+    let d = Uri::from_file_path(q.join("D.fs"))
+        .unwrap()
+        .as_str()
+        .to_string();
+    vec![
+        LatencyScenario {
+            name: "a cold hover (parses, env, fold, inference)",
+            setup: opens.clone(),
+            request: hover_c.clone(),
+        },
+        LatencyScenario {
+            name: "cold references (the whole project, then its scan)",
+            setup: opens.clone(),
+            request: request(
+                "references",
+                "textDocument/references",
+                json!({
+                    "textDocument": { "uri": c },
+                    "position": { "line": 2, "character": 4 },
+                    "context": { "includeDeclaration": true },
+                }),
+            ),
+        },
+        LatencyScenario {
+            name: "cold semantic tokens",
+            setup: opens.clone(),
+            request: tokens_c("tokens"),
+        },
+        LatencyScenario {
+            name: "a hover over a cached fold (inference only)",
+            setup: opens.iter().cloned().chain([tokens_c("warm")]).collect(),
+            request: hover_c,
+        },
+        LatencyScenario {
+            name: "workspace symbols over two projects",
+            setup: opens
+                .iter()
+                .cloned()
+                .chain([
+                    did_open(&d, "module D\n\nlet d = 1\n"),
+                    did_open(&a, Src::A.text(0)),
+                ])
+                .collect(),
+            request: request("symbols", "workspace/symbol", json!({ "query": "" })),
+        },
+    ]
+}
+
+/// One fresh session: `scenario`'s setup, then its request, with a
+/// notification sent as the `at`th span of its handler begins.
+fn run_latency_case(
+    world: &World,
+    scenario: &LatencyScenario,
+    at: Option<usize>,
+) -> (SpanTrace, Value) {
+    let mut session = Session::start(&world.root, false);
+    session.deliver(scenario.setup.clone());
     session.settle();
-    let trace = Arc::new(Mutex::new(UnitTrace::default()));
-    let subscriber = StopAtUnit {
+    let trace = Arc::new(Mutex::new(SpanTrace::default()));
+    let subscriber = StopAtSpan {
         at,
         input: session.input.clone(),
         trace: Arc::clone(&trace),
     };
-    let mut answers =
-        tracing::subscriber::with_default(subscriber, || session.deliver(vec![request.clone()]));
-    let Message::Request(request) = request else {
+    let mut answers = tracing::subscriber::with_default(subscriber, || {
+        session.deliver(vec![scenario.request.clone()])
+    });
+    let Message::Request(request) = &scenario.request else {
         unreachable!()
     };
     let mut answer = answers
         .remove(&request.id)
         .expect("the request is answered");
     assert_eq!(answer.len(), 1, "answered once: {answer:?}");
+    let answer =
+        serde_json::to_value(answer.remove(0).response_result.map_err(|e| e.code)).unwrap();
     let trace = std::mem::take(&mut *trace.lock().unwrap());
-    (trace, answer.remove(0))
+    (trace, answer)
 }
 
-/// The cancellation latency, as units: a notification that arrives while a
-/// request runs stops it before it begins another unit of work. Swept over
-/// every unit a cold request begins, for a request that folds and infers, one
-/// that folds the whole project, and one that classifies tokens. Each stopped
-/// request runs again and answers as the request that was never stopped.
+/// The cancellation latency, over every point a request's handler passes: a
+/// notification that arrives as any span of the handler begins (the
+/// handler's own, each unit's, and every span inside them) stops the request
+/// once, before it begins another unit of work, and the request then answers
+/// as it does unstopped. Swept over every such span of a cold hover, cold
+/// references, cold semantic tokens, a hover whose fold is cached and whose
+/// inference is not, and `workspace/symbol` over two projects.
 #[test]
-fn a_request_starts_no_unit_after_a_notification_arrives() {
+fn a_request_stops_for_a_notification_wherever_it_arrives() {
     on_server_stack(|| {
         let world = World::new();
-        for request in unit_requests(&world) {
-            let (unstopped, want) = run_unit_case(&world, &request, None);
+        for scenario in latency_scenarios(&world) {
+            let (unstopped, want) = run_latency_case(&world, &scenario, None);
             assert!(
-                unstopped.units.len() >= 4,
-                "a cold request begins its units: {unstopped:?}"
+                unstopped.points.iter().any(|p| UNIT_SPANS.contains(p)),
+                "{}: the request begins a unit: {unstopped:?}",
+                scenario.name
             );
             assert_eq!(unstopped.stopped, 0);
-            for at in 0..unstopped.units.len() {
-                let (trace, got) = run_unit_case(&world, &request, Some(at));
+            for at in 0..unstopped.points.len() {
+                let (trace, got) = run_latency_case(&world, &scenario, Some(at));
+                let point = unstopped.points[at];
                 assert_eq!(
                     trace.sent_at,
                     Some(at),
-                    "the notification was sent at unit {at}: {trace:?}"
+                    "{}: the notification was sent at {point} ({at}): {trace:?}",
+                    scenario.name
                 );
                 assert_eq!(
                     trace.stopped, 1,
-                    "the request stopped once, for the notification at unit {at} ({}): {trace:?}",
-                    trace.units[at]
+                    "{}: the request stopped once, for the notification at {point} ({at}): \
+                     {trace:?}",
+                    scenario.name
                 );
                 assert!(
                     trace.begun_after.is_empty(),
-                    "after the notification at unit {at} ({}), the request began {:?} before it \
-                     stopped",
-                    trace.units[at],
+                    "{}: after the notification at {point} ({at}), the request began {:?} \
+                     before it stopped",
+                    scenario.name,
                     trace.begun_after
                 );
                 assert_eq!(
-                    serde_json::to_value(got.response_result.map_err(|e| e.code)).unwrap(),
-                    serde_json::to_value(want.response_result.clone().map_err(|e| e.code)).unwrap(),
-                    "stopped at unit {at}, the request answers as it does unstopped"
+                    got, want,
+                    "{}: stopped at {point} ({at}), the request answers as it does unstopped",
+                    scenario.name
                 );
             }
         }
@@ -2205,58 +2294,66 @@ fn the_epoch_holds_at_most_its_bound() {
 /// in the next (the stale parses that decide the refresh survive the stop).
 #[test]
 fn a_stopped_rebuild_still_owes_the_refresh_for_an_unannounced_change() {
+    /// One session: warm, `B` rewritten on disk, then tokens for `C` with a
+    /// notification at the `stop`th span of the handler. The trace, and how
+    /// many token refreshes the server sent for the request.
+    fn round(stop: Option<usize>) -> (SpanTrace, usize) {
+        let mut world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let c = world.uri(Doc::Src(Src::C));
+        let tokens_c = || {
+            request(
+                "tokens",
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": c } }),
+            )
+        };
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&c, Src::C.text(0)),
+        ]);
+        session.settle();
+        session.deliver(vec![tokens_c()]);
+        session.settle();
+        session.server_requests.clear();
+        // `B` is closed: no sync announces this.
+        world.write(Src::B, 1);
+        let trace = Arc::new(Mutex::new(SpanTrace::default()));
+        let subscriber = StopAtSpan {
+            at: stop,
+            input: session.input.clone(),
+            trace: Arc::clone(&trace),
+        };
+        let answers =
+            tracing::subscriber::with_default(subscriber, || session.deliver(vec![tokens_c()]));
+        assert_eq!(error_code(&answers, "tokens"), None);
+        let trace = std::mem::take(&mut *trace.lock().unwrap());
+        let refreshes = session
+            .server_requests
+            .iter()
+            .filter(|method| *method == "workspace/semanticTokens/refresh")
+            .count();
+        (trace, refreshes)
+    }
     on_server_stack(|| {
-        for stop in [None, Some(0)] {
-            let mut world = World::new();
-            let a = world.uri(Doc::Src(Src::A));
-            let c = world.uri(Doc::Src(Src::C));
-            let tokens_c = || {
-                request(
-                    "tokens",
-                    "textDocument/semanticTokens/full",
-                    json!({ "textDocument": { "uri": c } }),
-                )
-            };
-            let mut session = Session::start(&world.root, false);
-            session.deliver(vec![
-                did_open(&a, Src::A.text(0)),
-                did_open(&c, Src::C.text(0)),
-            ]);
-            session.settle();
-            session.deliver(vec![tokens_c()]);
-            session.settle();
-            session.server_requests.clear();
-            // `B` is closed: no sync announces this.
-            world.write(Src::B, 1);
-            let trace = Arc::new(Mutex::new(UnitTrace::default()));
-            let subscriber = StopAtUnit {
-                at: stop,
-                input: session.input.clone(),
-                trace: Arc::clone(&trace),
-            };
-            let answers =
-                tracing::subscriber::with_default(subscriber, || session.deliver(vec![tokens_c()]));
-            assert_eq!(error_code(&answers, "tokens"), None);
-            let trace = std::mem::take(&mut *trace.lock().unwrap());
-            assert_eq!(
-                trace.stopped,
-                usize::from(stop.is_some()),
-                "the rebuild stopped as planned: {trace:?}"
-            );
-            assert!(
-                trace.units.first() == Some(&"parse_compile_item"),
-                "the request rebuilt the parses: {trace:?}"
-            );
-            let refreshes = session
-                .server_requests
-                .iter()
-                .filter(|method| *method == "workspace/semanticTokens/refresh")
-                .count();
-            assert_eq!(
-                refreshes, 1,
-                "stopping at {stop:?}: the unannounced change owes one token refresh, sent {:?}",
-                session.server_requests
-            );
-        }
+        let (unstopped, refreshes) = round(None);
+        assert_eq!(
+            refreshes, 1,
+            "the unannounced change owes one token refresh"
+        );
+        // Stop while the parses are rebuilt: at the first item, so the
+        // checkpoint before the second stops the rebuild.
+        let first_parse = unstopped
+            .points
+            .iter()
+            .position(|p| *p == "parse_compile_item")
+            .expect("the request rebuilds the parses");
+        let (stopped, refreshes) = round(Some(first_parse));
+        assert_eq!(stopped.stopped, 1, "the rebuild stopped: {stopped:?}");
+        assert_eq!(
+            refreshes, 1,
+            "a rebuild that stopped still owes the token refresh for the unannounced change"
+        );
     });
 }
