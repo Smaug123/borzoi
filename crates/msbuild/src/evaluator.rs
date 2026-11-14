@@ -1437,6 +1437,11 @@ struct State<'r> {
     /// definition) may be about any list.
     #[cfg(any(test, feature = "test-support"))]
     package_cause_owners: HashMap<usize, item_pass::PackageItemKind>,
+    /// Whether the walk has spliced in a `Directory.Build.*` file itself
+    /// ([`walk_directory_build_file`]), standing in for an import an SDK's
+    /// `Microsoft.Common.*` makes, which MSBuild makes only when an SDK chain
+    /// reaches it (#676).
+    directory_build_file_spliced: bool,
     /// Whether `MSBuildProjectDefaultTargets` is settled ([`latch_default_targets`]):
     /// set from a root's `DefaultTargets`, or left unset because a root's
     /// could not be decided.
@@ -2184,6 +2189,7 @@ impl<'r> State<'r> {
             package_versions: Vec::new(),
             package_versions_untracked: false,
             default_targets_decided: false,
+            directory_build_file_spliced: false,
             update_batches: HashMap::new(),
             global_package_references: Vec::new(),
             framework_references: Vec::new(),
@@ -2748,6 +2754,7 @@ impl<'r> State<'r> {
             #[cfg(any(test, feature = "test-support"))]
                 package_cause_owners: _,
             default_targets_decided: _,
+            directory_build_file_spliced: _,
             update_batches: _,
             package_versions,
             package_versions_untracked,
@@ -6377,6 +6384,8 @@ fn resolve_property_import_target(
 /// could not see (which may have set it first), and one in a
 /// `Directory.Build.*` file the walk spliced in itself, which MSBuild
 /// imports only when an SDK chain reaches the point that file stands for.
+/// So is any root outside an SDK's files once such a splice has run, since
+/// the properties it wrote may not exist in MSBuild's build (#676).
 fn latch_default_targets(root: Node<'_, '_>, state: &mut State<'_>) {
     if state.default_targets_decided {
         return;
@@ -6389,6 +6398,9 @@ fn latch_default_targets(root: Node<'_, '_>, state: &mut State<'_>) {
         || expansion.unpinned_root.is_some()
         || state.walk_opaque.is_some()
         || state.active_directory_build_splice.is_some()
+        // What a splice wrote may be what no MSBuild build holds (#676): only a
+        // root in an SDK's own files, which a real chain reaches, is past it.
+        || (state.directory_build_file_spliced && !state.in_sdk_subtree)
     {
         state.default_targets_decided = true;
         state.lookup.remove("MSBuildProjectDefaultTargets");
@@ -6805,6 +6817,7 @@ fn walk_directory_build_file(
     kind: DirectoryBuildFile,
     state: &mut State<'_>,
 ) {
+    state.directory_build_file_spliced = true;
     #[cfg(any(test, feature = "test-support"))]
     match kind {
         DirectoryBuildFile::Props => state.directory_build_splices.props_spliced = true,

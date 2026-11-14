@@ -2014,7 +2014,9 @@ settles it. Blanks or separators alone leave it open to a later root. On SDK
 projects it is `Build`, from `Microsoft.Common.targets`. It is left unset
 and inexact, settling the offer, by a root whose expansion the walk cannot
 vouch for, by a root in a `Directory.Build.*` file the walk spliced in
-itself, or by opacity while the offer is open.
+itself, by any root outside an SDK's files once such a splice has run
+(whatever it wrote may not exist in MSBuild's build, #676), or by opacity
+while the offer is open.
 `fsproj_default_targets_generative_diff` holds it to MSBuild over entry and
 imported roots, literal, padded, escaped, list, empty and property-expanded
 values, blanks and separators, a `Directory.Build.props` beside an SDK-less

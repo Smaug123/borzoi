@@ -82,7 +82,10 @@ fn tree(rng: &mut SplitMix64) -> Vec<(&'static str, String)> {
     if rng.below(5) == 0 {
         files.push((
             "Directory.Build.props",
-            format!("<Project{}>\n</Project>\n", default_targets(rng)),
+            format!(
+                "<Project{}>\n  <PropertyGroup><P>dbp</P></PropertyGroup>\n</Project>\n",
+                default_targets(rng)
+            ),
         ));
     }
     files
