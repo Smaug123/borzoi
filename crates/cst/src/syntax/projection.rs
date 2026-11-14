@@ -4,16 +4,18 @@
 //!
 //! The frozen `vN` *facades* (the distinct, exhaustive dispatch enums, e.g.
 //! `v8::Type` = the union [`Type`](super::Type) minus the F# 9.0 `WithNull`) are
-//! now **generated** by `tools/astgen` from the interval table and live in
-//! `super::generated`. What stays here is the *gate*: given a parsed tree and a
-//! pinned [`LanguageVersion`], find a node outside that surface. This is the
+//! **generated** by `tools/astgen` from the feature table
+//! (`crates/cst/language-features.tsv`) and live in `super::generated`. What
+//! stays here is the *gate*: given a parsed tree and a pinned
+//! [`LanguageVersion`], find a node outside that surface. This is the
 //! executable statement of "the `vN` projection is not total here" — the same
 //! fact a caller turns into a diagnostic or a `.syntax()` drop (the D7
-//! "incomplete, never wrong" floor). It reads the shared
-//! [`kind_in_surface`] interval table, so gate and facade agree by construction.
+//! "incomplete, never wrong" floor). It reads [`kind_in_surface`], which reads
+//! the same table rows, so gate and facade agree by construction.
 //!
-//! The single typed delta today is **nullness** ([`WITH_NULL_TYPE`], F# 9.0, FCS
-//! `LanguageFeature.NullnessChecking`); see
+//! The kinds with an interval are the live `Kind` rows of the table:
+//! `WHILE_BANG_EXPR` and `INTERSECTION_TYPE` (F# 8.0) and [`WITH_NULL_TYPE`]
+//! (F# 9.0, FCS `LanguageFeature.NullnessChecking`); see
 //! [`docs/completed/ast-versioning-nullness-proof.md`] for the mechanism proof
 //! this productionises.
 //!
@@ -22,6 +24,8 @@
 //! [`WITH_NULL_TYPE`]: super::SyntaxKind::WITH_NULL_TYPE
 
 use crate::language_version::LanguageVersion;
+#[cfg(doc)]
+use crate::syntax::DEFERRED_KIND_FEATURES;
 use crate::syntax::{AstNode, SyntaxKind, SyntaxNode, Type as UnionType, kind_in_surface};
 
 /// Whether a `Type` node of `kind` is legal at `lang`. A thin, `Type`-scoped
@@ -45,14 +49,13 @@ pub fn type_kind_in_surface(kind: SyntaxKind, lang: LanguageVersion) -> bool {
 /// and/or drops to [`SyntaxNode`] for that node (the D7 "incomplete, never
 /// wrong" floor).
 ///
-/// It gates against the shared [`kind_in_surface`] table, which is **exact for
-/// the committed surfaces** (`v8`/`v9`, and any pin `>= 8.0`) but deliberately
-/// *partial* below 8.0 — so for a pin in 4.6-7.0 this **under-reports** modelled
-/// post-floor kinds (interpolated strings, while-bang, …) rather than guess
-/// unverified gating (the D3/D7 limitation; see
-/// [`kind_interval`](crate::syntax::kind_interval) "Known gap").
-/// Because the one gated kind today is a `Type` kind (nullness), this currently
-/// coincides with [`first_out_of_surface_type`].
+/// It gates against [`kind_in_surface`], which knows only the feature table's
+/// live `Kind` rows. The deferred ones ([`DEFERRED_KIND_FEATURES`]: interpolated
+/// strings at 5.0, `_.M` at 8.0, from-end indexing at preview) are in surface at
+/// every version until they go live, so below their version this
+/// **under-reports** them (`docs/ast-versioning-plan.md`, "The feature table").
+/// Below 8.0 it also finds `WHILE_BANG_EXPR`, which is not a `Type`, so there it
+/// can find a node [`first_out_of_surface_type`] does not.
 pub fn first_out_of_surface(root: &SyntaxNode, lang: LanguageVersion) -> Option<SyntaxNode> {
     root.descendants()
         .find(|n| !kind_in_surface(n.kind(), lang))

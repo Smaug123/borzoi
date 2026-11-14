@@ -24,3 +24,8 @@ pub mod union_types;
 pub mod v8;
 #[cfg(feature = "unstable-union")]
 pub mod v9;
+
+// `LanguageFeature` and its data, from `crates/cst/language-features.tsv`;
+// re-exported from `crate::language_version` and (`kind_feature`) from
+// `crate::syntax`.
+pub mod features;

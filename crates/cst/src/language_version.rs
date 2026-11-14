@@ -10,8 +10,10 @@
 //! (FCS's `previewVersion = 9999`). See [`docs/ast-versioning-plan.md`] D3.
 //!
 //! Beyond faithful `<LangVersion>` parsing, the type answers each FCS
-//! `SupportsFeature` question the lexer, lex-filter and parser ask, as one
-//! predicate per feature (`supports_*` and friends below).
+//! `SupportsFeature` question the lexer, lex-filter and parser ask:
+//! [`LanguageVersion::supports`] over [`LanguageFeature`], which is generated
+//! from the feature table `crates/cst/language-features.tsv` (see
+//! [`docs/ast-versioning-plan.md`], "The feature table").
 //!
 //! [`docs/ast-versioning-plan.md`]: ../../../docs/ast-versioning-plan.md
 
@@ -49,10 +51,8 @@ pub enum LanguageVersion {
 
 impl LanguageVersion {
     /// The version an unspecified project uses — FCS's `defaultVersion` (10.0),
-    /// which `default`/`latest`/`latestmajor` all resolve to. It is also the
-    /// baseline surface we model explicitly (see `docs/ast-versioning-plan.md`):
-    /// the frozen F# 10.0 facade, with [`Preview`](LanguageVersion::Preview) —
-    /// every feature the parser implements, all on — modelled on top of it.
+    /// which `default`/`latest`/`latestmajor` all resolve to, and what the LSP
+    /// parses a project at when it sets no `<LangVersion>`.
     pub const DEFAULT: LanguageVersion = LanguageVersion::V10_0;
 
     /// The bottom of the ladder — the least surface this parser models.
@@ -68,49 +68,6 @@ impl LanguageVersion {
     /// [`diagnostics_are_version_invariant`](crate::parser::diagnostics_are_version_invariant)
     /// be decided by two evaluations instead of nine.
     pub const MAX: LanguageVersion = LanguageVersion::Preview;
-
-    /// Whether the `#elif` preprocessor directive is available at this version.
-    /// FCS gates it on `LanguageFeature.PreprocessorElif`, introduced in 11.0
-    /// (`LanguageFeatures.fs`); [`Preview`](LanguageVersion::Preview) (ordered
-    /// above 11.0) supports it too. This is the first concrete `v10` vs
-    /// `preview` legality split — see `docs/ast-versioning-plan.md` D3.
-    ///
-    /// A standalone predicate rather than a feature table: there is exactly one
-    /// parser-visible feature to gate today. The table is Stage 3 of the plan,
-    /// once several gated features make it earn its place.
-    pub fn supports_preprocessor_elif(self) -> bool {
-        self >= LanguageVersion::V11_0
-    }
-
-    /// Whether FCS's `LanguageFeature.RelaxWhitespace` (F# 4.7,
-    /// `LanguageFeatures.fs`) is on: the lex-filter's undentation limit for a
-    /// `static member P with get() =` body (`CtxtWithAsLet` over
-    /// `CtxtMemberHead`) is the member head's column + 1. Below 4.7 the limit
-    /// is found further down the stack. The limit only grades offside
-    /// *warnings* below F# 8 (where no push is strict), so this gate never
-    /// moves the token stream.
-    pub fn supports_relax_whitespace(self) -> bool {
-        self >= LanguageVersion::V4_7
-    }
-
-    /// Whether FCS's `LanguageFeature.RelaxWhitespace2` (F# 6.0,
-    /// `LanguageFeatures.fs`) is on. It gates three lex-filter behaviours:
-    /// the `relaxWhitespace2OffsideRule` `+1` grace that lets a dedented
-    /// closer sit at an enclosing context's column without popping it
-    /// (shape-affecting), popping a `CtxtMatch` together with the
-    /// `CtxtMatchClauses` above it (shape-affecting), and three undentation-
-    /// limit arms (warnings only below F# 8, where it is always on).
-    pub fn supports_relax_whitespace2(self) -> bool {
-        self >= LanguageVersion::V6_0
-    }
-
-    /// Whether FCS's `LanguageFeature.ParsedHashDirectiveArgumentNonQuotes`
-    /// (F# 9.0, `LanguageFeatures.fs`) is on: a `#nowarn` / `#warnon`
-    /// argument may be unquoted (`40`) or `FS`-prefixed (`FS40`, `"FS40"`).
-    /// Below 9.0 only a quoted bare number (`"40"`) is read.
-    pub fn supports_non_quoted_hash_directive_arguments(self) -> bool {
-        self >= LanguageVersion::V9_0
-    }
 
     /// Whether `feature` is available at this version (FCS's
     /// `LanguageVersion.SupportsFeature`).
@@ -136,34 +93,13 @@ impl LanguageVersion {
     /// one's always equals.
     pub fn shape_representative(self) -> LanguageVersion {
         match (
-            self.supports_relax_whitespace2(),
-            self.strict_indentation_is_error(),
+            self.supports(LanguageFeature::RelaxWhitespace2),
+            self.supports(LanguageFeature::StrictIndentation),
         ) {
             (false, _) => LanguageVersion::V5_0,
             (true, false) => LanguageVersion::V7_0,
             (true, true) => LanguageVersion::DEFAULT,
         }
-    }
-
-    /// Whether the lex-filter's offside "this token is offside of context
-    /// started earlier" problem (FS0058) is an *error* rather than a *warning*
-    /// at this version. FCS gates this on `LanguageFeature.StrictIndentation`,
-    /// introduced in F# 8.0 (`LanguageFeatures.fs`); below it the same problem is
-    /// a warning and non-conforming indentation still compiles. (FCS also honours
-    /// a `--strict-indentation[+|-]` CLI override; we have no compiler CLI, so the
-    /// version is the sole determinant.)
-    pub fn strict_indentation_is_error(self) -> bool {
-        self >= LanguageVersion::V8_0
-    }
-
-    /// Whether the lex-filter reports the "nested declaration inside a type"
-    /// problems (FS0058: nested `type`/`module`/`exception`/`open` inside a type
-    /// definition) at this version. FCS gates them on
-    /// `LanguageFeature.ErrorOnInvalidDeclsInTypeDefinitions`, introduced in
-    /// F# 10.0 (`LanguageFeatures.fs`); below it the constructs parse with no
-    /// diagnostic.
-    pub fn reports_invalid_decls_in_type_definitions(self) -> bool {
-        self >= LanguageVersion::V10_0
     }
 
     /// Every numbered version, ascending. Excludes
@@ -213,90 +149,20 @@ impl LanguageVersion {
     }
 }
 
-/// A language feature FCS checks *while parsing* and then parses anyway, so
-/// that below its version the construct draws a diagnostic over an unchanged
-/// tree. Each variant mirrors the `LanguageFeature` case of the same name
-/// (`LanguageFeatures.fs`).
-///
-/// The gates with a predicate of their own on [`LanguageVersion`] are not here:
-/// the lex-filter's, which change the token stream (`RelaxWhitespace`,
-/// `RelaxWhitespace2`, `StrictIndentation`), `#elif`, and the `#nowarn`
-/// argument forms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LanguageFeature {
-    /// `1f`: an integer literal with a `float32` suffix (`lex.fsl`'s
-    /// `ieee32_dotless_no_exponent`).
-    DotlessFloat32Literal,
-    /// `module [<A>] M` (`pars.fsy` `moduleIntro`).
-    AttributesToRightOfModuleKeyword,
-    /// `static abstract` members (`pars.fsy` `abstractMemberFlags`).
-    InterfacesWithAbstractStaticMembers,
-    /// `'T & #I` in type position and in a type-parameter declaration.
-    ConstraintIntersectionOnFlexibleTypes,
-    /// `while!`.
-    WhileBang,
-    /// `string | null`.
-    NullnessChecking,
-    /// An unparenthesised annotation on a `let!` / `use!` / `and!` binding, or
-    /// on the expression of a `return` / `yield` (or their `!` forms).
-    AllowTypedLetUseAndBang,
-}
+pub use crate::syntax::features::{FcsEffect, FcsStage, LanguageFeature};
 
 impl LanguageFeature {
-    /// Every feature, each once.
-    pub const ALL: [LanguageFeature; 7] = [
-        LanguageFeature::DotlessFloat32Literal,
-        LanguageFeature::AttributesToRightOfModuleKeyword,
-        LanguageFeature::InterfacesWithAbstractStaticMembers,
-        LanguageFeature::ConstraintIntersectionOnFlexibleTypes,
-        LanguageFeature::WhileBang,
-        LanguageFeature::NullnessChecking,
-        LanguageFeature::AllowTypedLetUseAndBang,
-    ];
-
-    /// The first version with the feature (`featureVersionMap` in
-    /// `LanguageFeatures.fs`).
-    pub fn introduced(self) -> LanguageVersion {
-        match self {
-            LanguageFeature::DotlessFloat32Literal => LanguageVersion::V5_0,
-            LanguageFeature::AttributesToRightOfModuleKeyword => LanguageVersion::V6_0,
-            LanguageFeature::InterfacesWithAbstractStaticMembers => LanguageVersion::V7_0,
-            LanguageFeature::ConstraintIntersectionOnFlexibleTypes => LanguageVersion::V8_0,
-            LanguageFeature::WhileBang => LanguageVersion::V8_0,
-            LanguageFeature::NullnessChecking => LanguageVersion::V9_0,
-            LanguageFeature::AllowTypedLetUseAndBang => LanguageVersion::V10_0,
-        }
-    }
-
-    /// The name FCS's FS3350 "Feature '…' is not available" message gives the
-    /// feature (its `FSComp.SR.feature*` string).
-    pub fn display_name(self) -> &'static str {
-        match self {
-            LanguageFeature::DotlessFloat32Literal => "dotless float32 literal",
-            LanguageFeature::AttributesToRightOfModuleKeyword => {
-                "attributes to the right of the 'module' keyword"
-            }
-            LanguageFeature::InterfacesWithAbstractStaticMembers => {
-                "static abstract interface members"
-            }
-            LanguageFeature::ConstraintIntersectionOnFlexibleTypes => {
-                "Constraint intersection on flexible types"
-            }
-            LanguageFeature::WhileBang => "'while!' expression",
-            LanguageFeature::NullnessChecking => "nullness checking",
-            LanguageFeature::AllowTypedLetUseAndBang => {
-                "Allow let! and use! type annotations without requiring parentheses"
-            }
-        }
-    }
-
     /// FCS's FS3350 message for using the feature at `lang`
-    /// (`chkFeatureNotLanguageSupported`).
+    /// (`chkFeatureNotLanguageSupported`). FCS spells a preview feature's
+    /// version `'PREVIEW'` (`LanguageVersion.GetFeatureVersionString`).
     pub fn not_available_message(self, lang: LanguageVersion) -> String {
+        let introduced = match self.introduced() {
+            LanguageVersion::Preview => "'PREVIEW'".to_string(),
+            version => version.to_string(),
+        };
         format!(
-            "Feature '{}' is not available in F# {lang}. Please use language version {} or greater.",
+            "Feature '{}' is not available in F# {lang}. Please use language version {introduced} or greater.",
             self.display_name(),
-            self.introduced(),
         )
     }
 }
@@ -329,23 +195,28 @@ mod tests {
     use super::LanguageVersion::*;
     use super::*;
 
-    /// [`LanguageFeature::ALL`] lists every variant once: the match fails to
-    /// compile when a variant is added, and the position check fails when the
-    /// list misses or repeats one.
+    /// The FS3350 message, as FCS's `chkFeatureNotLanguageSupported` words it:
+    /// the `#elif` one `parser_diff_ifdef` holds to FCS, and a preview
+    /// feature's, whose version FCS spells `'PREVIEW'`.
+    #[test]
+    fn not_available_message_matches_fcs() {
+        assert_eq!(
+            LanguageFeature::PreprocessorElif.not_available_message(V10_0),
+            "Feature '#elif preprocessor directive' is not available in F# 10.0. \
+             Please use language version 11.0 or greater.",
+        );
+        assert_eq!(
+            LanguageFeature::FromEndSlicing.not_available_message(V4_6),
+            "Feature 'from-end slicing' is not available in F# 4.6. \
+             Please use language version 'PREVIEW' or greater.",
+        );
+    }
+
+    /// [`LanguageFeature::ALL`] lists each feature once.
     #[test]
     fn all_features_are_listed_once() {
-        for (i, f) in LanguageFeature::ALL.into_iter().enumerate() {
-            let position = match f {
-                LanguageFeature::DotlessFloat32Literal => 0,
-                LanguageFeature::AttributesToRightOfModuleKeyword => 1,
-                LanguageFeature::InterfacesWithAbstractStaticMembers => 2,
-                LanguageFeature::ConstraintIntersectionOnFlexibleTypes => 3,
-                LanguageFeature::WhileBang => 4,
-                LanguageFeature::NullnessChecking => 5,
-                LanguageFeature::AllowTypedLetUseAndBang => 6,
-            };
-            assert_eq!(position, i, "{f:?}");
-        }
+        let distinct: std::collections::HashSet<_> = LanguageFeature::ALL.into_iter().collect();
+        assert_eq!(distinct.len(), LanguageFeature::ALL.len());
     }
 
     /// The full `getVersionFromString` mapping, transcribed from
@@ -446,12 +317,16 @@ mod tests {
     /// `Preview` support it; 10.0 (our `DEFAULT`) and everything below do not.
     #[test]
     fn preprocessor_elif_gated_at_11() {
-        assert!(!LanguageVersion::DEFAULT.supports_preprocessor_elif());
-        assert!(!V10_0.supports_preprocessor_elif());
-        assert!(V11_0.supports_preprocessor_elif());
-        assert!(Preview.supports_preprocessor_elif());
+        assert!(!LanguageVersion::DEFAULT.supports(LanguageFeature::PreprocessorElif));
+        assert!(!V10_0.supports(LanguageFeature::PreprocessorElif));
+        assert!(V11_0.supports(LanguageFeature::PreprocessorElif));
+        assert!(Preview.supports(LanguageFeature::PreprocessorElif));
         for v in LanguageVersion::NUMBERED {
-            assert_eq!(v.supports_preprocessor_elif(), v >= V11_0, "{v:?}");
+            assert_eq!(
+                v.supports(LanguageFeature::PreprocessorElif),
+                v >= V11_0,
+                "{v:?}"
+            );
         }
     }
 
@@ -462,8 +337,8 @@ mod tests {
     fn shape_representative_shares_the_gates() {
         let shape_gates = |v: LanguageVersion| {
             (
-                v.supports_relax_whitespace2(),
-                v.strict_indentation_is_error(),
+                v.supports(LanguageFeature::RelaxWhitespace2),
+                v.supports(LanguageFeature::StrictIndentation),
             )
         };
         for v in LanguageVersion::NUMBERED.into_iter().chain([Preview]) {

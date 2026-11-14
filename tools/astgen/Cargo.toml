@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish = false
-description = "Code generator for the borzoi-cst typed-AST facade (plan Stage 4)."
+description = "Code generator for the borzoi-cst typed-AST facades and language-feature table."
 
 # No external dependencies: the generator is a pure-Rust descriptor table, so it
 # adds nothing to `borzoi-cst`'s dependency closure (it is a sibling tool,

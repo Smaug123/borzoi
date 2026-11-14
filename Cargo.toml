@@ -24,6 +24,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 borzoi = { path = "crates/lsp" }
 borzoi-assembly = { path = "crates/assembly" }
+borzoi-astgen = { path = "tools/astgen" }
 borzoi-cst = { path = "crates/cst" }
 borzoi-msbuild = { path = "crates/msbuild" }
 borzoi-nuget = { path = "crates/nuget" }
