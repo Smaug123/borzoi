@@ -240,7 +240,7 @@ struct KindPos {
 
 /// FSharp.Core plus every assembly in the reference pack FCS's script check
 /// draws on.
-fn ref_pack_env() -> &'static AssemblyEnv {
+pub(crate) fn ref_pack_env() -> &'static AssemblyEnv {
     use std::sync::OnceLock;
     static ENV: OnceLock<AssemblyEnv> = OnceLock::new();
     ENV.get_or_init(|| {

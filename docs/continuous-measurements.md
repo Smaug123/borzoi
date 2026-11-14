@@ -62,7 +62,7 @@ Both halves exist for every axis, and the split is:
 | per-file resolution (in-file and FSharp.Core/BCL targets) | `resolve_corpus_diff` | `resolution-divergence` |
 | attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
 | resolver walk coverage | `silent_region_sweep` | — |
-| inferred types | `infer_corpus_diff` | — |
+| inferred types | `infer_corpus_diff`; `infer_corpus_dump` (everything inference publishes, byte for byte) | — |
 | find references | the crate's own suite | `find-references-differential` |
 | whole project | `corpus-diff` job | `project-corpus-diff` |
 | assembly projection | `projection_skip_sweep` | — |
@@ -220,6 +220,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 |---|---|
 | `resolve_corpus_diff` | keyed. One per sampled file (compared or skipped and why; whether FCS's check errored; how many in-file B1 uses FCS reported, `b1=`; how many it resolved into a referenced assembly, `assembly=`; and how many it resolved outside the file by no identity we can compare, a namespace included, `external=`) and one per gap, alt-binder, assembly-gap or divergence use. The in-file matches (~23k) are a file's `b1` less its listed in-file uses, the assembly matches (~12k) its `assembly` less its listed assembly-target ones, and the declined external uses its `external` less its listed external ones; the sweep checks, file by file, that every counted record came to exactly one verdict. |
 | `infer_corpus_diff` | keyed. One per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
+| `infer_corpus_dump` | keyed. One per corpus `.fs` (every file, not a sample): a SHA-1 prefix of everything inference published for it, and how many commits that holds, inferred alone and in a fold of its directory (where the dump adds what the fold published for each value the file exports). Whole, the dump is about 12 MB, so it is pinned by digest; `BORZOI_INFER_DUMP_OUT` writes it out to diff when a line moves. It grades nothing: it is the byte-identical oracle a refactor of inference is held to. |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `silent_region_sweep` | per clean-parsing corpus file, one per container bucket (`member-of-object-expression`, `attribute`, `let_decl`, …) holding an expression-position name the resolver recorded nothing at, with its count. The run prints a sample of each bucket's names. |
 | `overload_corpus_commits` | one per committing call site, and whether it went through a genuine overload set. |
@@ -253,7 +254,7 @@ the merge driver `tools/manifest-merge.sh` (enable it with
 A key one branch changed takes that branch's entry; a key both changed
 differently is a conflict. So a manifest merges cleanly exactly as far as its
 lines are independent. `project_corpus`, `resolve_corpus_diff`,
-`infer_corpus_diff`, `xml_doc_source_corpus`, `xml_doc_source_projects`,
+`infer_corpus_diff`, `infer_corpus_dump`, `xml_doc_source_corpus`, `xml_doc_source_projects`,
 `parser_corpus`, `parser_corpus_diff` and `recovery_sweep` are keyed, list
 their verdicts item by item and count only their inputs, and
 `fsproj_msbuild_corpus_diff` is keyed by project. The others are not keyed and

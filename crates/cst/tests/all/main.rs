@@ -13,6 +13,7 @@ mod accessor_coverage;
 mod corpus;
 mod corpus_walk;
 mod diagnostic_classes;
+mod facade_consumers;
 mod facade_properties;
 mod fcs_divergence;
 mod fcs_record_stack_bound;

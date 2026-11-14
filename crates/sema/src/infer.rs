@@ -119,7 +119,7 @@
 //! [`Gen::param_var`] gives each named parameter — alone, or an element of a
 //! tupled parameter ([`Gen::pattern_ty`]) — a **private slot**
 //! variable that is the parameter's type *inside* the function's `TyKind::Fun`, and
-//! condition typing grounds **that slot** ([`Gen::param_slots`]), *not* the
+//! condition typing grounds **that slot** ([`BinderEnv::param_slot`]), *not* the
 //! parameter's binder [`def_var`](Gen::def_var). The binder's variable — which
 //! its expression uses and `def_type` read off — is therefore never grounded by a
 //! condition, so `bool` flows *only* into the function signature and never into a
@@ -148,7 +148,7 @@
 //! quantified only when we can prove **every constraint FCS has on it is one we
 //! modelled** — which needs new machinery:
 //!
-//! - **Per-binding walk-completeness** ([`Gen::complete`]). During one binding's
+//! - **Per-binding walk-completeness** ([`Scope::complete`]). During one binding's
 //!   generation, any sub-expression or pattern we do not fully model marks the
 //!   binding *incomplete* (every `None`-return arm of [`Gen::infer_construct`], a
 //!   deferred literal, an unresolved name, a lambda, a struct/degenerate tuple, an
@@ -156,7 +156,7 @@
 //!   [`Gen::constrain_bool`] does not fully model — a compound `x && y` drops FCS
 //!   constraints on `x`/`y`). Incomplete ⇒ **no generalisation** (ground emission
 //!   is unaffected — the subset argument needs no completeness).
-//! - **Poisoned variables** ([`Gen::poison`]). Check mode deliberately drops the
+//! - **Poisoned variables** ([`Scope::poison`]). Check mode deliberately drops the
 //!   relation between a checked expression and its expected type (no subtype
 //!   relation yet); that dropped relation could ground *either* endpoint in FCS
 //!   (`let f x = if true then x else 1` unifies `x` with `int` through the
@@ -179,7 +179,7 @@
 //!
 //! Generalisation is **sequential per binding** (Algorithm W): [`Gen::let_binding`]
 //! drains and solves each binding's constraints before the next, so a later use
-//! sees the earlier binding's [scheme](Gen::def_schemes). A **vid mark**
+//! sees the earlier binding's [scheme](BinderEnv::scheme). A **vid mark**
 //! ([`InferTable::mark`]) taken at binding start makes the environment-freeness
 //! check trivial (an open var inherited from an earlier binder has a smaller index,
 //! so it defers this function rather than being quantified). At a function
@@ -300,9 +300,9 @@
 //!   a sealed BCL primitive (the set [`literal_ty`] produces — via
 //!   [`is_sealed_primitive`]), a tuple of such (recursively), or an unbound root
 //!   that is a **scheme-instantiation variable of ours** (a provenance set
-//!   [`Gen::scheme_inst_vars`] populated by [`Gen::instantiate`], membership
+//!   [`Solver::scheme_inst_vars`] populated by [`Solver::instantiate`], membership
 //!   checked against union-find roots), or a **function type**
-//!   ([`Gen::function_domain`]), which F# relates to an argument by equality
+//!   ([`Solver::function_domain`]), which F# relates to an argument by equality
 //!   alone. `obj`, arbitrary named types and arrays are excluded — F# admits a
 //!   coercion there, so equality would be wrong.
 //!
@@ -424,10 +424,10 @@
 //!   inside the operand of a construct it **rejects**. Three rules follow, each
 //!   applying to nodes and locals alike: a method call keeps nothing inside
 //!   itself and a check-mode subtree records nothing
-//!   ([`Gen::discard_emissions_since`], [`Gen::infer_expr_inner`]) — a local's
+//!   ([`Emissions::discard_since`], [`Gen::infer_expr_inner`]) — a local's
 //!   RHS is a synth position that can sit inside a check position, which is
 //!   where FCS rejects an application; and a member access's receiver is
-//!   **guarded** on the access resolving ([`Guard`]), since FCS drops the
+//!   **guarded** on the access resolving ([`emissions::Guard`]), since FCS drops the
 //!   receiver of `(1).Length` or `s.Length.Foo` too.
 //! - **A condition grounds a parameter only at its first occurrence.** FCS
 //!   unifies in source order, so a statement (`x; if x …`) or any earlier use
@@ -967,7 +967,7 @@ enum BinderSite {
     Module,
 }
 
-/// The open variables of [`Gen::opaque`]'s entries, as roots of their classes
+/// The open variables of [`Scope::opaque`]'s entries, as roots of their classes
 /// ([`Gen::opaque_roots`]).
 #[derive(Debug, Default)]
 struct OpaqueRoots {
@@ -981,7 +981,7 @@ struct OpaqueRoots {
 
 /// What [`Gen::finish`] needs to know of a module-level binder's binding,
 /// beyond its type, to decide what it publishes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ModuleBinder {
     /// The binding is `inline`.
     inline: bool,
@@ -1316,23 +1316,6 @@ enum MemberAccessKind {
     },
 }
 
-/// An index into [`Gen::guards`].
-type GuardId = usize;
-
-/// A construct FCS may **reject**, recorded so that what we emit inside its
-/// operand can wait on its acceptance. FCS keeps no node and no binder inside
-/// the operand of a construct it rejects — a member access on a receiver
-/// without that member keeps only the whole access, typed `'a` — so an emission
-/// inside one is published only if this guard, and every guard enclosing it,
-/// was confirmed ([`Gen::guard_holds`]).
-#[derive(Debug)]
-struct Guard {
-    /// The guard the construct itself sat under.
-    parent: Option<GuardId>,
-    /// Whether the construct was accepted: set by the event that proves it.
-    confirmed: bool,
-}
-
 /// A pending member access inside [`Gen::solve`] — the suspended form of
 /// [`Constraint::HasMember`], threaded through the solver's fixpoint.
 #[derive(Debug, Clone)]
@@ -1449,7 +1432,6 @@ fn infer_file_in(
     let facts = FileFacts::build(file, resolved, env, &tys, preceding, anonymous_module);
     let mut cx = Gen::new(&facts, &tys);
     cx.walk(file);
-    cx.solve();
     let walked = cx.finish();
     facts.into_inferred(walked)
 }
@@ -1696,138 +1678,44 @@ struct FileFacts<'a> {
     spans: RefCell<NodeSpans>,
 }
 
-/// Mutable state threaded through generation: the unification table, the inert
-/// constraint set, the per-expression variables to read back, and the cache of
-/// per-binder ([`DefId`]) variables that lets a value *use* unify with its
-/// binder. Grouped into one value so the per-node rules read locally.
+/// One file's walk: its immutable facts, and the three parts of what the walk
+/// accumulates, each apart so that what reads or writes which is visible at
+/// every use. A binding's own state is its [`Scope`], handed to each step of
+/// that binding's walk rather than held here.
 struct Gen<'a> {
     /// The file's immutable facts, shared with everything that reads them.
     facts: &'a FileFacts<'a>,
-    /// Every binder a module-level `let` binds ([`Self::own_binders`]): the
-    /// binders [`Self::finish`] decides a [`ModuleValue`] for.
-    module_binders: HashMap<DefId, ModuleBinder>,
-    /// The module-level binders whose binding was walked for its type
-    /// ([`Self::type_let_decl`]), whether or not it found one.
-    walked_binders: HashSet<DefId>,
+    /// The unification table and the constraints over its variables.
+    solver: Solver<'a>,
+    /// What the walk knows of each binder it met.
+    binders: BinderEnv,
+    /// What the walk emits for [`Gen::finish`] to read.
+    out: Emissions,
+}
+
+/// The inference variables and what relates them: the unification table and
+/// its snapshots, the inert constraint set, and the provenance of the
+/// variables an instantiation made. Of what one file's walk accumulates, the
+/// only state a later answer is computed from besides [`BinderEnv`].
+///
+/// It knows types and variables only: no binder, node or emission. What a
+/// speculative solve ([`Gen::solve`]) must undo outside the table is
+/// [`Emissions`]' to log.
+struct Solver<'a> {
     /// The session's type table ([`TyTable::session`]): every term the walk
     /// builds is an id into it. What the file publishes is copied into the
-    /// env's ([`Self::publish`]), and a type the env holds — an earlier file's
+    /// env's ([`FileFacts::publish`]), and a type the env holds — an earlier file's
     /// published type, a scheme — is read through an instantiation
     /// ([`Self::instantiate`]).
     tys: &'a TyTable,
     table: InferTable<'a>,
     constraints: Vec<Constraint>,
-    /// The argument checks a mid-walk [`Self::settle`] parked, in the order
+    /// The argument checks a mid-walk [`Gen::settle`] parked, in the order
     /// it met them: they stand ahead of every argument check in
-    /// [`Self::constraints`], and only [`Self::solve`] fires one. Kept apart
+    /// [`Self::constraints`], and only [`Gen::solve`] fires one. Kept apart
     /// so a settle does not read them again: a binding of `n` statements
     /// settles `n` times.
     settled_args: Vec<ArgCheck>,
-    /// `(range, var)` per expression whose type to emit; `range` is the read-off
-    /// key (and the same range the resolver keyed the occurrence under).
-    exprs: Vec<(TextRange, TyVid, Option<GuardId>)>,
-    /// The inference variable standing for each referenced in-file binder.
-    def_vars: HashMap<DefId, TyVid>,
-    /// Every expression-level `let` binder [`Self::local_binding`] bound (CE-1).
-    /// Unlike a declaration's binder, a local sits *inside* an expression, so
-    /// its publication is an emission like a node's: [`Self::finish`] publishes
-    /// one only if it is still in [`Self::local_emits`].
-    local_defs: HashSet<DefId>,
-    /// The local binders to publish, in walk order — the binder-side twin of
-    /// [`Self::exprs`], and discarded with it by an emission barrier
-    /// ([`Self::discard_emissions_since`]).
-    local_emits: Vec<(DefId, Option<GuardId>)>,
-    /// Each `(expr).Member` receiver's variable, keyed by the `DOT_GET_EXPR`'s
-    /// range — unguarded and never discarded, for
-    /// [`InferredFile::dot_get_receiver_type`].
-    dot_get_receivers: Vec<(TextRange, TyVid)>,
-    /// Each begun binding's incompleteness reasons, for
-    /// [`InferredFile::incompleteness`].
-    incompleteness: Vec<Vec<Incomplete>>,
-    /// Ranges whose emission [`Self::finish`] drops: a `match` scrutinee's own
-    /// node, which FCS may cover with a temporary's `let` typed as the whole
-    /// match. Filtered at read-off rather than cut from [`Self::exprs`], whose
-    /// positions emission marks record.
-    ungraded_ranges: HashSet<TextRange>,
-    /// The names the current binding's `match` patterns bind. FCS never
-    /// generalises a pattern variable, so each is this binding's own
-    /// monomorphic variable, used as a parameter is ([`Self::value_use`]):
-    /// not another binding's opaque one.
-    match_locals: HashSet<DefId>,
-    /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
-    guards: Vec<Guard>,
-    /// The guards enclosing the current walk position, innermost last; an
-    /// emission is tagged with the top one.
-    guard_stack: Vec<GuardId>,
-    /// The guard each member-name token's wake confirms: segment *i* of an
-    /// access confirms the *i*-th guard around its receiver
-    /// ([`Self::open_receiver_guards`]). Keyed by the token's range, which is
-    /// the member constraint's `use_range`.
-    guard_on_member: HashMap<TextRange, GuardId>,
-    /// The **private function-type slot** variable for each simple named
-    /// parameter of a `let`-function head ([`Self::param_var`]): the parameter's
-    /// type *inside* the function's [`TyKind::Fun`], and the only variable
-    /// [`Self::constrain_bool`] grounds when that parameter is used as a
-    /// condition. It is deliberately **separate** from the parameter binder's
-    /// [`def_var`](Self::def_var) — which its expression uses and `def_type` read
-    /// off — so the condition-derived `bool` flows *only* into the function type,
-    /// never into a standalone parameter read-off where an unmodelled constraint
-    /// (a use-site ascription, an annotation) could make it wrong on ill-typed
-    /// input (D5). Keyed by the parameter's `DefId`, so a condition referencing
-    /// that parameter finds its slot. On a *complete* binding the slot is
-    /// reunified with the binder var ([`Self::slot_binder_reunify`]).
-    param_slots: HashMap<DefId, TyVid>,
-    /// Each parameter of a function whose type [`Self::function_type`] built,
-    /// with that function: a parameter's type is published only where its
-    /// function's is ([`Self::finish`]).
-    param_owner: HashMap<DefId, DefId>,
-    /// **Per-binding**: the body of the function binding being walked, for
-    /// [`Self::is_first_occurrence`]. `None` outside a function binding.
-    cur_body: Option<SyntaxNode>,
-    /// Every parameter `DefId` collected during [`Self::param_var`].
-    /// [`Self::finish`] publishes each from its annotation or its slot in a
-    /// published function type, never from its binder variable.
-    param_defs: HashSet<DefId>,
-    /// Generalised binders' schemes, keyed by `DefId` (Stage 3.2c-2c). The scheme
-    /// body has open variables replaced by [`TyKind::Param`]s (numbered by first
-    /// appearance); each use [instantiates](Self::instantiate) it with fresh
-    /// variables. Computed at a function binding's finalisation, consulted by a
-    /// later binding's use — so it is filled sequentially, in document order.
-    def_schemes: HashMap<DefId, Ty>,
-    /// **Per-binding** walk-completeness (Stage 3.2c-2c). Reset to `true` at each
-    /// binding's start ([`Self::let_binding`]); cleared by any unmodelled
-    /// sub-expression or pattern. A binding may generalise only if it stays
-    /// complete — the proof that every constraint FCS has on its open variables is
-    /// one we modelled. Ground emission is *not* gated on this (the subset
-    /// argument in the module docs).
-    complete: bool,
-    /// **Per-binding** poison set (Stage 3.2c-2c): the raw variables of every
-    /// check-mode [`Self::infer_expr`] call (the expected and the returned var),
-    /// whose cross-relation this stage drops. Reset per binding. At generalisation
-    /// its one-step closure (resolve each, take every var in the resolved term)
-    /// gives the variables that may *not* be quantified — FCS's dropped relation
-    /// could have grounded them.
-    poison: Vec<TyVid>,
-    /// The simple named parameters of the **current** binding as `(DefId, slot)`
-    /// pairs, in head order (Stage 3.2c-2c). Reset per binding; drives the
-    /// slot=binder reunification on a complete function binding.
-    cur_params: Vec<(DefId, TyVid)>,
-    /// Each successfully-woken member access → its resolved identity, keyed by the
-    /// member-name use range (Stage 3.3b). Filled by [`Self::wake_member`] on a
-    /// single-candidate discharge; read out in [`Self::finish`] into
-    /// [`InferredFile::member_resolutions`].
-    member_resolutions: HashMap<TextRange, Resolution>,
-    /// The vid mark taken at the **current** binding's start — the boundary
-    /// between this binding's own variables and *environment* variables
-    /// inherited from earlier bindings. Generalisation already consults a mark
-    /// (threaded by value) to refuse quantifying an inherited-open variable;
-    /// this field lets the [`Constraint::ArgCheck`] wake apply the same
-    /// discipline: a discharge may bind only open variables created in the
-    /// current binding ([`Gen::arg_check_binds_only_current_vars`]), never
-    /// retro-ground an earlier binder's still-open variable (whose type FCS
-    /// fixed at *its* binding, e.g. `let g = id` staying `'a -> 'a` under a
-    /// later `g 1`).
-    cur_mark: u32,
     /// The **scheme-instantiation provenance set** (Stage 3.3c): every fresh
     /// inference variable [`Self::instantiate`] created from a [`TyKind::Param`]. An
     /// application's suspended [`Constraint::ArgCheck`] discharges only when its
@@ -1840,83 +1728,703 @@ struct Gen<'a> {
     /// is checked against union-find **roots** ([`Self::is_scheme_inst_root`]), so
     /// a var unioned with an instantiation var still counts.
     scheme_inst_vars: HashSet<TyVid>,
-    /// The current binding's instantiation variables whose type parameter
-    /// carries `equality` or `comparison`, and which
-    /// ([`Self::constrained_scheme_use`]). Each is poisoned when it is made, so
-    /// none generalises while open — no scheme here can say `when` — and
-    /// [`Self::check_constraints`] checks what each is solved to once the
-    /// binding is solved.
-    constrained: Vec<(TyVid, EqualityComparison)>,
-    /// The current binding's **implicitly scoped type variables**: each name a
-    /// `'a` in its head's annotations spells, to the one inference variable
-    /// every mention of it denotes ([`Self::open_head_typars`]). Empty where
-    /// the head declares its variables explicitly or mentions a `^a`. The
-    /// head's annotations read their own copy ([`AnnotationCx::Head`]); this
-    /// one is the binding's solve's ([`Self::is_head_typar_root`]).
-    head_typars: HashMap<String, TyVid>,
-    /// The current binding's parameters whose annotation mentions one of
-    /// [`Self::head_typars`].
-    typar_params: HashSet<DefId>,
-    /// Of [`Self::head_typars`], the variables the head declares
-    /// (`let f<'a> …`), in declaration order: rigid, so each must end the
-    /// binding a distinct unbound variable ([`Self::rigid_typars_hold`]).
-    rigid_typars: Vec<TyVid>,
-    /// Functions withheld for a rigid variable the body fixed
-    /// ([`Incomplete::RigidTypeVariable`]): never published, and a use of one
-    /// is not typed.
-    withheld_defs: HashSet<DefId>,
-    /// Whether the current binding, with every relation it holds applied as
-    /// the equality FCS tries first, breaks a declared variable's rigidity or
-    /// fails outright ([`Self::solve`]): FCS then rejects the declaration.
-    rigid_rejected: bool,
-    /// [`Self::emission_mark`] at the current binding's start.
-    binding_emissions: (usize, usize),
-    /// Whether the current binding's head declares type variables
-    /// (`let f<'a> …`), whether or not [`Self::open_head_typars`] reads them.
-    declares_typars: bool,
-    /// The current binding's parameters, as registered: what
-    /// [`Self::withhold_if_not_rigid`] withholds with the function.
+}
+
+use binder_env::BinderEnv;
+use emissions::{EmissionMark, Emissions};
+
+/// [`BinderEnv`], in a module of its own so that its fields are reached only
+/// through its methods.
+mod binder_env {
+    use super::ModuleBinder;
+    use crate::def::DefId;
+    use crate::hash::{HashMap, HashSet};
+    use crate::ty::{Ty, TyVid};
+
+    /// What the walk knows of each in-file binder it met: its variable, its
+    /// scheme once generalised, whether it is withheld, and for a parameter
+    /// its slot, its annotation and its function. FCS's `TcEnv`'s
+    /// accumulating part — the types of the values its name environment
+    /// reaches. Held apart from [`super::Solver`], whose variables it holds,
+    /// so that the solver knows no [`DefId`].
+    ///
+    /// The methods only add: no entry is removed, and no map's entry is
+    /// overwritten, which each writer asserts. What the types cannot hold is
+    /// the order, and that is broken in one place. A binder's entries are
+    /// written in its own binding, so in document order, except its
+    /// variable: [`Self::bind_var`] is called at the binder's first
+    /// reference ([`super::Gen::def_var`]), and for a binder whose
+    /// declaration the walk does not visit (a `let` FCS drops in a
+    /// namespace, or a binding construct that is not a `let`) that reference
+    /// is a later binding's use.
+    pub(super) struct BinderEnv {
+        /// The inference variable standing for each referenced in-file binder.
+        def_vars: HashMap<DefId, TyVid>,
+        /// Generalised binders' schemes, keyed by `DefId` (Stage 3.2c-2c). The scheme
+        /// body has open variables replaced by [`TyKind::Param`](crate::ty::TyKind::Param)s
+        /// (numbered by first appearance); each use
+        /// [instantiates](super::Solver::instantiate) it with fresh variables.
+        /// Computed at a function binding's finalisation, consulted by a later
+        /// binding's use — so it is filled sequentially, in document order.
+        def_schemes: HashMap<DefId, Ty>,
+        /// The **private function-type slot** variable for each simple named
+        /// parameter of a `let`-function head ([`super::Gen::param_var`]): the parameter's
+        /// type *inside* the function's [`TyKind::Fun`](crate::ty::TyKind::Fun), and the only variable
+        /// [`super::Gen::constrain_bool`] grounds when that parameter is used as a
+        /// condition. It is deliberately **separate** from the parameter binder's
+        /// [`def_var`](super::Gen::def_var) — which its expression uses and `def_type` read
+        /// off — so the condition-derived `bool` flows *only* into the function type,
+        /// never into a standalone parameter read-off where an unmodelled constraint
+        /// (a use-site ascription, an annotation) could make it wrong on ill-typed
+        /// input (D5). Keyed by the parameter's `DefId`, so a condition referencing
+        /// that parameter finds its slot. On a *complete* binding the slot is
+        /// reunified with the binder var ([`super::Gen::slot_binder_reunify`]).
+        param_slots: HashMap<DefId, TyVid>,
+        /// Each parameter of a function whose type [`super::Gen::function_type`] built,
+        /// with that function: a parameter's type is published only where its
+        /// function's is ([`super::Gen::finish`]).
+        param_owner: HashMap<DefId, DefId>,
+        /// Every parameter `DefId` collected during [`super::Gen::param_var`].
+        /// [`super::Gen::finish`] publishes each from its annotation or its slot in a
+        /// published function type, never from its binder variable.
+        param_defs: HashSet<DefId>,
+        /// Each annotated parameter's annotation: what FCS knows of the parameter
+        /// at every use in its body.
+        param_annotations: HashMap<DefId, Ty>,
+        /// Functions withheld for a rigid variable the body fixed
+        /// ([`super::Incomplete::RigidTypeVariable`]): never published, and a use of one
+        /// is not typed.
+        withheld_defs: HashSet<DefId>,
+        /// Every binder a module-level `let` binds ([`super::Gen::own_binders`]): the
+        /// binders [`super::Gen::finish`] decides a [`super::ModuleValue`] for.
+        module_binders: HashMap<DefId, ModuleBinder>,
+        /// The module-level binders whose binding was walked for its type
+        /// ([`super::Gen::type_let_decl`]), whether or not it found one.
+        walked_binders: HashSet<DefId>,
+    }
+
+    impl BinderEnv {
+        pub(super) fn new() -> Self {
+            BinderEnv {
+                def_vars: HashMap::default(),
+                def_schemes: HashMap::default(),
+                param_slots: HashMap::default(),
+                param_owner: HashMap::default(),
+                param_defs: HashSet::default(),
+                param_annotations: HashMap::default(),
+                withheld_defs: HashSet::default(),
+                module_binders: HashMap::default(),
+                walked_binders: HashSet::default(),
+            }
+        }
+
+        /// `def`'s variable, if it has one yet.
+        pub(super) fn var(&self, def: DefId) -> Option<TyVid> {
+            self.def_vars.get(&def).copied()
+        }
+
+        /// Give `def`, which has none, the variable `v`.
+        pub(super) fn bind_var(&mut self, def: DefId, v: TyVid) {
+            let previous = self.def_vars.insert(def, v);
+            debug_assert!(previous.is_none(), "{def:?} already has a variable");
+        }
+
+        /// Every binder's variable, for [`super::Gen::finish`].
+        pub(super) fn vars(&self) -> impl Iterator<Item = (DefId, TyVid)> + '_ {
+            self.def_vars.iter().map(|(&def, &v)| (def, v))
+        }
+
+        /// `def`'s scheme, if it was generalised.
+        pub(super) fn scheme(&self, def: DefId) -> Option<Ty> {
+            self.def_schemes.get(&def).copied()
+        }
+
+        /// Record that `def` generalised to `scheme`.
+        pub(super) fn generalised(&mut self, def: DefId, scheme: Ty) {
+            let previous = self.def_schemes.insert(def, scheme);
+            debug_assert!(previous.is_none(), "{def:?} generalised twice");
+        }
+
+        /// Register `def` as a function parameter whose slot is `slot`.
+        pub(super) fn register_param(&mut self, def: DefId, slot: TyVid) {
+            let previous = self.param_slots.insert(def, slot);
+            debug_assert!(previous.is_none(), "{def:?} registered twice");
+            self.param_defs.insert(def);
+        }
+
+        /// The slot of `def`, if it is a registered parameter.
+        pub(super) fn param_slot(&self, def: DefId) -> Option<TyVid> {
+            self.param_slots.get(&def).copied()
+        }
+
+        /// Every registered parameter.
+        pub(super) fn params(&self) -> impl Iterator<Item = DefId> + '_ {
+            self.param_defs.iter().copied()
+        }
+
+        /// Whether `def` is a registered parameter.
+        pub(super) fn is_param(&self, def: DefId) -> bool {
+            self.param_defs.contains(&def)
+        }
+
+        /// Record that the parameter `param` is one of `f_def`'s.
+        pub(super) fn own_param(&mut self, param: DefId, f_def: DefId) {
+            let previous = self.param_owner.insert(param, f_def);
+            debug_assert!(previous.is_none(), "{param:?} owned twice");
+        }
+
+        /// The function `param` is a parameter of, if its type was built.
+        pub(super) fn param_owner(&self, param: DefId) -> Option<DefId> {
+            self.param_owner.get(&param).copied()
+        }
+
+        /// Record the parameter `def`'s annotation, `ty`.
+        pub(super) fn annotate_param(&mut self, def: DefId, ty: Ty) {
+            let previous = self.param_annotations.insert(def, ty);
+            debug_assert!(previous.is_none(), "{def:?} annotated twice");
+        }
+
+        /// The parameter `def`'s annotation, if it has one.
+        pub(super) fn param_annotation(&self, def: DefId) -> Option<Ty> {
+            self.param_annotations.get(&def).copied()
+        }
+
+        /// Withhold every binder of `defs`.
+        pub(super) fn withhold(&mut self, defs: impl IntoIterator<Item = DefId>) {
+            self.withheld_defs.extend(defs);
+        }
+
+        /// Whether `def` is withheld.
+        pub(super) fn is_withheld(&self, def: DefId) -> bool {
+            self.withheld_defs.contains(&def)
+        }
+
+        /// Record that `def` is bound by a module-level `let`, as `binder`.
+        /// A pattern may name one binder twice (`let (x | x) = …`, whose
+        /// alternatives share their binders), and then records it twice,
+        /// alike.
+        pub(super) fn module_binder(&mut self, def: DefId, binder: ModuleBinder) {
+            let previous = self.module_binders.insert(def, binder);
+            debug_assert!(
+                previous.is_none_or(|p| p == binder),
+                "{def:?} bound twice, differently"
+            );
+        }
+
+        /// Every module-level binder.
+        pub(super) fn module_binders(&self) -> impl Iterator<Item = (DefId, ModuleBinder)> + '_ {
+            self.module_binders.iter().map(|(&def, &b)| (def, b))
+        }
+
+        /// Record that the binding of every binder of `defs` was walked.
+        pub(super) fn walked(&mut self, defs: impl IntoIterator<Item = DefId>) {
+            self.walked_binders.extend(defs);
+        }
+
+        /// Whether `def`'s binding was walked.
+        pub(super) fn was_walked(&self, def: DefId) -> bool {
+            self.walked_binders.contains(&def)
+        }
+    }
+}
+
+/// [`Emissions`], in a module of its own so that its fields are reached only
+/// through its methods.
+mod emissions {
+    use super::Incomplete;
+    use crate::def::DefId;
+    use crate::hash::{HashMap, HashSet};
+    use crate::resolve::Resolution;
+    use crate::ty::TyVid;
+    use borzoi_cst::syntax::{SyntaxToken, TextRange};
+
+    /// An index into [`Emissions::guards`].
+    type GuardId = usize;
+
+    /// A construct FCS may **reject**, recorded so that what we emit inside its
+    /// operand can wait on its acceptance. FCS keeps no node and no binder inside
+    /// the operand of a construct it rejects — a member access on a receiver
+    /// without that member keeps only the whole access, typed `'a` — so an emission
+    /// inside one is published only if this guard, and every guard enclosing it,
+    /// was confirmed ([`Emissions::guard_holds`]).
+    #[derive(Debug)]
+    pub(super) struct Guard {
+        /// The guard the construct itself sat under.
+        parent: Option<GuardId>,
+        /// Whether the construct was accepted: set by the event that proves it.
+        confirmed: bool,
+    }
+
+    /// What a speculative solve ([`super::Gen::solve`]) recorded here, so that
+    /// it can be undone ([`Emissions::undo`]). The table's half of the undo
+    /// is the [`super::Solver`]'s snapshot, which the solve holds: the
+    /// speculation spans the solver and the emissions.
+    #[derive(Debug, Default)]
+    pub(super) struct TrialLog {
+        /// Each member resolution recorded, with the one it replaced.
+        resolutions: Vec<(TextRange, Option<Resolution>)>,
+        /// Each guard confirmed.
+        guards: Vec<GuardId>,
+    }
+
+    /// The length of both emission lists, the nodes and the local binders, for
+    /// a barrier to [discard back to](Emissions::discard_since).
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct EmissionMark {
+        exprs: usize,
+        locals: usize,
+    }
+
+    /// What the walk emits, for [`super::Gen::finish`] to read: FCS's
+    /// `tcSink`. The walk only writes it — it appends, discards back to a
+    /// mark, and opens and confirms guards — and nothing it decides reads it:
+    /// no method here answers a question about what was emitted.
+    /// [`Self::into_emitted`] gives `finish` what stands.
+    ///
+    /// The one write that is not an append is the speculative solve's undo
+    /// ([`Self::undo`]), which restores the member resolutions and guards a
+    /// solve that was not kept recorded.
+    pub(super) struct Emissions {
+        /// `(range, var)` per expression whose type to emit; `range` is the read-off
+        /// key (and the same range the resolver keyed the occurrence under).
+        exprs: Vec<(TextRange, TyVid, Option<GuardId>)>,
+        /// Every expression-level `let` binder [`super::Gen::local_binding`] bound (CE-1).
+        /// Unlike a declaration's binder, a local sits *inside* an expression, so
+        /// its publication is an emission like a node's: [`super::Gen::finish`] publishes
+        /// one only if it is still in [`Self::local_emits`].
+        local_defs: HashSet<DefId>,
+        /// The local binders to publish, in walk order — the binder-side twin of
+        /// [`Self::exprs`], and discarded with it by an emission barrier
+        /// ([`Self::discard_since`]).
+        local_emits: Vec<(DefId, Option<GuardId>)>,
+        /// Each `(expr).Member` receiver's variable, keyed by the `DOT_GET_EXPR`'s
+        /// range — unguarded and never discarded, for
+        /// [`InferredFile::dot_get_receiver_type`](super::InferredFile::dot_get_receiver_type).
+        dot_get_receivers: Vec<(TextRange, TyVid)>,
+        /// Each begun binding's incompleteness reasons, for
+        /// [`InferredFile::incompleteness`](super::InferredFile::incompleteness).
+        incompleteness: Vec<Vec<Incomplete>>,
+        /// Ranges whose emission [`super::Gen::finish`] drops: a `match` scrutinee's own
+        /// node, which FCS may cover with a temporary's `let` typed as the whole
+        /// match. Filtered at read-off rather than cut from [`Self::exprs`], whose
+        /// positions emission marks record.
+        ungraded_ranges: HashSet<TextRange>,
+        /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
+        guards: Vec<Guard>,
+        /// The guards enclosing the current walk position, innermost last; an
+        /// emission is tagged with the top one.
+        guard_stack: Vec<GuardId>,
+        /// The guard each member-name token's wake confirms: segment *i* of an
+        /// access confirms the *i*-th guard around its receiver
+        /// ([`Self::open_receiver_guards`]). Keyed by the token's range, which is
+        /// the member constraint's `use_range`.
+        guard_on_member: HashMap<TextRange, GuardId>,
+        /// Each successfully-woken member access → its resolved identity, keyed by the
+        /// member-name use range (Stage 3.3b). Filled by [`super::Gen::wake_member`] on a
+        /// single-candidate discharge; read out in [`super::Gen::finish`] into
+        /// [`InferredFile::member_resolutions`](super::InferredFile::member_resolutions).
+        member_resolutions: HashMap<TextRange, Resolution>,
+        /// The undo log of the speculative solve in progress ([`super::Gen::solve`]).
+        trial: Option<TrialLog>,
+        /// How many expression levels the walk has open on its recursion now
+        /// ([`super::Gen::infer_expr_inner`], [`super::Gen::infer_callee`]), and the most there
+        /// have been ([`InferredFile::deepest_expression_walk`](super::InferredFile::deepest_expression_walk)).
+        expr_depth: usize,
+        deepest_expr_depth: usize,
+    }
+
+    /// What stands of a file's [`Emissions`] once its walk is over
+    /// ([`Emissions::into_emitted`]).
+    pub(super) struct Emitted {
+        /// The nodes to read back, in walk order: every node whose guards
+        /// held, but for the ungraded ones.
+        pub(super) exprs: Vec<(TextRange, TyVid)>,
+        /// Every local binder the walk bound.
+        pub(super) local_defs: HashSet<DefId>,
+        /// The local binders no barrier discarded and whose guards held.
+        pub(super) published_locals: HashSet<DefId>,
+        pub(super) dot_get_receivers: Vec<(TextRange, TyVid)>,
+        pub(super) incompleteness: Vec<Vec<Incomplete>>,
+        pub(super) member_resolutions: HashMap<TextRange, Resolution>,
+        pub(super) deepest_expr_depth: usize,
+    }
+
+    impl Emissions {
+        pub(super) fn new() -> Self {
+            Emissions {
+                exprs: Vec::new(),
+                local_defs: HashSet::default(),
+                local_emits: Vec::new(),
+                dot_get_receivers: Vec::new(),
+                incompleteness: Vec::new(),
+                ungraded_ranges: HashSet::default(),
+                guards: Vec::new(),
+                guard_stack: Vec::new(),
+                guard_on_member: HashMap::default(),
+                member_resolutions: HashMap::default(),
+                trial: None,
+                expr_depth: 0,
+                deepest_expr_depth: 0,
+            }
+        }
+
+        /// Record the node at `range`, whose type is `v`'s, for read-off,
+        /// under the current guard.
+        pub(super) fn node(&mut self, range: TextRange, v: TyVid) {
+            self.exprs
+                .push((range, v, self.guard_stack.last().copied()));
+        }
+
+        /// Record the local binder `def` for publication, under the current
+        /// guard.
+        pub(super) fn local(&mut self, def: DefId) {
+            self.local_defs.insert(def);
+            self.local_emits
+                .push((def, self.guard_stack.last().copied()));
+        }
+
+        /// Record the receiver of the `DOT_GET_EXPR` at `range`, whose type is
+        /// `v`'s.
+        pub(super) fn dot_get_receiver(&mut self, range: TextRange, v: TyVid) {
+            self.dot_get_receivers.push((range, v));
+        }
+
+        /// Record a walked binding's census entry: why it is incomplete, empty
+        /// if it is complete.
+        pub(super) fn census(&mut self, reasons: Vec<Incomplete>) {
+            self.incompleteness.push(reasons);
+        }
+
+        /// Leave ungraded the last node recorded since `mark`, if any.
+        pub(super) fn ungrade_last_since(&mut self, mark: EmissionMark) {
+            if let Some(&(range, _, _)) = self.exprs[mark.exprs..].last() {
+                self.ungraded_ranges.insert(range);
+            }
+        }
+
+        /// The current length of both emission lists — the expression nodes and the
+        /// local binders — for a barrier to [discard back to](Self::discard_since).
+        pub(super) fn mark(&self) -> EmissionMark {
+            EmissionMark {
+                exprs: self.exprs.len(),
+                locals: self.local_emits.len(),
+            }
+        }
+
+        /// Discard every emission recorded since `mark`: the nodes *and* the local
+        /// binders a walk inside a barrier produced. A method call is such a barrier
+        /// (FCS keeps nothing inside a call it rejects, so we keep nothing inside any
+        /// call); the two lists are cut together so a `let` in a call's argument
+        /// cannot publish its binder while the argument's nodes are dropped.
+        pub(super) fn discard_since(&mut self, mark: EmissionMark) {
+            self.exprs.truncate(mark.exprs);
+            self.local_emits.truncate(mark.locals);
+        }
+
+        /// Open one [`Guard`] per member segment around a member access's receiver,
+        /// nested so the innermost — the one the receiver's emissions are tagged
+        /// with — holds only if every segment resolves: FCS drops the receiver of
+        /// `s.Length.Foo` because `Foo` is rejected, though `Length` is not.
+        /// Segment *i*'s wake confirms guard *i* ([`Self::confirm_guard`]). The
+        /// caller walks the receiver, then [`Self::close_guards`].
+        pub(super) fn open_receiver_guards(&mut self, segments: &[SyntaxToken]) {
+            for seg in segments {
+                let g = self.guards.len();
+                self.guards.push(Guard {
+                    parent: self.guard_stack.last().copied(),
+                    confirmed: false,
+                });
+                self.guard_stack.push(g);
+                self.guard_on_member.insert(seg.text_range(), g);
+            }
+        }
+
+        /// Close the `n` guards [`Self::open_receiver_guards`] opened.
+        pub(super) fn close_guards(&mut self, n: usize) {
+            let keep = self.guard_stack.len() - n;
+            self.guard_stack.truncate(keep);
+        }
+
+        /// Confirm the guard the member-name token at `use_range` confirms,
+        /// if it has one.
+        pub(super) fn confirm_guard(&mut self, use_range: TextRange) {
+            if let Some(&g) = self.guard_on_member.get(&use_range)
+                && !self.guards[g].confirmed
+            {
+                self.guards[g].confirmed = true;
+                if let Some(log) = &mut self.trial {
+                    log.guards.push(g);
+                }
+            }
+        }
+
+        /// Whether an emission tagged with `guard` may be published: the guard and
+        /// every guard enclosing it were confirmed.
+        fn guard_holds(&self, guard: Option<GuardId>) -> bool {
+            let mut cur = guard;
+            while let Some(g) = cur {
+                if !self.guards[g].confirmed {
+                    return false;
+                }
+                cur = self.guards[g].parent;
+            }
+            true
+        }
+
+        /// Record that the member-name token at `use_range` resolves to `res`.
+        pub(super) fn member_resolution(&mut self, use_range: TextRange, res: Resolution) {
+            let previous = self.member_resolutions.insert(use_range, res);
+            if let Some(log) = &mut self.trial {
+                log.resolutions.push((use_range, previous));
+            }
+        }
+
+        /// Start logging what is recorded here, for a speculative solve.
+        pub(super) fn begin_trial(&mut self) {
+            self.trial = Some(TrialLog::default());
+        }
+
+        /// Stop logging, and return what was logged since
+        /// [`Self::begin_trial`].
+        pub(super) fn end_trial(&mut self) -> TrialLog {
+            self.trial.take().unwrap_or_default()
+        }
+
+        /// Undo what a speculative solve recorded ([`TrialLog`]), latest first.
+        pub(super) fn undo(&mut self, log: TrialLog) {
+            for (range, previous) in log.resolutions.into_iter().rev() {
+                match previous {
+                    Some(res) => {
+                        self.member_resolutions.insert(range, res);
+                    }
+                    None => {
+                        self.member_resolutions.remove(&range);
+                    }
+                }
+            }
+            for g in log.guards {
+                self.guards[g].confirmed = false;
+            }
+        }
+
+        /// Count one more expression level open on the walk's recursion
+        /// ([`InferredFile::deepest_expression_walk`](super::InferredFile::deepest_expression_walk));
+        /// the caller closes it with [`Self::leave_expression`].
+        pub(super) fn enter_expression(&mut self) {
+            self.expr_depth += 1;
+            self.deepest_expr_depth = self.deepest_expr_depth.max(self.expr_depth);
+        }
+
+        /// Close the expression level [`Self::enter_expression`] opened.
+        pub(super) fn leave_expression(&mut self) {
+            self.expr_depth -= 1;
+        }
+
+        /// What stands of the walk's emissions: what a guard that never held,
+        /// a barrier or an ungraded range dropped is gone.
+        pub(super) fn into_emitted(self) -> Emitted {
+            let published_locals = self
+                .local_emits
+                .iter()
+                .filter(|(_, guard)| self.guard_holds(*guard))
+                .map(|&(def, _)| def)
+                .collect();
+            let exprs = self
+                .exprs
+                .iter()
+                .filter(|&&(range, _, guard)| {
+                    self.guard_holds(guard) && !self.ungraded_ranges.contains(&range)
+                })
+                .map(|&(range, var, _)| (range, var))
+                .collect();
+            Emitted {
+                exprs,
+                local_defs: self.local_defs,
+                published_locals,
+                dot_get_receivers: self.dot_get_receivers,
+                incompleteness: self.incompleteness,
+                member_resolutions: self.member_resolutions,
+                deepest_expr_depth: self.deepest_expr_depth,
+            }
+        }
+    }
+}
+
+/// The state of one module-level binding's walk and solve: FCS's
+/// generalisation scope. [`Gen::enter_scope`] builds one at the binding's
+/// start, every walk and solve step of that binding is handed it, and
+/// [`Gen::close_scope`] consumes it at the binding's end, recording its census
+/// entry or not. Nothing outside a binding holds one, so no step can read
+/// another binding's state.
+///
+/// Not `Clone`: a binding has exactly one.
+struct Scope {
+    /// The vid mark taken at the binding's start — the boundary between this
+    /// binding's own variables and *environment* variables inherited from
+    /// earlier bindings. Generalisation refuses to quantify an inherited-open
+    /// variable ([`Gen::generalise`]), and the [`Constraint::ArgCheck`] wake
+    /// applies the same discipline: a discharge may bind only open variables
+    /// created in this binding ([`Gen::arg_check_binds_only_current_vars`]),
+    /// never retro-ground an earlier binder's still-open variable (whose type
+    /// FCS fixed at *its* binding, e.g. `let g = id` staying `'a -> 'a` under
+    /// a later `g 1`).
+    mark: u32,
+    /// [`Emissions::mark`] at the binding's start.
+    emissions: EmissionMark,
+    /// Walk-completeness (Stage 3.2c-2c): cleared by any unmodelled
+    /// sub-expression or pattern. A binding may generalise only if it stays
+    /// complete — the proof that every constraint FCS has on its open variables is
+    /// one we modelled. Ground emission is *not* gated on this (the subset
+    /// argument in the module docs).
+    complete: bool,
+    /// Why the binding is incomplete, in the order the walk found out: its
+    /// census entry ([`InferredFile::incompleteness`]).
+    reasons: Vec<Incomplete>,
+    /// The body of the function binding being walked, for
+    /// [`Gen::is_first_occurrence`]. `None` outside a function binding.
+    body: Option<SyntaxNode>,
+    /// The poison set (Stage 3.2c-2c): the raw variables of every check-mode
+    /// [`Gen::infer_expr`] call (the expected and the returned var), whose
+    /// cross-relation this stage drops. At generalisation its one-step closure
+    /// (resolve each, take every var in the resolved term) gives the variables
+    /// that may *not* be quantified — FCS's dropped relation could have
+    /// grounded them.
+    poison: Vec<TyVid>,
+    /// The simple named parameters of the binding as `(DefId, slot)` pairs, in
+    /// head order (Stage 3.2c-2c); drives the slot=binder reunification on a
+    /// complete function binding.
+    params: Vec<(DefId, TyVid)>,
+    /// The binding's parameters, as registered: what
+    /// [`Gen::withhold_if_not_rigid`] withholds with the function.
     binding_params: Vec<DefId>,
-    /// **Per binding**: every check-mode relation the walk dropped, as the
-    /// checked expression's variable and its expected one
-    /// ([`Self::infer_expr`]). FCS applies each one, as an equality whenever
-    /// that is consistent with what it knows — which is what
-    /// [`Self::verified`] tests them for.
+    /// The names the binding's `match` patterns bind. FCS never generalises a
+    /// pattern variable, so each is this binding's own monomorphic variable,
+    /// used as a parameter is ([`Gen::value_use`]): not another binding's
+    /// opaque one.
+    match_locals: HashSet<DefId>,
+    /// The binding's instantiation variables whose type parameter carries
+    /// `equality` or `comparison`, and which ([`Gen::constrained_scheme_use`]).
+    /// Each is poisoned when it is made, so none generalises while open — no
+    /// scheme here can say `when` — and [`Gen::check_constraints`] checks what
+    /// each is solved to once the binding is solved.
+    ///
+    /// The check reads the variable's type and the env
+    /// ([`constraint_verdict_of`]), nothing of the binding, so each entry is a
+    /// constraint on its variable: FCS holds such a constraint on the type
+    /// variable and checks it when the variable is solved. Where unification
+    /// runs as the walk generates, the entries belong in [`Solver`], checked
+    /// as a variable is bound. They are held here while the check runs once,
+    /// after the binding's solve, over this binding's variables only.
+    constrained: Vec<(TyVid, EqualityComparison)>,
+    /// The binding's **implicitly scoped type variables**: each name a `'a` in
+    /// its head's annotations spells, to the one inference variable every
+    /// mention of it denotes ([`Gen::open_head_typars`]). Empty where the head
+    /// declares its variables explicitly or mentions a `^a`. The head's
+    /// annotations read their own copy ([`AnnotationCx::Head`]); this one is
+    /// the binding's solve's ([`Gen::is_head_typar_root`]).
+    head_typars: HashMap<String, TyVid>,
+    /// The binding's parameters whose annotation mentions one of
+    /// [`Scope::head_typars`].
+    typar_params: HashSet<DefId>,
+    /// Of [`Scope::head_typars`], the variables the head declares
+    /// (`let f<'a> …`), in declaration order: rigid, so each must end the
+    /// binding a distinct unbound variable ([`Gen::rigid_typars_hold`]).
+    rigid_typars: Vec<TyVid>,
+    /// Whether the binding's head declares type variables (`let f<'a> …`),
+    /// whether or not [`Gen::open_head_typars`] reads them.
+    declares_typars: bool,
+    /// Whether the binding, with every relation it holds applied as the
+    /// equality FCS tries first, breaks a declared variable's rigidity or
+    /// fails outright ([`Gen::solve`]): FCS then rejects the declaration.
+    rigid_rejected: bool,
+    /// Every check-mode relation the walk dropped, as the checked expression's
+    /// variable and its expected one ([`Gen::infer_expr`]). FCS applies each
+    /// one, as an equality whenever that is consistent with what it knows —
+    /// which is what [`Gen::verified`] tests them for.
     dropped: Vec<(TyVid, TyVid, TextRange)>,
-    /// **Per binding**: how many equalities failed to unify. A failed one is a
-    /// relation FCS rejects, in an order the solver does not keep.
+    /// How many equalities failed to unify. A failed one is a relation FCS
+    /// rejects, in an order the solver does not keep.
     eq_failures: usize,
-    /// **Per binding**: the variables a loosened value use stands in for a
-    /// parameter type other than `obj` ([`Self::loosened`]). In FCS each is a
-    /// subtype of that type, a constraint inference does not model.
+    /// The variables a loosened value use stands in for a parameter type other
+    /// than `obj` ([`Gen::loosened`]). In FCS each is a subtype of that type, a
+    /// constraint inference does not model.
     bounded_flex: Vec<TyVid>,
-    /// **Per binding**: the variables of the value uses whose loosening could
-    /// not be decided at the use, because the value's type was not yet known
-    /// there ([`Self::value_use`]).
+    /// The variables of the value uses whose loosening could not be decided at
+    /// the use, because the value's type was not yet known there
+    /// ([`Gen::value_use`]).
     undecided_uses: Vec<TyVid>,
-    /// Each annotated parameter's annotation: what FCS knows of the parameter
-    /// at every use in its body.
-    param_annotations: HashMap<DefId, Ty>,
-    /// **Per binding**: the variables FCS constrains through a relation
-    /// inference does not model, so that what FCS makes of them is unknown
-    /// here ([`Self::arg_check_binds_only_current_vars`], [`Self::verified`]):
-    /// each binder this binding refers to that is not its own — an earlier
-    /// binder, whose type FCS fixed at its own binding — and each argument of
-    /// a method call, which FCS relates to a parameter type it reads off the
-    /// method it resolves; and each member access's result, until its wake
-    /// binds it to the member's type.
+    /// The variables FCS constrains through a relation inference does not
+    /// model, so that what FCS makes of them is unknown here
+    /// ([`Gen::arg_check_binds_only_current_vars`], [`Gen::verified`]): each
+    /// binder this binding refers to that is not its own — an earlier binder,
+    /// whose type FCS fixed at its own binding — and each argument of a method
+    /// call, which FCS relates to a parameter type it reads off the method it
+    /// resolves; and each member access's result, until its wake binds it to
+    /// the member's type.
     ///
     /// A method argument's entry carries the argument's span: a relation
     /// inside the argument is one FCS checks before it relates the argument to
     /// the parameter, so it may bind the argument's variables.
     opaque: Vec<(TyVid, Option<TextRange>)>,
-    /// The undo log of the speculative solve in progress ([`Self::solve`]).
-    trial: Option<TrialLog>,
-    /// How many expression levels the walk has open on its recursion now
-    /// ([`Self::infer_expr_inner`], [`Self::infer_callee`]), and the most there
-    /// have been ([`InferredFile::deepest_expression_walk`]).
-    expr_depth: usize,
-    deepest_expr_depth: usize,
+}
+
+/// Whether a closed [`Scope`]'s census entry is recorded
+/// ([`Gen::close_scope`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Census {
+    /// The binding was walked: its reasons are one entry of
+    /// [`InferredFile::incompleteness`], empty if it was complete.
+    Record,
+    /// The binding turned out not to be walked here, and not for a reason the
+    /// census counts, so it has no entry — each counted binding is counted
+    /// once.
+    Discard,
+}
+
+impl Scope {
+    /// Mark the binding **walk-incomplete** — some sub-expression or pattern
+    /// is not fully modelled, so the binding must not generalise (Stage
+    /// 3.2c-2c). Ground emission is unaffected.
+    fn mark_incomplete(&mut self, why: Incomplete) {
+        self.complete = false;
+        self.reasons.push(why);
+    }
+
+    /// How many reasons the census entry holds — the mark a sub-walk's
+    /// [`Self::mark_consequence`] compares against.
+    fn reasons_recorded(&self) -> usize {
+        self.reasons.len()
+    }
+
+    /// Mark the binding incomplete for a reason that may be only the
+    /// *consequence* of a sub-walk: a local or statement left open, a method
+    /// callee that did not synthesize. If the sub-walk begun at `recorded`
+    /// already recorded a reason, that is the cause, and `why` is not counted
+    /// again — so "the only observed reason" counts what modelling one
+    /// construct could unlock, not its downstream effects.
+    fn mark_consequence(&mut self, recorded: usize, why: Incomplete) {
+        if self.reasons_recorded() > recorded {
+            self.mark_incomplete_propagated();
+        } else {
+            self.mark_incomplete(why);
+        }
+    }
+
+    /// Mark the binding incomplete where a sub-walk that returned `None` has
+    /// already recorded why — so the census counts the cause once.
+    fn mark_incomplete_propagated(&mut self) {
+        self.complete = false;
+    }
+
+    /// Whether `def` is a **parameter of the binding** — one collected by
+    /// [`Gen::param_var`] into [`Self::params`] for this function head. A use
+    /// of such a parameter is generalisable (its variable is a genuine local of
+    /// this binding); a use of any *other* in-file binder is an environment
+    /// reference this stage must not quantify (Stage 3.2c-2c). The list is one
+    /// entry per simple parameter, so the linear scan is cheap.
+    fn is_param(&self, def: DefId) -> bool {
+        self.params.iter().any(|(d, _)| *d == def)
+    }
 }
 
 /// What a file's walk inferred ([`Gen::finish`]): an [`InferredFile`] but for
@@ -1932,16 +2440,6 @@ struct Walked {
     deepest_expr_depth: usize,
     type_budget_exceeded: Option<TypeBudgetExceeded>,
     type_walks: TypeWalks,
-}
-
-/// What a speculative solve ([`Gen::solve`]) changed outside the table and
-/// the constraint list, so that it can be undone.
-#[derive(Debug, Default)]
-struct TrialLog {
-    /// Each member resolution recorded, with the one it replaced.
-    resolutions: Vec<(TextRange, Option<Resolution>)>,
-    /// Each guard confirmed.
-    guards: Vec<GuardId>,
 }
 
 /// Which argument checks a run of the worklist may fire.
@@ -2059,8 +2557,9 @@ impl<'a> FileFacts<'a> {
         }
     }
 
-    /// `ty`, a type of the session's table `tys`, copied into the env's
-    /// ([`Gen::publish`]).
+    /// `ty`, a type of the session's table `tys` ([`Solver::tys`]), copied
+    /// into the env's: what the file publishes, and the schemes it declares.
+    /// `memo` carries the copies made so far. `ty` must be ground.
     fn publish(&self, tys: &TyTable, ty: Ty, memo: &mut HashMap<Ty, Ty>) -> Ty {
         self.env.types().import(tys, ty, memo)
     }
@@ -3225,177 +3724,203 @@ impl<'a> FileFacts<'a> {
     }
 }
 
-impl<'a> Gen<'a> {
-    fn new(facts: &'a FileFacts<'a>, tys: &'a TyTable) -> Self {
-        Gen {
-            facts,
-            module_binders: HashMap::default(),
-            walked_binders: HashSet::default(),
+impl<'a> Solver<'a> {
+    fn new(tys: &'a TyTable) -> Self {
+        Solver {
             tys,
             table: InferTable::new(tys),
             constraints: Vec::new(),
             settled_args: Vec::new(),
-            exprs: Vec::new(),
-            def_vars: HashMap::default(),
-            local_defs: HashSet::default(),
-            local_emits: Vec::new(),
-            dot_get_receivers: Vec::new(),
-            incompleteness: Vec::new(),
-            ungraded_ranges: HashSet::default(),
-            match_locals: HashSet::default(),
-            guards: Vec::new(),
-            guard_stack: Vec::new(),
-            guard_on_member: HashMap::default(),
-            param_slots: HashMap::default(),
-            param_owner: HashMap::default(),
-            param_defs: HashSet::default(),
-            def_schemes: HashMap::default(),
-            complete: true,
-            cur_body: None,
-            poison: Vec::new(),
-            cur_params: Vec::new(),
-            member_resolutions: HashMap::default(),
-            cur_mark: 0,
             scheme_inst_vars: HashSet::default(),
-            constrained: Vec::new(),
-            head_typars: HashMap::default(),
-            typar_params: HashSet::default(),
-            rigid_typars: Vec::new(),
-            withheld_defs: HashSet::default(),
-            rigid_rejected: false,
-            binding_emissions: (0, 0),
-            declares_typars: false,
-            binding_params: Vec::new(),
-            dropped: Vec::new(),
-            eq_failures: 0,
-            bounded_flex: Vec::new(),
-            undecided_uses: Vec::new(),
-            param_annotations: HashMap::default(),
-            opaque: Vec::new(),
-            trial: None,
-            expr_depth: 0,
-            deepest_expr_depth: 0,
         }
-    }
-
-    /// `ty`, a type of the session ([`Self::tys`]), copied into the env's
-    /// table: what the file publishes, and the schemes it declares. `memo`
-    /// carries the copies made so far. `ty` must be ground.
-    fn publish(&self, ty: Ty, memo: &mut HashMap<Ty, Ty>) -> Ty {
-        self.facts.env.types().import(self.tys, ty, memo)
-    }
-
-    /// Mark the current binding **walk-incomplete** — some sub-expression or
-    /// pattern is not fully modelled, so the binding must not generalise (Stage
-    /// 3.2c-2c). Ground emission is unaffected.
-    fn mark_incomplete(&mut self, why: Incomplete) {
-        self.complete = false;
-        if let Some(reasons) = self.incompleteness.last_mut() {
-            reasons.push(why);
-        }
-    }
-
-    /// How many reasons the current binding's census entry holds — the mark a
-    /// sub-walk's [`Self::mark_consequence`] compares against.
-    fn reasons_recorded(&self) -> usize {
-        self.incompleteness.last().map_or(0, Vec::len)
-    }
-
-    /// Mark the binding incomplete for a reason that may be only the
-    /// *consequence* of a sub-walk: a local or statement left open, a method
-    /// callee that did not synthesize. If the sub-walk begun at `recorded`
-    /// already recorded a reason, that is the cause, and `why` is not counted
-    /// again — so "the only observed reason" counts what modelling one
-    /// construct could unlock, not its downstream effects.
-    fn mark_consequence(&mut self, recorded: usize, why: Incomplete) {
-        if self.reasons_recorded() > recorded {
-            self.mark_incomplete_propagated();
-        } else {
-            self.mark_incomplete(why);
-        }
-    }
-
-    /// Drop the census entry [`Self::begin_binding`] opened, for a binding that
-    /// turns out not to be walked here, and not for a reason the census counts
-    /// ([`InferredFile::incompleteness`]) — so each counted binding is counted
-    /// once.
-    fn discard_census_entry(&mut self) {
-        self.incompleteness.pop();
-    }
-
-    /// Mark the binding incomplete where a sub-walk that returned `None` has
-    /// already recorded why — so the census counts the cause once.
-    fn mark_incomplete_propagated(&mut self) {
-        self.complete = false;
-    }
-
-    /// Reset the per-binding state at a binding's start — the vid mark (also
-    /// stored as [`Self::cur_mark`] for the ArgCheck wake's environment guard),
-    /// walk-completeness, the poison set, and the parameter list — returning
-    /// the mark for the paths that thread it to
-    /// [`Self::finalise_function`]. Every binding path must call this exactly
-    /// once, before allocating any of the binding's variables.
-    fn begin_binding(&mut self) -> u32 {
-        let mark = self.table.mark();
-        self.cur_mark = mark;
-        self.complete = true;
-        self.incompleteness.push(Vec::new());
-        self.cur_body = None;
-        self.poison.clear();
-        self.cur_params.clear();
-        self.match_locals.clear();
-        self.dropped.clear();
-        self.eq_failures = 0;
-        self.bounded_flex.clear();
-        self.undecided_uses.clear();
-        self.opaque.clear();
-        self.constrained.clear();
-        self.head_typars.clear();
-        self.typar_params.clear();
-        self.rigid_typars.clear();
-        self.rigid_rejected = false;
-        self.binding_emissions = self.emission_mark();
-        self.binding_params.clear();
-        self.declares_typars = false;
-        mark
-    }
-
-    /// The inference variable for a binder, created on first reference. A use
-    /// and its binding thus share one variable regardless of which the walk
-    /// reaches first — unification is order-independent.
-    fn def_var(&mut self, def: DefId) -> TyVid {
-        if let Some(&v) = self.def_vars.get(&def) {
-            return v;
-        }
-        let v = self.table.fresh();
-        self.def_vars.insert(def, v);
-        v
     }
 
     fn eq(&mut self, a: Ty, b: Ty) {
         self.constraints.push(Constraint::Eq(a, b));
     }
 
+    /// Instantiate a scheme body with a **fresh** inference variable per distinct
+    /// [`TyKind::Param`], memoised within this one instantiation so the same index maps
+    /// to the same variable (Stage 3.2c-2c). The fresh variables are `>= ` the
+    /// current binding's mark, so a use inside a later function generalises in turn
+    /// (`let h x = (id, x)` ⇒ `'a -> ('b -> 'b) * 'a`).
+    ///
+    /// `scheme` is a type of `from`: the env's table for a scheme the env
+    /// holds (an earlier file's published type, an assembly function's or
+    /// case's, a project case's or record's), or the session's for one of the
+    /// file's own generalised binders. The instance is the session's.
+    fn instantiate(&mut self, from: &TyTable, scheme: Ty) -> Ty {
+        let mut fresh: HashMap<u32, TyVid> = HashMap::default();
+        self.instantiate_rec(from, scheme, &mut fresh)
+    }
+
+    fn instantiate_rec(&mut self, from: &TyTable, ty: Ty, fresh: &mut HashMap<u32, TyVid>) -> Ty {
+        let tys = self.tys;
+        let mut all = |cx: &mut Self, args: &[Ty]| -> Vec<Ty> {
+            args.iter()
+                .map(|&a| cx.instantiate_rec(from, a, fresh))
+                .collect()
+        };
+        match from.kind(ty) {
+            TyKind::Param(i) => {
+                let v = *fresh.entry(*i).or_insert_with(|| self.table.fresh());
+                // Record the provenance: this fresh var is an instantiation of a
+                // quantified typar of one of our schemes (Stage 3.3c). Such a typar
+                // admits no coercion, so it is a **no-subsumption** domain against
+                // which a suspended `ArgCheck` may safely discharge.
+                self.scheme_inst_vars.insert(v);
+                tys.var(v)
+            }
+            TyKind::Var(v) => tys.var(*v),
+            TyKind::Named { path, args } => {
+                let args = all(self, args);
+                tys.app(path.clone(), args)
+            }
+            TyKind::Project { path, args } => {
+                let args = all(self, args);
+                tys.project(path.clone(), args)
+            }
+            TyKind::Array { elem, rank } => {
+                let elem = self.instantiate_rec(from, *elem, fresh);
+                tys.array(elem, *rank)
+            }
+            TyKind::Tuple(elems) => {
+                let elems = all(self, elems);
+                tys.tuple(elems)
+            }
+            TyKind::Fun { arg, ret } => {
+                let arg = self.instantiate_rec(from, *arg, fresh);
+                let ret = self.instantiate_rec(from, *ret, fresh);
+                tys.fun(arg, ret)
+            }
+        }
+    }
+
+    /// Whether the (resolved, unbound) variable `v` is — or is unioned with — a
+    /// scheme-instantiation variable ([`Self::scheme_inst_vars`]), checked against
+    /// union-find **roots** so a var unioned with an instantiation var still
+    /// counts (Stage 3.3c). The set is small (one entry per instantiated typar per
+    /// use), so the linear scan is cheap at per-binding scale.
+    fn is_scheme_inst_root(&mut self, v: TyVid) -> bool {
+        self.scheme_inst_vars
+            .iter()
+            .any(|&iv| self.table.unioned(iv, v))
+    }
+
+    /// Whether `ac`'s domain resolves to a **function type** it may discharge
+    /// against, as FCS relates them: an argument is checked against its
+    /// parameter's type by an equality first and a coercion only if that
+    /// fails, and a function type admits no coercion but equality (F# function
+    /// types are invariant), so `Eq(arg, dom)` is FCS's own relation — given
+    /// that the argument's type is the one FCS has, which a loosened use of a
+    /// value makes sure of ([`Gen::value_use`]). Where the equality fixes a
+    /// variable FCS bounds by a subtype constraint, [`Gen::verified`] undoes
+    /// it.
+    fn function_domain(&mut self, ac: ArgCheck) -> bool {
+        matches!(
+            self.tys.kind(self.table.resolve(self.tys.var(ac.dom))),
+            TyKind::Fun { .. }
+        )
+    }
+
+    /// The open variables of `a` and `b`, as roots of their classes.
+    fn relation_roots(&mut self, a: TyVid, b: TyVid) -> HashSet<TyVid> {
+        let mut roots = self.open_roots(a);
+        roots.extend(self.open_roots(b));
+        roots
+    }
+
+    /// The variables of `v`'s resolution, each as the root of its class.
+    /// A resolution's variables are already roots, except where the table is
+    /// past its budget and returns what it was given.
+    fn open_roots(&mut self, v: TyVid) -> HashSet<TyVid> {
+        let ty = self.table.resolve(self.tys.var(v));
+        let mut vars = HashSet::default();
+        collect_var_roots(self.tys, ty, &mut vars);
+        vars.into_iter().map(|v| self.table.root(v)).collect()
+    }
+}
+
+impl<'a> Gen<'a> {
+    fn new(facts: &'a FileFacts<'a>, tys: &'a TyTable) -> Self {
+        Gen {
+            facts,
+            solver: Solver::new(tys),
+            binders: BinderEnv::new(),
+            out: Emissions::new(),
+        }
+    }
+
+    /// A fresh [`Scope`] for a binding starting now: its vid mark and emission
+    /// mark are taken here, so it must be entered before any of the binding's
+    /// variables is allocated or any of its nodes emitted.
+    fn enter_scope(&self) -> Scope {
+        Scope {
+            mark: self.solver.table.mark(),
+            emissions: self.out.mark(),
+            complete: true,
+            reasons: Vec::new(),
+            body: None,
+            poison: Vec::new(),
+            params: Vec::new(),
+            binding_params: Vec::new(),
+            match_locals: HashSet::default(),
+            constrained: Vec::new(),
+            head_typars: HashMap::default(),
+            typar_params: HashSet::default(),
+            rigid_typars: Vec::new(),
+            declares_typars: false,
+            rigid_rejected: false,
+            dropped: Vec::new(),
+            eq_failures: 0,
+            bounded_flex: Vec::new(),
+            undecided_uses: Vec::new(),
+            opaque: Vec::new(),
+        }
+    }
+
+    /// End the binding `scope` was entered for, recording its census entry
+    /// ([`InferredFile::incompleteness`]) as `census` says. Everything else the
+    /// scope held ends with it.
+    fn close_scope(&mut self, scope: Scope, census: Census) {
+        match census {
+            Census::Record => self.out.census(scope.reasons),
+            Census::Discard => {}
+        }
+    }
+
+    /// The inference variable for a binder, created on first reference. A use
+    /// and its binding thus share one variable regardless of which the walk
+    /// reaches first — unification is order-independent.
+    fn def_var(&mut self, def: DefId) -> TyVid {
+        if let Some(v) = self.binders.var(def) {
+            return v;
+        }
+        let v = self.solver.table.fresh();
+        self.binders.bind_var(def, v);
+        v
+    }
+
     /// Push a suspended member constraint: `recv` has an instance data member
-    /// `name` whose type is `result`, whose member-name token spans `use_range`
-    /// (Stage 3.3a; `use_range` added in 3.3b). Both type endpoints are
-    /// **poisoned** unconditionally at the point of generation
-    /// ([`Self::gen_member_access`]), so this only enqueues the relation; the
-    /// solver wakes it when `recv`'s head is concrete.
+    /// named by the token `member` whose type is `result`; the token's range is
+    /// the constraint's `use_range` (Stage 3.3a; `use_range` added in 3.3b).
+    /// Both type endpoints are **poisoned** unconditionally at the point of
+    /// generation ([`Self::gen_member_access`]), so this only enqueues the
+    /// relation; the solver wakes it when `recv`'s head is concrete.
     fn has_member(
         &mut self,
+        scope: &mut Scope,
         recv: TyVid,
-        name: String,
+        member: &SyntaxToken,
         result: TyVid,
-        use_range: TextRange,
         kind: MemberAccessKind,
         args_by: TextSize,
     ) {
-        self.constraints.push(Constraint::HasMember {
+        self.solver.constraints.push(Constraint::HasMember {
             recv,
-            name,
+            name: ident_text(member),
             result,
-            use_range,
+            use_range: member.text_range(),
             kind,
             args_by,
         });
@@ -3403,11 +3928,11 @@ impl<'a> Gen<'a> {
         // receiver or result generalise. A ground endpoint is unaffected (poison
         // bites only open vars). Shared by the data-member chain
         // ([`Self::gen_member_access`]) and the method call ([`Self::infer_method_call`]).
-        self.poison.push(recv);
-        self.poison.push(result);
+        scope.poison.push(recv);
+        scope.poison.push(result);
         // Until the wake binds it to the member's type, the result is one FCS
         // knows and inference does not; once bound it has no variable left.
-        self.opaque.push((result, None));
+        scope.opaque.push((result, None));
     }
 
     /// Generate a **data-member** access chain over a receiver variable `recv`, one
@@ -3422,16 +3947,21 @@ impl<'a> Gen<'a> {
     /// as each result grounds. Every receiver and result variable is poisoned by
     /// [`Self::has_member`] — an unwoken member relation must never let either
     /// generalise (the same rule as application's `r`-poison).
-    fn gen_member_access(&mut self, recv: TyVid, segments: &[SyntaxToken]) -> Option<TyVid> {
+    fn gen_member_access(
+        &mut self,
+        scope: &mut Scope,
+        recv: TyVid,
+        segments: &[SyntaxToken],
+    ) -> Option<TyVid> {
         let mut cur = recv;
         let mut last = None;
         for seg in segments {
-            let result = self.table.fresh();
+            let result = self.solver.table.fresh();
             self.has_member(
+                scope,
                 cur,
-                ident_text(seg),
+                seg,
                 result,
-                seg.text_range(),
                 MemberAccessKind::Data,
                 seg.text_range().start(),
             );
@@ -3441,26 +3971,16 @@ impl<'a> Gen<'a> {
         last
     }
 
-    /// Whether `def` is a **parameter of the current binding** — one collected by
-    /// [`Self::param_var`] into [`Self::cur_params`] for this function head. A use
-    /// of such a parameter is generalisable (its variable is a genuine local of
-    /// this binding); a use of any *other* in-file binder is an environment
-    /// reference this stage must not quantify (Stage 3.2c-2c). The list is one
-    /// entry per simple parameter, so the linear scan is cheap.
-    fn is_current_param(&self, def: DefId) -> bool {
-        self.cur_params.iter().any(|(d, _)| *d == def)
-    }
-
     /// Whether a use of the in-file binder `def` is left untyped, marking the
     /// binding incomplete for why: F# may reject the use for the binder's
     /// attributes ([`FileFacts::use_may_be_rejected`]), or the binder is a function
-    /// withheld for a rigid variable its body fixed ([`Self::withheld_defs`]).
-    fn declines_use(&mut self, def: DefId) -> bool {
+    /// withheld for a rigid variable its body fixed ([`BinderEnv::is_withheld`]).
+    fn declines_use(&mut self, scope: &mut Scope, def: DefId) -> bool {
         if self.facts.use_may_be_rejected(def) {
-            self.mark_incomplete(Incomplete::RejectedUse);
+            scope.mark_incomplete(Incomplete::RejectedUse);
             true
-        } else if self.withheld_defs.contains(&def) {
-            self.mark_incomplete(Incomplete::RigidTypeVariable);
+        } else if self.binders.is_withheld(def) {
+            scope.mark_incomplete(Incomplete::RigidTypeVariable);
             true
         } else {
             false
@@ -3510,7 +4030,7 @@ impl<'a> Gen<'a> {
         // typed. A broken declaration's own binders are skipped the same way.
         // Past the type budget nothing more is typed: the file publishes
         // nothing ([`Self::finish`]), so walking on would only spend more.
-        if self.table.over_budget().is_none()
+        if self.solver.table.over_budget().is_none()
             && self
                 .facts
                 .resolved
@@ -3540,7 +4060,7 @@ impl<'a> Gen<'a> {
         let header_rejects = self.facts.in_rejecting_header(binding.syntax());
         for def in self.binding_defs(binding) {
             self.def_var(def);
-            self.module_binders.insert(
+            self.binders.module_binder(
                 def,
                 ModuleBinder {
                     inline,
@@ -3619,141 +4139,156 @@ impl<'a> Gen<'a> {
             // finds one.
             if binding.return_type().is_some() || binding.expr().is_some() {
                 let walked = self.binding_defs(&binding);
-                self.walked_binders.extend(walked);
+                self.binders.walked(walked);
             }
-            if let Some(ann) = binding.return_type() {
-                self.annotated_value_binding(&binding, &ann);
-                continue;
-            }
-            let Some(rhs) = binding.expr() else {
-                continue;
+            // The binding's scope is entered before any of its variables is
+            // allocated, and closed once it is solved.
+            let mut scope = self.enter_scope();
+            let census = if let Some(ann) = binding.return_type() {
+                self.annotated_value_binding(&mut scope, &binding, &ann)
+            } else if let Some(rhs) = binding.expr() {
+                self.unannotated_binding(&mut scope, &binding, &rhs)
+            } else {
+                Census::Discard
             };
-            // Per-binding state (Algorithm W). Take the vid mark *before* any of
-            // this binding's variables are allocated, and reset completeness /
-            // poison / the parameter list. The RHS of a real `LET_DECL` never
-            // itself contains a `LET_DECL` (expression-level lets are
-            // `LET_OR_USE_EXPR`), so these batches do not nest.
-            debug_assert!(
-                rhs.syntax()
-                    .descendants_where(|k| k == SyntaxKind::LET_DECL)
-                    .next()
-                    .is_none(),
-                "a LET_DECL nested inside a walked binding's RHS breaks sequential solve"
-            );
-            let mark = self.begin_binding();
+            self.close_scope(scope, census);
+        }
+    }
 
-            match binding.pat() {
-                // A value binding `let x = <rhs>`. The RHS is a coercion-free
-                // position (no expected type), so infer it in synth mode and link
-                // the binder's variable to it so a use picks up the type (the
-                // binder's `DefId` comes from its own name occurrence — binders
-                // self-resolve). A *typed* pattern (`let (x: T) = …`) is a
-                // `Pat::Typed`, not `Pat::Named`, so it is excluded here. A value
-                // binding does **not** generalise (the value restriction — F#
-                // rejects `let g = id` / `let x = []` with FS0030), so it just
-                // links and solves.
-                Some(Pat::Named(named)) => {
-                    let rhs_var = self.infer_expr(&rhs, None);
-                    if let Some(tok) = named.ident()
-                        && let Some(def) = self.facts.def_at(tok.text_range())
-                    {
-                        // Create the binder's variable in *its own* binding — even
-                        // when the RHS did not type — so it carries an index below
-                        // any later binding's mark. A later function that references
-                        // this value then sees an inherited-open (environment)
-                        // variable and defers via the mark check, rather than
-                        // wrongly quantifying a value whose type FCS determines
-                        // through a constraint we did not model (`let a = f 0 …
-                        // let g x = (x, a)`).
-                        let dv = self.def_var(def);
-                        if let Some(rhs_var) = rhs_var {
-                            self.eq(self.tys.var(dv), self.tys.var(rhs_var));
-                        }
-                    }
-                    self.solve();
-                }
-                // A function binding `let f x … = <body>` — a `LongIdentPat` head
-                // with arguments. The parameter slot variables are collected
-                // *first* (each simple-named parameter gets a private slot recorded
-                // in `param_slots`, so the body's condition typing can ground that
-                // slot); then the body is walked in synth mode for its own
-                // emissions (e.g. a body that is an `if` emits its result), and its
-                // return variable curries with the parameter slots into the
-                // function's own `TyKind::Fun` type ([`Self::function_type`]). The
-                // arguments span both `SynArgPats` shapes, matching `binders`'s
-                // function-head test: the curried list (`args()`) and the
-                // named-field group `Case (field = pat; …)` (`name_pat_pairs()`,
-                // whose own `args()` is empty). Parameters bind lazily via name
-                // resolution at their uses.
-                Some(Pat::LongIdent(head))
-                    if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
+    /// A binding with no return annotation, whose right-hand side is `rhs`
+    /// ([`Self::type_let_decl`]), walked and solved in `scope`.
+    fn unannotated_binding(&mut self, scope: &mut Scope, binding: &Binding, rhs: &Expr) -> Census {
+        // The RHS of a real `LET_DECL` never itself contains a `LET_DECL`
+        // (expression-level lets are `LET_OR_USE_EXPR`), so scopes do not
+        // nest.
+        debug_assert!(
+            rhs.syntax()
+                .descendants_where(|k| k == SyntaxKind::LET_DECL)
+                .next()
+                .is_none(),
+            "a LET_DECL nested inside a walked binding's RHS breaks sequential solve"
+        );
+        match binding.pat() {
+            // A value binding `let x = <rhs>`. The RHS is a coercion-free
+            // position (no expected type), so infer it in synth mode and link
+            // the binder's variable to it so a use picks up the type (the
+            // binder's `DefId` comes from its own name occurrence — binders
+            // self-resolve). A *typed* pattern (`let (x: T) = …`) is a
+            // `Pat::Typed`, not `Pat::Named`, so it is excluded here. A value
+            // binding does **not** generalise (the value restriction — F#
+            // rejects `let g = id` / `let x = []` with FS0030), so it just
+            // links and solves.
+            Some(Pat::Named(named)) => {
+                let rhs_var = self.infer_expr(scope, rhs, None);
+                if let Some(tok) = named.ident()
+                    && let Some(def) = self.facts.def_at(tok.text_range())
                 {
-                    self.cur_body = Some(rhs.syntax().clone());
-                    let head_typars = self.open_head_typars(&head, None, Some(&rhs));
-                    let arg_vars = self.param_vars(&head, AnnotationCx::head(head_typars.as_ref()));
-                    // FCS binds a parameter directly only if it is simple
-                    // ([`is_simple_param`]); any other it elaborates through a
-                    // `match` whose target is the body, and the typed tree then
-                    // keys the body's nodes elsewhere (`(a, ())` moves the
-                    // body's root to the `()`). The body's type is still the
-                    // function's result, exactly, so it is walked as usual, but
-                    // nothing it records is kept.
-                    let body_mark = self.emission_mark();
-                    let ret = self.infer_expr(&rhs, None);
-                    if !head.args().all(|arg| is_simple_param(&arg)) {
-                        self.discard_emissions_since(body_mark);
-                    }
-                    let f_def = self.function_type(&head, &arg_vars, ret);
-                    // On a complete binding, undo the 2b slot/binder decoupling so
-                    // `let id x = x` generalises to `'a -> 'a`, not `'a -> 'b`.
-                    if self.complete {
-                        self.slot_binder_reunify();
-                    }
-                    self.solve();
-                    self.withhold_if_not_rigid(f_def);
-                    if let Some(f_def) = f_def {
-                        self.finalise_function(f_def, mark);
+                    // Create the binder's variable in *its own* binding — even
+                    // when the RHS did not type — so it carries an index below
+                    // any later binding's mark. A later function that references
+                    // this value then sees an inherited-open (environment)
+                    // variable and defers via the mark check, rather than
+                    // wrongly quantifying a value whose type FCS determines
+                    // through a constraint we did not model (`let a = f 0 …
+                    // let g x = (x, a)`).
+                    let dv = self.def_var(def);
+                    if let Some(rhs_var) = rhs_var {
+                        self.solver
+                            .eq(self.solver.tys.var(dv), self.solver.tys.var(rhs_var));
                     }
                 }
-                // A parenthesised head: a **trivial typed pattern**
-                // `let (x: T) = …` (`Paren > Typed > Named`) rides the Stage
-                // R2-a annotation gate — same positionally-fixed
-                // binder↔annotation truth as the return-annotation form, with
-                // the same R2-e coverage check-walk over the RHS. Any other
-                // parenthesised shape keeps today's catch-all behaviour.
-                Some(Pat::Paren(paren)) if trivial_typed_head(&paren).is_some() => {
-                    // `bind_annotated_named` begins its own census entry.
-                    self.discard_census_entry();
-                    if let Some((named, ty)) = trivial_typed_head(&paren) {
-                        self.bind_annotated_named(&named, &ty, Some(rhs));
+                self.solve(scope);
+                Census::Record
+            }
+            // A function binding `let f x … = <body>` — a `LongIdentPat` head
+            // with arguments. The parameter slot variables are collected
+            // *first* (each simple-named parameter gets a private slot recorded
+            // in `param_slots`, so the body's condition typing can ground that
+            // slot); then the body is walked in synth mode for its own
+            // emissions (e.g. a body that is an `if` emits its result), and its
+            // return variable curries with the parameter slots into the
+            // function's own `TyKind::Fun` type ([`Self::function_type`]). The
+            // arguments span both `SynArgPats` shapes, matching `binders`'s
+            // function-head test: the curried list (`args()`) and the
+            // named-field group `Case (field = pat; …)` (`name_pat_pairs()`,
+            // whose own `args()` is empty). Parameters bind lazily via name
+            // resolution at their uses.
+            Some(Pat::LongIdent(head))
+                if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
+            {
+                scope.body = Some(rhs.syntax().clone());
+                let head_typars = self.open_head_typars(scope, &head, None, Some(rhs));
+                let arg_vars =
+                    self.param_vars(scope, &head, AnnotationCx::head(head_typars.as_ref()));
+                // FCS binds a parameter directly only if it is simple
+                // ([`is_simple_param`]); any other it elaborates through a
+                // `match` whose target is the body, and the typed tree then
+                // keys the body's nodes elsewhere (`(a, ())` moves the
+                // body's root to the `()`). The body's type is still the
+                // function's result, exactly, so it is walked as usual, but
+                // nothing it records is kept.
+                let body_mark = self.out.mark();
+                let ret = self.infer_expr(scope, rhs, None);
+                if !head.args().all(|arg| is_simple_param(&arg)) {
+                    self.out.discard_since(body_mark);
+                }
+                let f_def = self.function_type(scope, &head, &arg_vars, ret);
+                // On a complete binding, undo the 2b slot/binder decoupling so
+                // `let id x = x` generalises to `'a -> 'a`, not `'a -> 'b`.
+                if scope.complete {
+                    self.slot_binder_reunify(scope);
+                }
+                self.solve(scope);
+                self.withhold_if_not_rigid(scope, f_def);
+                if let Some(f_def) = f_def {
+                    self.finalise_function(scope, f_def);
+                }
+                Census::Record
+            }
+            // A parenthesised head: a **trivial typed pattern**
+            // `let (x: T) = …` (`Paren > Typed > Named`) rides the Stage
+            // R2-a annotation gate — same positionally-fixed
+            // binder↔annotation truth as the return-annotation form, with
+            // the same R2-e coverage check-walk over the RHS. Any other
+            // parenthesised shape keeps today's catch-all behaviour.
+            Some(Pat::Paren(paren)) if trivial_typed_head(&paren).is_some() => {
+                match trivial_typed_head(&paren) {
+                    Some((named, ty)) => {
+                        self.bind_annotated_named(scope, &named, &ty, Some(rhs.clone()))
                     }
+                    None => Census::Discard,
                 }
-                // A pattern value binding `let (a, b) = <rhs>`, typed like a
-                // plain value binding: the pattern's binders are linked to the
-                // RHS through the pattern's structure ([`Self::pattern_rhs`]),
-                // and nothing generalises. A shape [`Self::pattern_ty`] rejects
-                // is not walked at all, and a later use of a binder it leaves
-                // open is an environment reference, which is poisoned and so
-                // never generalises.
-                Some(pat @ (Pat::Paren(_) | Pat::Tuple(_))) => {
-                    match self.binding_pattern_ty(&binding, &pat, BinderSite::Module) {
-                        Ok(pat_ty) => self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Module),
-                        // Not walked, but counted: an annotation in the
-                        // pattern is the binding's own, so the census keeps
-                        // it under that reason.
-                        Err(Incomplete::PatternAnnotation) => {
-                            self.mark_incomplete(Incomplete::BindingAnnotation);
-                        }
-                        Err(_) => self.discard_census_entry(),
+            }
+            // A pattern value binding `let (a, b) = <rhs>`, typed like a
+            // plain value binding: the pattern's binders are linked to the
+            // RHS through the pattern's structure ([`Self::pattern_rhs`]),
+            // and nothing generalises. A shape [`Self::pattern_ty`] rejects
+            // is not walked at all, and a later use of a binder it leaves
+            // open is an environment reference, which is poisoned and so
+            // never generalises.
+            Some(pat @ (Pat::Paren(_) | Pat::Tuple(_))) => {
+                let census = match self.binding_pattern_ty(scope, binding, &pat, BinderSite::Module)
+                {
+                    Ok(pat_ty) => {
+                        self.pattern_rhs(scope, &pat, pat_ty, rhs, BinderSite::Module);
+                        Census::Record
                     }
-                    self.solve();
-                }
-                _ => {
-                    // Not walked: no census entry.
-                    self.discard_census_entry();
-                    self.solve();
-                    continue;
-                }
+                    // Not walked, but counted: an annotation in the
+                    // pattern is the binding's own, so the census keeps
+                    // it under that reason.
+                    Err(Incomplete::PatternAnnotation) => {
+                        scope.mark_incomplete(Incomplete::BindingAnnotation);
+                        Census::Record
+                    }
+                    Err(_) => Census::Discard,
+                };
+                self.solve(scope);
+                census
+            }
+            // Not walked: no census entry.
+            _ => {
+                self.solve(scope);
+                Census::Discard
             }
         }
     }
@@ -3765,24 +4300,32 @@ impl<'a> Gen<'a> {
     /// [`FileFacts::annotation_ty`] — and its RHS is check-walked for coverage
     /// (Stage R2-e; see [`Self::bind_annotated_named`]). The function form
     /// dispatches to [`Self::annotated_function_binding`]. Anything else stays
-    /// silent, exactly like the pre-R2-a blanket skip (D5).
-    fn annotated_value_binding(&mut self, binding: &Binding, ann: &Type) {
+    /// silent, exactly like the pre-R2-a blanket skip (D5), with no census
+    /// entry.
+    fn annotated_value_binding(
+        &mut self,
+        scope: &mut Scope,
+        binding: &Binding,
+        ann: &Type,
+    ) -> Census {
         // Mutable binders are deliberately out of scope in v1 (the
         // set-site↔annotation interaction is unaudited; see the plan's
         // out-of-scope list).
         if binding.is_mutable() {
-            return;
+            return Census::Discard;
         }
         match binding.pat() {
-            Some(Pat::Named(named)) => self.bind_annotated_named(&named, ann, binding.expr()),
+            Some(Pat::Named(named)) => {
+                self.bind_annotated_named(scope, &named, ann, binding.expr())
+            }
             // A function head with a return annotation (Stage R2-c).
             Some(Pat::LongIdent(head))
                 if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
             {
-                self.annotated_function_binding(&head, binding.expr(), ann);
+                self.annotated_function_binding(scope, &head, binding.expr(), ann)
             }
             // Any other pattern shape: skipped as before.
-            _ => {}
+            _ => Census::Discard,
         }
     }
 
@@ -3805,20 +4348,25 @@ impl<'a> Gen<'a> {
     ///
     /// An annotation outside the gate keeps the pre-R2-c whole-binding skip:
     /// nothing is walked and nothing is constrained.
-    fn annotated_function_binding(&mut self, head: &LongIdentPat, rhs: Option<Expr>, ann: &Type) {
-        let mark = self.begin_binding();
-        let head_typars = self.open_head_typars(head, Some(ann), rhs.as_ref());
+    fn annotated_function_binding(
+        &mut self,
+        scope: &mut Scope,
+        head: &LongIdentPat,
+        rhs: Option<Expr>,
+        ann: &Type,
+    ) -> Census {
+        let head_typars = self.open_head_typars(scope, head, Some(ann), rhs.as_ref());
         let cx = AnnotationCx::head(head_typars.as_ref());
-        let Some(t) = self.facts.annotation_ty(self.tys, ann, cx) else {
+        let Some(t) = self.facts.annotation_ty(self.solver.tys, ann, cx) else {
             // Not walked, but counted ([`Incomplete::BindingAnnotation`]).
-            self.mark_incomplete(Incomplete::BindingAnnotation);
-            return;
+            scope.mark_incomplete(Incomplete::BindingAnnotation);
+            return Census::Record;
         };
-        self.cur_body = rhs.as_ref().map(|rhs| rhs.syntax().clone());
+        scope.body = rhs.as_ref().map(|rhs| rhs.syntax().clone());
 
-        let arg_vars = self.param_vars(head, cx);
-        let r = self.table.fresh();
-        self.eq(self.tys.var(r), t);
+        let arg_vars = self.param_vars(scope, head, cx);
+        let r = self.solver.table.fresh();
+        self.solver.eq(self.solver.tys.var(r), t);
         if let Some(rhs) = rhs {
             debug_assert!(
                 rhs.syntax()
@@ -3830,8 +4378,8 @@ impl<'a> Gen<'a> {
             // The body walk: check mode against the annotation, the top-level
             // relation suspended rather than eagerly poisoned (the
             // [`Self::infer_arg`] opt-out, shared with application arguments).
-            if let Some(bv) = self.infer_arg(&rhs, r) {
-                self.constraints.push(Constraint::ArgCheck(ArgCheck {
+            if let Some(bv) = self.infer_arg(scope, &rhs, r) {
+                self.solver.constraints.push(Constraint::ArgCheck(ArgCheck {
                     arg: bv,
                     dom: r,
                     r,
@@ -3839,17 +4387,18 @@ impl<'a> Gen<'a> {
                 }));
             }
         } else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
         }
-        let f_def = self.function_type(head, &arg_vars, Some(r));
-        if self.complete {
-            self.slot_binder_reunify();
+        let f_def = self.function_type(scope, head, &arg_vars, Some(r));
+        if scope.complete {
+            self.slot_binder_reunify(scope);
         }
-        self.solve();
-        self.withhold_if_not_rigid(f_def);
+        self.solve(scope);
+        self.withhold_if_not_rigid(scope, f_def);
         if let Some(f_def) = f_def {
-            self.finalise_function(f_def, mark);
+            self.finalise_function(scope, f_def);
         }
+        Census::Record
     }
 
     /// Bind the named binder `named` to its annotation `ann`'s type, when
@@ -3870,19 +4419,27 @@ impl<'a> Gen<'a> {
     /// RHS↔annotation subsumption automatically. The binder's type is ground
     /// before the walk, so nothing the walk does can retract it. An annotation
     /// outside the gate keeps the whole-binding skip (no walk), as before.
-    fn bind_annotated_named(&mut self, named: &NamedPat, ann: &Type, rhs: Option<Expr>) {
-        self.begin_binding();
-        let Some(t) = self.facts.annotation_ty(self.tys, ann, AnnotationCx::Plain) else {
+    fn bind_annotated_named(
+        &mut self,
+        scope: &mut Scope,
+        named: &NamedPat,
+        ann: &Type,
+        rhs: Option<Expr>,
+    ) -> Census {
+        let Some(t) = self
+            .facts
+            .annotation_ty(self.solver.tys, ann, AnnotationCx::Plain)
+        else {
             // Not walked, but counted ([`Incomplete::BindingAnnotation`]).
-            self.mark_incomplete(Incomplete::BindingAnnotation);
-            self.solve();
-            return;
+            scope.mark_incomplete(Incomplete::BindingAnnotation);
+            self.solve(scope);
+            return Census::Record;
         };
-        let walked = if let Some(tok) = named.ident()
+        let census = if let Some(tok) = named.ident()
             && let Some(def) = self.facts.def_at(tok.text_range())
         {
             let dv = self.def_var(def);
-            self.eq(self.tys.var(dv), t);
+            self.solver.eq(self.solver.tys.var(dv), t);
             if let Some(rhs) = rhs {
                 debug_assert!(
                     rhs.syntax()
@@ -3891,16 +4448,14 @@ impl<'a> Gen<'a> {
                         .is_none(),
                     "a LET_DECL nested inside a walked binding's RHS breaks sequential solve"
                 );
-                let _ = self.infer_expr(&rhs, Some(dv));
+                let _ = self.infer_expr(scope, &rhs, Some(dv));
             }
-            true
+            Census::Record
         } else {
-            false
+            Census::Discard
         };
-        if !walked {
-            self.discard_census_entry();
-        }
-        self.solve();
+        self.solve(scope);
+        census
     }
 
     /// On a **complete** function binding, emit `Eq(slot, binder_var)` for each
@@ -3912,12 +4467,11 @@ impl<'a> Gen<'a> {
     /// reunifying them lets the parameter generalise together with the function
     /// (`let id x = x` ⇒ `'a -> 'a`). Incomplete bindings skip this entirely,
     /// preserving the exact soundness boundary the #701 review rounds settled.
-    fn slot_binder_reunify(&mut self) {
-        // Iterate a snapshot so the borrow of `cur_params` does not conflict with
-        // `def_var` / `eq`; the list is small (one entry per simple parameter).
-        for (def, slot) in std::mem::take(&mut self.cur_params) {
+    fn slot_binder_reunify(&mut self, scope: &Scope) {
+        for &(def, slot) in &scope.params {
             let dv = self.def_var(def);
-            self.eq(self.tys.var(slot), self.tys.var(dv));
+            self.solver
+                .eq(self.solver.tys.var(slot), self.solver.tys.var(dv));
         }
     }
 
@@ -3953,13 +4507,19 @@ impl<'a> Gen<'a> {
     /// and returned variables). Centralising it here means every present and future
     /// check site inherits it, so a variable FCS might ground through a dropped
     /// relation is never wrongly generalised.
-    fn infer_expr(&mut self, e: &Expr, expected: Option<TyVid>) -> Option<TyVid> {
-        let result = self.infer_expr_inner(e, expected);
+    fn infer_expr(
+        &mut self,
+        scope: &mut Scope,
+        e: &Expr,
+        expected: Option<TyVid>,
+    ) -> Option<TyVid> {
+        let result = self.infer_expr_inner(scope, e, expected);
         if let Some(exp) = expected {
-            self.poison.push(exp);
+            scope.poison.push(exp);
             if let Some(r) = result {
-                self.poison.push(r);
-                self.dropped
+                scope.poison.push(r);
+                scope
+                    .dropped
                     .push((r, exp, self.facts.node_span(e.syntax())));
             }
         }
@@ -3979,50 +4539,53 @@ impl<'a> Gen<'a> {
     /// argument, so `k0 (s.Length)` has no node at `s`. Which check positions FCS
     /// will reject is not known while walking, so none of them emits. The walk
     /// itself still runs — its constraints and member wakes are true either way.
-    fn infer_expr_inner(&mut self, e: &Expr, expected: Option<TyVid>) -> Option<TyVid> {
-        self.enter_expression();
+    fn infer_expr_inner(
+        &mut self,
+        scope: &mut Scope,
+        e: &Expr,
+        expected: Option<TyVid>,
+    ) -> Option<TyVid> {
+        self.out.enter_expression();
         let result = match expected {
-            None => self.infer_construct(e, None),
+            None => self.infer_construct(scope, e, None),
             Some(_) => {
-                let mark = self.emission_mark();
-                let result = self.infer_construct(e, expected);
-                self.discard_emissions_since(mark);
+                let mark = self.out.mark();
+                let result = self.infer_construct(scope, e, expected);
+                self.out.discard_since(mark);
                 result
             }
         };
-        self.expr_depth -= 1;
+        self.out.leave_expression();
         result
-    }
-
-    /// Count one more expression level open on the walk's recursion
-    /// ([`InferredFile::deepest_expression_walk`]); the caller closes it.
-    fn enter_expression(&mut self) {
-        self.expr_depth += 1;
-        self.deepest_expr_depth = self.deepest_expr_depth.max(self.expr_depth);
     }
 
     /// The per-construct generation rules (the body of [`Self::infer_expr`],
     /// without its poison wrapper or [`Self::infer_expr_inner`]'s check-mode
     /// barrier). Every arm that returns `None` because a sub-expression is
     /// unmodelled, and every unwalked child, marks the binding walk-incomplete
-    /// ([`Self::mark_incomplete`]) — the seed of Stage 3.2c-2c's generalisation
+    /// ([`Scope::mark_incomplete`]) — the seed of Stage 3.2c-2c's generalisation
     /// gate. (Ground emission is unaffected: it does not read the completeness
     /// flag.)
-    fn infer_construct(&mut self, e: &Expr, expected: Option<TyVid>) -> Option<TyVid> {
+    fn infer_construct(
+        &mut self,
+        scope: &mut Scope,
+        e: &Expr,
+        expected: Option<TyVid>,
+    ) -> Option<TyVid> {
         match e {
             // A bare literal. A measure literal (`1.0<kg>`) is an
             // `Expr::MeasureLit`, not `Expr::Const`, so it is excluded
             // structurally — its inner numeric token is *not* the measured type.
             Expr::Const(c) => {
-                let Some(ty) = literal_ty(self.facts.env.names(), self.tys, c) else {
+                let Some(ty) = literal_ty(self.facts.env.names(), self.solver.tys, c) else {
                     // A deferred literal (`USER_NUM_LIT`, a source-location
                     // identifier) is unmodelled — its type is not fixed even in
                     // isolation — so the binding must not generalise.
-                    self.mark_incomplete(Incomplete::DeferredLiteral);
+                    scope.mark_incomplete(Incomplete::DeferredLiteral);
                     return None;
                 };
-                let v = self.table.fresh();
-                self.eq(self.tys.var(v), ty);
+                let v = self.solver.table.fresh();
+                self.solver.eq(self.solver.tys.var(v), ty);
                 // The literal *token*'s range, not the `ConstExpr` node's: in a
                 // tuple element (`(1, "hi")`) the node range swallows the leading
                 // ` ` trivia after the comma, but FCS's node spans only the
@@ -4038,12 +4601,12 @@ impl<'a> Gen<'a> {
             // use occurrence is emitted at its own range; a use resolving to a
             // non-in-file target, or to a binder we never typed, leaves its
             // variable unbound and so stays Deferred at read-off. A use resolving
-            // to a **generalised** binder ([`Self::def_schemes`]) instantiates the
+            // to a **generalised** binder ([`BinderEnv::scheme`]) instantiates the
             // scheme with fresh variables per distinct [`TyKind::Param`] (Stage
             // 3.2c-2c) — checked *before* the plain `def_var` path.
             Expr::Ident(ident) => {
                 let Some(tok) = ident.ident() else {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
                 let def = self
@@ -4054,16 +4617,16 @@ impl<'a> Gen<'a> {
                     // A referenced assembly's value, read off its signature, or
                     // a union case; anything else that is not an in-file binder
                     // (a preceding file's, a deferred name) is unmodelled.
-                    let uv = self.nonlocal_value_or_incomplete(tok.text_range())?;
+                    let uv = self.nonlocal_value_or_incomplete(scope, tok.text_range())?;
                     if !self.facts.case_of_fields_at(tok.text_range()) {
                         self.emit(tok.text_range(), uv, expected);
                     }
                     return Some(uv);
                 };
-                if self.declines_use(def) {
+                if self.declines_use(scope, def) {
                     return None;
                 }
-                let uv = self.value_use(def);
+                let uv = self.value_use(scope, def);
                 self.emit(tok.text_range(), uv, expected);
                 Some(uv)
             }
@@ -4073,10 +4636,10 @@ impl<'a> Gen<'a> {
             // wrapping a recovery hole (no inner expression) is unmodelled.
             Expr::Paren(p) => {
                 let Some(inner) = p.inner() else {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
-                self.infer_expr(&inner, expected)
+                self.infer_expr(scope, &inner, expected)
             }
             // A reference tuple `(a, b, …)`: `TyKind::Tuple` of the element types. The
             // elements share the tuple's mode — coercion-free (emitted) only when
@@ -4090,7 +4653,7 @@ impl<'a> Gen<'a> {
                 // Struct tuples (`struct (a, b)`) have a distinct runtime type
                 // and canonical rendering; defer them (unmodelled).
                 if t.is_struct() {
-                    self.mark_incomplete(Incomplete::StructTuple);
+                    scope.mark_incomplete(Incomplete::StructTuple);
                     return None;
                 }
                 let elems: Vec<Ty> = t
@@ -4099,16 +4662,16 @@ impl<'a> Gen<'a> {
                         // Propagate the tuple's mode: synth elements when the tuple
                         // is synth, otherwise a fresh per-element expected (check —
                         // suppresses the element's emission).
-                        let elem_expected = expected.map(|_| self.table.fresh());
-                        match self.infer_expr(&el, elem_expected) {
-                            Some(v) => self.tys.var(v),
+                        let elem_expected = expected.map(|_| self.solver.table.fresh());
+                        match self.infer_expr(scope, &el, elem_expected) {
+                            Some(v) => self.solver.tys.var(v),
                             None => {
                                 // An element we cannot type leaves the tuple
                                 // un-ground; the element's own recursion already set
                                 // incomplete, but this arm may also be reached for a
                                 // recovery hole — be explicit.
-                                self.mark_incomplete_propagated();
-                                self.tys.var(self.table.fresh())
+                                scope.mark_incomplete_propagated();
+                                self.solver.tys.var(self.solver.table.fresh())
                             }
                         }
                     })
@@ -4116,11 +4679,12 @@ impl<'a> Gen<'a> {
                 // A well-formed tuple has ≥ 2 elements; anything less is a
                 // degenerate parse, not a tuple type.
                 if elems.len() < 2 {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 }
-                let tv = self.table.fresh();
-                self.eq(self.tys.var(tv), self.tys.tuple(elems));
+                let tv = self.solver.table.fresh();
+                self.solver
+                    .eq(self.solver.tys.var(tv), self.solver.tys.tuple(elems));
                 self.emit(self.facts.node_span(t.syntax()), tv, expected);
                 Some(tv)
             }
@@ -4146,7 +4710,7 @@ impl<'a> Gen<'a> {
                 // The condition is `bool` in either mode (F# admits no coercion
                 // there), so constrain it regardless of the `if`'s own mode — this
                 // grounds a parameter used directly as a condition (3.2c-2b).
-                self.constrain_bool(if_expr.condition());
+                self.constrain_bool(scope, if_expr.condition());
                 match expected {
                     None => {
                         // An `if` with no final `else` desugars to `else ()`
@@ -4154,28 +4718,28 @@ impl<'a> Gen<'a> {
                         // and mark incomplete (its then-branch's true type is a
                         // dropped unit-check relation).
                         if !if_chain_has_final_else(if_expr) {
-                            self.mark_incomplete(Incomplete::ElselessIf);
+                            scope.mark_incomplete(Incomplete::ElselessIf);
                             return None;
                         }
                         let Some(then_branch) = if_expr.then_branch() else {
-                            self.mark_incomplete(Incomplete::Recovery);
+                            scope.mark_incomplete(Incomplete::Recovery);
                             return None;
                         };
                         // A then-branch that cannot synthesize leaves the `if`'s
                         // result unknown; its recursion already set incomplete.
-                        let then_var = self.infer_expr(&then_branch, None)?;
+                        let then_var = self.infer_expr(scope, &then_branch, None)?;
                         if let Some(else_branch) = if_expr.else_branch() {
-                            self.infer_expr(&else_branch, Some(then_var));
+                            self.infer_expr(scope, &else_branch, Some(then_var));
                         }
                         self.emit(self.facts.node_span(if_expr.syntax()), then_var, None);
                         Some(then_var)
                     }
                     Some(exp) => {
                         if let Some(then_branch) = if_expr.then_branch() {
-                            self.infer_expr(&then_branch, Some(exp));
+                            self.infer_expr(scope, &then_branch, Some(exp));
                         }
                         if let Some(else_branch) = if_expr.else_branch() {
-                            self.infer_expr(&else_branch, Some(exp));
+                            self.infer_expr(scope, &else_branch, Some(exp));
                         }
                         Some(exp)
                     }
@@ -4191,7 +4755,7 @@ impl<'a> Gen<'a> {
             // expected type.
             Expr::Match(m) => {
                 let Some(scrutinee) = m.scrutinee() else {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
                 // FCS elaborates a match of one clause to other nodes than
@@ -4199,7 +4763,7 @@ impl<'a> Gen<'a> {
                 // `"s"`), so its dump cannot grade one; such a match is the
                 // rare spelling of a `let`, and declines.
                 if m.clauses().nth(1).is_none() {
-                    self.mark_incomplete(Incomplete::Unmodelled(SyntaxKind::MATCH_EXPR));
+                    scope.mark_incomplete(Incomplete::Unmodelled(SyntaxKind::MATCH_EXPR));
                     return None;
                 }
                 // FCS's decision compiler keeps no node or binder of a
@@ -4209,48 +4773,46 @@ impl<'a> Gen<'a> {
                 // node at `1`), so a match with an unreachable clause declines
                 // before any of it is walked, as a match of one clause does.
                 if !self.every_clause_provably_reachable(m) {
-                    self.mark_incomplete(Incomplete::UnreachableClause);
+                    scope.mark_incomplete(Incomplete::UnreachableClause);
                     return None;
                 }
-                let mark = self.emission_mark();
-                let sv = self.infer_expr(&scrutinee, None)?;
+                let mark = self.out.mark();
+                let sv = self.infer_expr(scope, &scrutinee, None)?;
                 // FCS may bind the scrutinee to a temporary at the
                 // scrutinee's own range — a `let` node typed as the whole
                 // match (`match c with 'a' -> true | _ -> false` reports
                 // `bool` at `c`) — so the scrutinee's own node, the last its
                 // walk emitted, is not one FCS's dump can grade. What it
                 // contains is.
-                if let Some(&(range, _, _)) = self.exprs[mark.0..].last() {
-                    self.ungraded_ranges.insert(range);
-                }
+                self.out.ungrade_last_since(mark);
                 let mut result = expected;
                 let mut any = false;
                 for clause in m.clauses() {
                     let (Some(pat), Some(body)) = (clause.pat(), clause.result()) else {
-                        self.mark_incomplete(Incomplete::Recovery);
+                        scope.mark_incomplete(Incomplete::Recovery);
                         return None;
                     };
                     // A name bound twice is FS0038 (FCS keeps the second),
                     // as for a `let` pattern.
                     if binds_a_name_twice(std::slice::from_ref(&pat)) {
-                        self.mark_incomplete(Incomplete::DuplicateBinder);
+                        scope.mark_incomplete(Incomplete::DuplicateBinder);
                         return None;
                     }
                     let shape =
                         match self.pattern_shape_in(&pat, PatSite::Match, AnnotationCx::Plain) {
                             Ok(shape) => shape,
                             Err(why) => {
-                                self.mark_incomplete(why);
+                                scope.mark_incomplete(why);
                                 return None;
                             }
                         };
-                    shape.names(&mut self.match_locals);
+                    shape.names(&mut scope.match_locals);
                     // Every equality the pattern generates — its fields'
                     // included — counts toward its fit, so the count is taken
                     // before it is generated, once what came before settled.
-                    self.settle();
-                    let failures = self.eq_failures;
-                    let pt = self.gen_pattern(&shape, BinderSite::Local);
+                    self.settle(scope);
+                    let failures = scope.eq_failures;
+                    let pt = self.gen_pattern(scope, &shape, BinderSite::Local);
                     // As for a `let` pattern ([`Self::pattern_rhs`]): a
                     // pattern of structure must not give an earlier binding's
                     // open variable a shape of this binding's variables
@@ -4261,12 +4823,12 @@ impl<'a> Gen<'a> {
                     // (`let g = idf in match g ho with Some 1 -> …` keeps
                     // `idf : 'a -> 'a`) — the variables an argument check
                     // refuses to bind too ([`Self::touches_opaque`]).
-                    self.settle();
-                    if !matches!(self.tys.kind(pt), TyKind::Var(_))
-                        && (self.mentions_inherited_open(sv)
-                            || self.touches_opaque(sv, sv, self.facts.node_span(m.syntax())))
+                    self.settle(scope);
+                    if !matches!(self.solver.tys.kind(pt), TyKind::Var(_))
+                        && (self.mentions_inherited_open(scope, sv)
+                            || self.touches_opaque(scope, sv, sv, self.facts.node_span(m.syntax())))
                     {
-                        self.mark_incomplete(Incomplete::InheritedOpen);
+                        scope.mark_incomplete(Incomplete::InheritedOpen);
                         return None;
                     }
                     // FCS checks in source order, so an argument check still
@@ -4274,10 +4836,10 @@ impl<'a> Gen<'a> {
                     // that contradicts one (`(fs x, match x with 1 -> …)` with
                     // `fs : string -> _`) is the one FCS rejects, and relating
                     // it now would fix the scrutinee in the check's place.
-                    if !matches!(self.tys.kind(pt), TyKind::Var(_))
-                        && self.pattern_preempts_earlier_relation(sv, pt)
+                    if !matches!(self.solver.tys.kind(pt), TyKind::Var(_))
+                        && self.pattern_preempts_earlier_relation(scope, sv, pt)
                     {
-                        self.mark_incomplete(Incomplete::PatternAfterCheck);
+                        scope.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
                     }
                     // An unmodelled construct before the pattern may have
@@ -4286,40 +4848,43 @@ impl<'a> Gen<'a> {
                     // `bool`, then rejects the pattern), and it left no
                     // relation to probe; so on an incomplete binding a
                     // pattern of structure relates only a ground scrutinee.
-                    if !self.complete
-                        && !matches!(self.tys.kind(pt), TyKind::Var(_))
-                        && !self.tys.is_ground(self.table.resolve(self.tys.var(sv)))
+                    if !scope.complete
+                        && !matches!(self.solver.tys.kind(pt), TyKind::Var(_))
+                        && !self
+                            .solver
+                            .tys
+                            .is_ground(self.solver.table.resolve(self.solver.tys.var(sv)))
                     {
-                        self.mark_incomplete(Incomplete::PatternAfterCheck);
+                        scope.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
                     }
-                    self.eq(self.tys.var(sv), pt);
+                    self.solver.eq(self.solver.tys.var(sv), pt);
                     // The pattern's names are typed before the clause's uses
                     // of them are walked, so a use reads a known type
                     // ([`Self::value_use`]).
-                    self.settle();
+                    self.settle(scope);
                     // A pattern that does not fit the scrutinee fails whole
                     // (atomically), leaving its names untyped where FCS typed
                     // the part that fit before rejecting the rest (`(x, 1)`
                     // against `int * string` keeps `x : int`): the clause
                     // declines rather than let its body type them.
-                    if self.eq_failures > failures {
-                        self.mark_incomplete(Incomplete::PatternMismatch);
+                    if scope.eq_failures > failures {
+                        scope.mark_incomplete(Incomplete::PatternMismatch);
                         return None;
                     }
                     if clause.guard().is_some() {
-                        self.constrain_bool(clause.guard());
+                        self.constrain_bool(scope, clause.guard());
                     }
                     match result {
-                        None => result = Some(self.infer_expr(&body, None)?),
+                        None => result = Some(self.infer_expr(scope, &body, None)?),
                         Some(exp) => {
-                            self.infer_expr(&body, Some(exp));
+                            self.infer_expr(scope, &body, Some(exp));
                         }
                     }
                     any = true;
                 }
                 if !any {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 }
                 // Nothing is emitted at the match itself: FCS elaborates
@@ -4338,21 +4903,21 @@ impl<'a> Gen<'a> {
             // body binds lazily via name resolution. (3.2c-2a)
             Expr::Fun(fun) => {
                 if let Some(body) = fun.body() {
-                    let body_expected = expected.map(|_| self.table.fresh());
+                    let body_expected = expected.map(|_| self.solver.table.fresh());
                     // A lambda's parameters are elaborated as a function's
                     // are: behind a non-simple one the body's nodes move, so
                     // it records nothing (see [`is_simple_param`]).
-                    let body_mark = self.emission_mark();
-                    self.infer_expr(&body, body_expected);
+                    let body_mark = self.out.mark();
+                    self.infer_expr(scope, &body, body_expected);
                     if !fun.args().all(|arg| is_simple_param(&arg)) {
-                        self.discard_emissions_since(body_mark);
+                        self.out.discard_since(body_mark);
                     }
                 }
                 // The lambda's own function type is not modelled yet (`TyKind::Fun` on
                 // a `fun` value is a later slice), so it defers — and marks the
                 // binding incomplete, since a body containing a lambda has an FCS
                 // type we cannot reproduce.
-                self.mark_incomplete(Incomplete::Lambda);
+                scope.mark_incomplete(Incomplete::Lambda);
                 None
             }
             // A `while c do body`: the condition is constrained to `bool`
@@ -4362,14 +4927,14 @@ impl<'a> Gen<'a> {
             // body's synthesized type). The loop's own `unit` type is left to a
             // later slice. (3.2c-2a / 3.2c-2b)
             Expr::While(while_expr) => {
-                self.constrain_bool(while_expr.cond());
+                self.constrain_bool(scope, while_expr.cond());
                 if let Some(body) = while_expr.body() {
-                    let unit_check = self.table.fresh();
-                    self.infer_expr(&body, Some(unit_check));
+                    let unit_check = self.solver.table.fresh();
+                    self.infer_expr(scope, &body, Some(unit_check));
                 }
                 // A `while` expression's own `unit` type is not modelled yet, so it
                 // defers — and marks the binding incomplete.
-                self.mark_incomplete(Incomplete::While);
+                scope.mark_incomplete(Incomplete::While);
                 None
             }
             // Function application `f x` (Stage 3.2c-3). Both `APP_EXPR` and
@@ -4386,7 +4951,7 @@ impl<'a> Gen<'a> {
             // succeeds (see `AppExpr::is_bracket_indexer`); when it fails, the
             // result is poisoned, as for any failed application.
             Expr::App(app) if !app.is_infix() && !app.is_bracket_indexer() => {
-                let r = self.infer_app(app)?;
+                let r = self.infer_app(scope, app)?;
                 self.emit(self.facts.node_span(app.syntax()), r, expected);
                 Some(r)
             }
@@ -4400,20 +4965,20 @@ impl<'a> Gen<'a> {
             // defers it, so the static-member `Member` resolution is untouched — no
             // regression). The receiver's own value node is emitted at the head
             // range (FCS emits a `value:module` node there), then the members chain.
-            Expr::LongIdent(li) => self.infer_long_ident_member(li, expected),
+            Expr::LongIdent(li) => self.infer_long_ident_member(scope, li, expected),
             // A `(expr).Member` member access (Stage 3.3a). Both `"hi".Length` and
             // `(f x).Foo` parse as `DOT_GET_EXPR`: an inner receiver *expression*
             // plus a `LongIdent` member path. The receiver is synthesized (its own
             // node emitted where FCS has one — e.g. the `"hi"` literal), and the
             // member path chains from its variable.
-            Expr::DotGet(dg) => self.infer_dot_get(dg, expected),
+            Expr::DotGet(dg) => self.infer_dot_get(scope, dg, expected),
             // An expression-level `let … in` (CE-1). The bang, `use` and `rec`
             // forms stay unmodelled: a `let!` is a builder call, a `use` a
             // disposal, and a recursive group's bindings constrain each other.
             Expr::LetOrUse(e) if !e.is_bang() && !e.is_use() && !e.is_rec() => {
-                self.infer_let_in(e, expected)
+                self.infer_let_in(scope, e, expected)
             }
-            Expr::Sequential(seq) => self.infer_sequential(seq, expected),
+            Expr::Sequential(seq) => self.infer_sequential(scope, seq, expected),
             // Any other expression shape is unmodelled: defer and mark incomplete
             // (the FCS type on this subtree is one we did not reproduce, so an
             // enclosing binding must not generalise). This catches a
@@ -4421,7 +4986,7 @@ impl<'a> Gen<'a> {
             // does not match, and an infix `App` outside a callee position, which
             // only a recovered parse produces.
             _ => {
-                self.mark_incomplete(Incomplete::Unmodelled(e.syntax().kind()));
+                scope.mark_incomplete(Incomplete::Unmodelled(e.syntax().kind()));
                 None
             }
         }
@@ -4439,26 +5004,31 @@ impl<'a> Gen<'a> {
     ///
     /// Reached in check mode, the `let` records nothing at all — neither its
     /// RHS nodes nor its binders — by [`Self::infer_expr_inner`]'s barrier.
-    fn infer_let_in(&mut self, e: &LetOrUseExpr, expected: Option<TyVid>) -> Option<TyVid> {
+    fn infer_let_in(
+        &mut self,
+        scope: &mut Scope,
+        e: &LetOrUseExpr,
+        expected: Option<TyVid>,
+    ) -> Option<TyVid> {
         for binding in e.bindings() {
             // A local that may carry `[<EntryPoint>]` is not typed, as at
             // module level ([`Self::let_binding`]).
             if self.facts.may_be_entry_point(e.syntax())
                 || self.facts.may_be_entry_point(binding.syntax())
             {
-                self.mark_incomplete(Incomplete::LocalBindingShape);
+                scope.mark_incomplete(Incomplete::LocalBindingShape);
                 continue;
             }
-            self.local_binding(&binding);
+            self.local_binding(scope, &binding);
         }
         let Some(body) = e.body() else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
-        let body_mark = self.emission_mark();
-        let result = self.infer_expr(&body, expected);
+        let body_mark = self.out.mark();
+        let result = self.infer_expr(scope, &body, expected);
         if e.bindings().any(|b| moves_its_continuation(&b)) {
-            self.discard_emissions_since(body_mark);
+            self.out.discard_since(body_mark);
         }
         result
     }
@@ -4488,30 +5058,30 @@ impl<'a> Gen<'a> {
     /// [`Self::pattern_ty`] rejects: the binding is marked incomplete and its
     /// RHS is not walked. Its binders get variables lazily at their uses,
     /// open, and only the incompleteness keeps them from being grounded there.
-    fn local_binding(&mut self, binding: &Binding) {
+    fn local_binding(&mut self, scope: &mut Scope, binding: &Binding) {
         let (None, Some(pat), Some(rhs)) = (binding.return_type(), binding.pat(), binding.expr())
         else {
-            self.mark_incomplete(Incomplete::LocalBindingShape);
+            scope.mark_incomplete(Incomplete::LocalBindingShape);
             return;
         };
         if matches!(pat, Pat::LongIdent(_)) {
-            self.mark_incomplete(Incomplete::LocalBindingShape);
+            scope.mark_incomplete(Incomplete::LocalBindingShape);
             return;
         }
-        let recorded = self.reasons_recorded();
-        let pat_ty = match self.binding_pattern_ty(binding, &pat, BinderSite::Local) {
+        let recorded = scope.reasons_recorded();
+        let pat_ty = match self.binding_pattern_ty(scope, binding, &pat, BinderSite::Local) {
             Ok(t) => t,
             Err(why) => {
-                self.mark_incomplete(why);
+                scope.mark_incomplete(why);
                 return;
             }
         };
-        self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Local);
+        self.pattern_rhs(scope, &pat, pat_ty, &rhs, BinderSite::Local);
         // The whole pattern's type, not just its names': a wildcard binds
         // nothing, but an RHS still open under it is as unsettled as a named
         // one.
-        if !self.tys.is_ground(self.table.resolve(pat_ty)) {
-            self.mark_consequence(recorded, Incomplete::OpenLocal);
+        if !self.solver.tys.is_ground(self.solver.table.resolve(pat_ty)) {
+            scope.mark_consequence(recorded, Incomplete::OpenLocal);
         }
     }
 
@@ -4551,17 +5121,24 @@ impl<'a> Gen<'a> {
     ///   argument check, which FCS resolves after pushing the pattern's type
     ///   into the call, so it may fail inside the call's argument; but an
     ///   argument's nodes are never recorded, so nothing kept here sits there.
-    fn pattern_rhs(&mut self, pat: &Pat, pat_ty: Ty, rhs: &Expr, site: BinderSite) {
+    fn pattern_rhs(
+        &mut self,
+        scope: &mut Scope,
+        pat: &Pat,
+        pat_ty: Ty,
+        rhs: &Expr,
+        site: BinderSite,
+    ) {
         let annotated = pat
             .syntax()
             .descendants_where(|k| k == SyntaxKind::TYPED_PAT)
             .next()
             .is_some();
         if annotated {
-            let expected = self.table.fresh();
-            self.infer_expr(rhs, Some(expected));
-            self.mark_incomplete(Incomplete::CoercedPattern);
-            self.settle();
+            let expected = self.solver.table.fresh();
+            self.infer_expr(scope, rhs, Some(expected));
+            scope.mark_incomplete(Incomplete::CoercedPattern);
+            self.settle(scope);
             return;
         }
         let bound_directly = site == BinderSite::Local
@@ -4570,43 +5147,48 @@ impl<'a> Gen<'a> {
                 unparenthesize(rhs.clone()),
                 Some(Expr::Ident(_) | Expr::LongIdent(_))
             );
-        let expected = bound_directly.then(|| self.table.fresh());
-        let mark = self.emission_mark();
-        let rhs_var = self.infer_expr(rhs, expected);
-        self.settle();
+        let expected = bound_directly.then(|| self.solver.table.fresh());
+        let mark = self.out.mark();
+        let rhs_var = self.infer_expr(scope, rhs, expected);
+        self.settle(scope);
         // A pattern that is a single variable (a name, a wildcard) imposes no
         // structure, so its check cannot fail, and the RHS's nodes stand even
         // when the RHS itself does not synthesize.
-        let structural = !matches!(self.tys.kind(pat_ty), TyKind::Var(_));
-        if structural && rhs_var.is_some_and(|v| self.mentions_inherited_open(v)) {
+        let structural = !matches!(self.solver.tys.kind(pat_ty), TyKind::Var(_));
+        if structural && rhs_var.is_some_and(|v| self.mentions_inherited_open(scope, v)) {
             // The equality would give an earlier binding's open variable a
             // structure of this binding's fresh variables, which then pass for
             // this binding's own: an argument check could ground them, and so
             // retype the earlier binder. The relation is dropped instead.
-            self.mark_incomplete(Incomplete::InheritedOpen);
-            self.discard_emissions_since(mark);
+            scope.mark_incomplete(Incomplete::InheritedOpen);
+            self.out.discard_since(mark);
             return;
         }
         if let Some(rhs_var) = rhs_var {
-            self.eq(pat_ty, self.tys.var(rhs_var));
+            self.solver.eq(pat_ty, self.solver.tys.var(rhs_var));
         }
-        self.settle();
-        let agrees = rhs_var
-            .is_some_and(|v| self.table.resolve(pat_ty) == self.table.resolve(self.tys.var(v)));
+        self.settle(scope);
+        let agrees = rhs_var.is_some_and(|v| {
+            self.solver.table.resolve(pat_ty) == self.solver.table.resolve(self.solver.tys.var(v))
+        });
         if structural && !agrees {
-            self.discard_emissions_since(mark);
+            self.out.discard_since(mark);
         }
     }
 
     /// Whether `v`'s type mentions an open variable an earlier binding owns —
     /// the variables [`Self::arg_check_binds_only_current_vars`] refuses to
     /// let an argument check ground.
-    fn mentions_inherited_open(&mut self, v: TyVid) -> bool {
+    fn mentions_inherited_open(&mut self, scope: &Scope, v: TyVid) -> bool {
         let mut roots = HashSet::default();
-        collect_var_roots(self.tys, self.table.resolve(self.tys.var(v)), &mut roots);
+        collect_var_roots(
+            self.solver.tys,
+            self.solver.table.resolve(self.solver.tys.var(v)),
+            &mut roots,
+        );
         roots
             .into_iter()
-            .any(|r| self.table.any_older_unioned(r, self.cur_mark))
+            .any(|r| self.solver.table.any_older_unioned(r, scope.mark))
     }
 
     /// A sequence `s1; …; sn` (CE-1), typed as its last statement, which carries
@@ -4628,30 +5210,39 @@ impl<'a> Gen<'a> {
     /// parameter's first occurrence instead ([`Self::is_first_occurrence`]),
     /// which a statement naming the parameter already is. A ground statement
     /// type is untouched by the unification, so it costs nothing.
-    fn infer_sequential(&mut self, seq: &SequentialExpr, expected: Option<TyVid>) -> Option<TyVid> {
+    fn infer_sequential(
+        &mut self,
+        scope: &mut Scope,
+        seq: &SequentialExpr,
+        expected: Option<TyVid>,
+    ) -> Option<TyVid> {
         let stmts: Vec<Expr> = seq.statements().collect();
         let Some((last, init)) = stmts.split_last() else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         if init.is_empty() {
             // A one-statement sequence is a recovery artefact, not `e1; e2`.
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         }
         for stmt in init {
-            let unit_check = self.table.fresh();
+            let unit_check = self.solver.table.fresh();
             // A statement that does not synthesize a variable has already marked
             // the binding incomplete in its own arm.
-            let recorded = self.reasons_recorded();
-            if let Some(v) = self.infer_expr(stmt, Some(unit_check)) {
-                self.settle();
-                if !self.tys.is_ground(self.table.resolve(self.tys.var(v))) {
-                    self.mark_consequence(recorded, Incomplete::OpenStatement);
+            let recorded = scope.reasons_recorded();
+            if let Some(v) = self.infer_expr(scope, stmt, Some(unit_check)) {
+                self.settle(scope);
+                if !self
+                    .solver
+                    .tys
+                    .is_ground(self.solver.table.resolve(self.solver.tys.var(v)))
+                {
+                    scope.mark_consequence(recorded, Incomplete::OpenStatement);
                 }
             }
         }
-        let v = self.infer_expr(last, expected)?;
+        let v = self.infer_expr(scope, last, expected)?;
         self.emit(self.facts.node_span(seq.syntax()), v, expected);
         Some(v)
     }
@@ -4689,13 +5280,13 @@ impl<'a> Gen<'a> {
     /// domain), grounding `y ↔ d ↔ r`. A ground `f : bool -> int` applied to any
     /// argument still grounds `r` (a ground var is unaffected by poison). See
     /// [`Self::solve`] for the wake rule and its completeness gate.
-    fn infer_app(&mut self, app: &AppExpr) -> Option<TyVid> {
+    fn infer_app(&mut self, scope: &mut Scope, app: &AppExpr) -> Option<TyVid> {
         let Some(func) = app.func() else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         let Some(arg) = app.arg() else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         // A **method call** `recv.Method(args)` is an application whose callee is a
@@ -4710,27 +5301,29 @@ impl<'a> Gen<'a> {
         );
         // Asked first: a prefix operator (`-a`) is a bare `LONG_IDENT_EXPR`
         // callee, which is otherwise read as a member access.
-        if let Some(r) = self.builtin_application(&func, &arg) {
+        if let Some(r) = self.builtin_application(scope, &func, &arg) {
             return r;
         }
         if !module_value && is_member_access_callee(&func) {
-            return self.infer_method_call(&func, &arg);
+            return self.infer_method_call(scope, &func, &arg);
         }
         // Synthesize the function position (no node emitted).
-        let tf = self.infer_callee(&func)?;
-        Some(self.apply(tf, &arg))
+        let tf = self.infer_callee(scope, &func)?;
+        Some(self.apply(scope, tf, &arg))
     }
 
     /// Apply a synthesized function `tf` to `arg`: the half of
     /// [`Self::infer_app`] after the callee, shared with the infix operator
     /// application ([`Self::infer_infix`]). Returns the result variable.
-    fn apply(&mut self, tf: TyVid, arg: &Expr) -> TyVid {
-        let d = self.table.fresh();
-        let r = self.table.fresh();
+    fn apply(&mut self, scope: &mut Scope, tf: TyVid, arg: &Expr) -> TyVid {
+        let d = self.solver.table.fresh();
+        let r = self.solver.table.fresh();
         // Genuinely true: applying `func` forces it to a function shape.
-        self.eq(
-            self.tys.var(tf),
-            self.tys.fun(self.tys.var(d), self.tys.var(r)),
+        self.solver.eq(
+            self.solver.tys.var(tf),
+            self.solver
+                .tys
+                .fun(self.solver.tys.var(d), self.solver.tys.var(r)),
         );
         // The argument is a check position against the domain `d`, so it is walked
         // in check mode (its node is not emitted) — but **without** the poison
@@ -4740,13 +5333,13 @@ impl<'a> Gen<'a> {
         // provably coercion-free (a walk-complete binding and a no-subsumption
         // domain), and only poisoned if it stays undischarged. The argument's var,
         // if we could synthesize one, is the `ArgCheck`'s `arg` endpoint.
-        let arg_var = self.infer_arg(arg, d);
+        let arg_var = self.infer_arg(scope, arg, d);
         match arg_var {
             Some(arg_var) => {
                 // Suspend the arg↔param relation. `solve` wakes it (a complete
                 // binding + a no-subsumption `d`) or, failing that, poisons
                 // `arg`/`d`/`r` — so an unwoken relation never generalises anything.
-                self.constraints.push(Constraint::ArgCheck(ArgCheck {
+                self.solver.constraints.push(Constraint::ArgCheck(ArgCheck {
                     arg: arg_var,
                     dom: d,
                     r,
@@ -4760,8 +5353,8 @@ impl<'a> Gen<'a> {
                 // poison of `d`/`r`: an unwoken relation must not let either
                 // generalise. A *ground* `r` (a ground function's result) is
                 // unaffected, so ground payoffs still emit.
-                self.poison.push(d);
-                self.poison.push(r);
+                scope.poison.push(d);
+                scope.poison.push(r);
             }
         }
         r
@@ -4776,13 +5369,13 @@ impl<'a> Gen<'a> {
     /// operator's value ([`Self::operator_value`]), and the outer application
     /// is an ordinary one; neither records a node inside the application, as
     /// for any curried call.
-    fn infer_infix(&mut self, inner: &AppExpr) -> Option<TyVid> {
+    fn infer_infix(&mut self, scope: &mut Scope, inner: &AppExpr) -> Option<TyVid> {
         let (Some(op), Some(lhs)) = (inner.func(), inner.arg()) else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
-        let tf = self.operator_value(&op)?;
-        Some(self.apply(tf, &lhs))
+        let tf = self.operator_value(scope, &op)?;
+        Some(self.apply(scope, tf, &lhs))
     }
 
     /// The application of `func` to `arg` when it is a use of one of
@@ -4807,7 +5400,12 @@ impl<'a> Gen<'a> {
     /// the binding is incomplete with the reason and the application untyped —
     /// but for a conversion whose operand is not known, or not modelled,
     /// whose result its signature fixes.
-    fn builtin_application(&mut self, func: &Expr, arg: &Expr) -> Option<Option<TyVid>> {
+    fn builtin_application(
+        &mut self,
+        scope: &mut Scope,
+        func: &Expr,
+        arg: &Expr,
+    ) -> Option<Option<TyVid>> {
         let (builtin, operands) = match func {
             Expr::App(inner) if inner.is_infix() => {
                 let (op, lhs) = (inner.func()?, inner.arg()?);
@@ -4832,22 +5430,22 @@ impl<'a> Gen<'a> {
         let mut vars = Vec::new();
         let mut walked = true;
         for operand in &operands {
-            let d = self.table.fresh();
-            match self.infer_expr(operand, Some(d)) {
+            let d = self.solver.table.fresh();
+            match self.infer_expr(scope, operand, Some(d)) {
                 Some(v) => vars.push(v),
                 // The operand's own walk recorded why it is not typed.
                 None => walked = false,
             }
         }
         let verdict = if walked {
-            self.settle();
+            self.settle(scope);
             let tys: Vec<Ty> = vars
                 .iter()
-                .map(|v| self.table.resolve(self.tys.var(*v)))
+                .map(|v| self.solver.table.resolve(self.solver.tys.var(*v)))
                 .collect();
-            let verdict = builtin_verdict(self.facts.env, self.tys, &builtin, &tys);
+            let verdict = builtin_verdict(self.facts.env, self.solver.tys, &builtin, &tys);
             if let Err(gap) = verdict {
-                self.mark_incomplete(Incomplete::Builtin(gap));
+                scope.mark_incomplete(Incomplete::Builtin(gap));
             }
             Some(verdict)
         } else {
@@ -4862,12 +5460,13 @@ impl<'a> Gen<'a> {
             // out to be, or whenever it is solved. Only a known operand the
             // rule rejects, or may, is left untyped.
             (None | Some(Err(BuiltinGap::OpenOperand)), Builtin::Convert { target }) => self
+                .solver
                 .tys
                 .import(self.facts.env.types(), *target, &mut HashMap::default()),
             _ => return Some(None),
         };
-        let r = self.table.fresh();
-        self.eq(self.tys.var(r), result);
+        let r = self.solver.table.fresh();
+        self.solver.eq(self.solver.tys.var(r), result);
         Some(Some(r))
     }
 
@@ -4921,7 +5520,7 @@ impl<'a> Gen<'a> {
     /// Anything else — a deferred lookup, a signature that does not carry
     /// over, a preceding file's operator it published no type for — declines,
     /// marking the binding incomplete with the reason.
-    fn operator_value(&mut self, op: &Expr) -> Option<TyVid> {
+    fn operator_value(&mut self, scope: &mut Scope, op: &Expr) -> Option<TyVid> {
         let tok = match op {
             Expr::LongIdent(li) => li.long_ident().and_then(|li| {
                 let mut idents = li.idents();
@@ -4933,16 +5532,16 @@ impl<'a> Gen<'a> {
             _ => None,
         };
         let Some(tok) = tok else {
-            self.mark_incomplete(Incomplete::CalleeShape(op.syntax().kind()));
+            scope.mark_incomplete(Incomplete::CalleeShape(op.syntax().kind()));
             return None;
         };
         if let Some(def) = self.facts.def_at(tok.text_range()) {
-            if self.declines_use(def) {
+            if self.declines_use(scope, def) {
                 return None;
             }
-            return Some(self.value_use(def));
+            return Some(self.value_use(scope, def));
         }
-        match self.nonlocal_value_use(tok.text_range()) {
+        match self.nonlocal_value_use(scope, tok.text_range()) {
             Ok(v) => Some(v),
             Err(why) => {
                 let why = match why {
@@ -4954,7 +5553,7 @@ impl<'a> Gen<'a> {
                     preceding @ Incomplete::PrecedingValue(_) => preceding,
                     _ => Incomplete::Operator(OperatorGap::Unresolved),
                 };
-                self.mark_incomplete(why);
+                scope.mark_incomplete(why);
                 None
             }
         }
@@ -4984,7 +5583,11 @@ impl<'a> Gen<'a> {
     /// ([`PrecedingTypes`]) as an in-file binder's would be. A value that
     /// file published no type for declines with the reason it recorded
     /// ([`Incomplete::PrecedingValue`]).
-    fn nonlocal_value_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
+    fn nonlocal_value_use(
+        &mut self,
+        scope: &mut Scope,
+        at: TextRange,
+    ) -> Result<TyVid, Incomplete> {
         let (parent, idx) = match self.facts.resolved.resolution_at(at) {
             Some(Resolution::Member { parent, idx }) => (parent, idx),
             Some(Resolution::Item(id))
@@ -5002,7 +5605,7 @@ impl<'a> Gen<'a> {
                     .preceding
                     .get(id)
                     .map_err(Incomplete::PrecedingValue)?;
-                return Ok(self.scheme_use(self.facts.env.types(), ty));
+                return Ok(self.scheme_use(scope, self.facts.env.types(), ty));
             }
             Some(Resolution::UnionCase { .. }) => return self.case_use(at),
             _ => return Err(Incomplete::NotInFileValue),
@@ -5012,7 +5615,7 @@ impl<'a> Gen<'a> {
             _ => Err(FunctionTyGap::NotAFunction),
         }
         .map_err(Incomplete::AssemblyValue)?;
-        Ok(self.constrained_scheme_use(&scheme))
+        Ok(self.constrained_scheme_use(scope, &scheme))
     }
 
     /// The type variable of a use of the case the resolver reads at `at`
@@ -5029,42 +5632,48 @@ impl<'a> Gen<'a> {
     fn case_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
         let (_, scheme) = self.facts.case_at(at)?;
         let env_tys = self.facts.env.types();
-        let ty = self.instantiate(env_tys, scheme.value_ty(env_tys));
-        let uv = self.table.fresh();
-        self.eq(self.tys.var(uv), ty);
+        let ty = self.solver.instantiate(env_tys, scheme.value_ty(env_tys));
+        let uv = self.solver.table.fresh();
+        self.solver.eq(self.solver.tys.var(uv), ty);
         Ok(uv)
     }
 
     /// [`Self::scheme_use`] over a module function's reading: each type
     /// parameter carrying `equality` or `comparison` instantiates to a variable
-    /// recorded with its constraint ([`Self::constrained`]) and poisoned, so it
+    /// recorded with its constraint ([`Scope::constrained`]) and poisoned, so it
     /// is checked once the binding is solved and never generalised while open.
-    fn constrained_scheme_use(&mut self, scheme: &ModuleFunctionScheme) -> TyVid {
+    fn constrained_scheme_use(
+        &mut self,
+        scope: &mut Scope,
+        scheme: &ModuleFunctionScheme,
+    ) -> TyVid {
         let mut fresh: HashMap<u32, TyVid> = HashMap::default();
-        let body = self.instantiate_rec(self.facts.env.types(), scheme.ty, &mut fresh);
+        let body = self
+            .solver
+            .instantiate_rec(self.facts.env.types(), scheme.ty, &mut fresh);
         for (i, req) in scheme.requirements.iter().enumerate() {
             let Some(req) = req else { continue };
             // A type parameter the type does not mention has no variable to
             // check; FCS solves it by default, which nothing reads.
             if let Some(&v) = u32::try_from(i).ok().and_then(|i| fresh.get(&i)) {
-                self.constrained.push((v, *req));
-                self.poison.push(v);
+                scope.constrained.push((v, *req));
+                scope.poison.push(v);
             }
         }
-        let ty = self.loosened(body).unwrap_or(body);
-        let uv = self.table.fresh();
-        self.eq(self.tys.var(uv), ty);
+        let ty = self.loosened(scope, body).unwrap_or(body);
+        let uv = self.solver.table.fresh();
+        self.solver.eq(self.solver.tys.var(uv), ty);
         uv
     }
 
     /// The type variable of a use of a value whose type is `scheme`, a type of
     /// `from`: the scheme instantiated afresh and loosened as FCS loosens a
     /// value at a use ([`Self::loosened`]).
-    fn scheme_use(&mut self, from: &TyTable, scheme: Ty) -> TyVid {
-        let body = self.instantiate(from, scheme);
-        let ty = self.loosened(body).unwrap_or(body);
-        let uv = self.table.fresh();
-        self.eq(self.tys.var(uv), ty);
+    fn scheme_use(&mut self, scope: &mut Scope, from: &TyTable, scheme: Ty) -> TyVid {
+        let body = self.solver.instantiate(from, scheme);
+        let ty = self.loosened(scope, body).unwrap_or(body);
+        let uv = self.solver.table.fresh();
+        self.solver.eq(self.solver.tys.var(uv), ty);
         uv
     }
 
@@ -5128,16 +5737,16 @@ impl<'a> Gen<'a> {
     /// so its *sub*-positions (e.g. a tuple's elements, an `if`'s branches) keep
     /// the wrapper's poison — the subsumption dropped *there* is genuinely eager;
     /// only the top-level arg↔`d` relation is deferred.
-    fn infer_arg(&mut self, arg: &Expr, d: TyVid) -> Option<TyVid> {
+    fn infer_arg(&mut self, scope: &mut Scope, arg: &Expr, d: TyVid) -> Option<TyVid> {
         match arg {
             Expr::Paren(p) => match p.inner() {
-                Some(inner) => self.infer_arg(&inner, d),
+                Some(inner) => self.infer_arg(scope, &inner, d),
                 None => {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     None
                 }
             },
-            _ => self.infer_expr_inner(arg, Some(d)),
+            _ => self.infer_expr_inner(scope, arg, Some(d)),
         }
     }
 
@@ -5160,22 +5769,22 @@ impl<'a> Gen<'a> {
     ///
     /// Any other callee shape (an applied `DotGet`, a lambda, a literal) is
     /// unmodelled ⇒ incomplete, and the whole application defers.
-    fn infer_callee(&mut self, e: &Expr) -> Option<TyVid> {
-        self.enter_expression();
-        let result = self.infer_callee_spine(e);
-        self.expr_depth -= 1;
+    fn infer_callee(&mut self, scope: &mut Scope, e: &Expr) -> Option<TyVid> {
+        self.out.enter_expression();
+        let result = self.infer_callee_spine(scope, e);
+        self.out.leave_expression();
         result
     }
 
     /// [`Self::infer_callee`] without the level count.
-    fn infer_callee_spine(&mut self, e: &Expr) -> Option<TyVid> {
+    fn infer_callee_spine(&mut self, scope: &mut Scope, e: &Expr) -> Option<TyVid> {
         match e {
             Expr::Paren(p) => {
                 let Some(inner) = p.inner() else {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
-                self.infer_callee(&inner)
+                self.infer_callee(scope, &inner)
             }
             // A nested (curried) application in function position: type it as an
             // application whose residual `r` is the callee type, recording **no**
@@ -5185,15 +5794,15 @@ impl<'a> Gen<'a> {
             // `App` in the callee spine is unmodelled (⇒ the catch-all below
             // marks incomplete and the whole application defers).
             Expr::App(inner) if !inner.is_infix() && !inner.is_bracket_indexer() => {
-                self.infer_app(inner)
+                self.infer_app(scope, inner)
             }
             // The operator applied to its left operand, inside `lhs OP rhs`.
-            Expr::App(inner) if inner.is_infix() => self.infer_infix(inner),
+            Expr::App(inner) if inner.is_infix() => self.infer_infix(scope, inner),
             // A value/function reference: mirror the ident arm's resolution, but
             // *do not* emit a node.
             Expr::Ident(ident) => {
                 let Some(tok) = ident.ident() else {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
                 let def = self
@@ -5201,23 +5810,23 @@ impl<'a> Gen<'a> {
                     .def_at(tok.text_range())
                     .filter(|_| !self.facts.own_union_case_at(tok.text_range()));
                 let Some(def) = def else {
-                    return self.nonlocal_value_or_incomplete(tok.text_range());
+                    return self.nonlocal_value_or_incomplete(scope, tok.text_range());
                 };
-                if self.declines_use(def) {
+                if self.declines_use(scope, def) {
                     return None;
                 }
-                Some(self.value_use(def))
+                Some(self.value_use(scope, def))
             }
             // A module-qualified value (`List.map f`).
             Expr::LongIdent(li) => match self.module_value_path(li) {
-                Some(whole) => self.nonlocal_value_or_incomplete(whole),
+                Some(whole) => self.nonlocal_value_or_incomplete(scope, whole),
                 None => {
-                    self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
+                    scope.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
                     None
                 }
             },
             _ => {
-                self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
+                scope.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
                 None
             }
         }
@@ -5225,11 +5834,11 @@ impl<'a> Gen<'a> {
 
     /// [`Self::nonlocal_value_use`], recording why the binding is incomplete
     /// when it declines.
-    fn nonlocal_value_or_incomplete(&mut self, at: TextRange) -> Option<TyVid> {
-        match self.nonlocal_value_use(at) {
+    fn nonlocal_value_or_incomplete(&mut self, scope: &mut Scope, at: TextRange) -> Option<TyVid> {
+        match self.nonlocal_value_use(scope, at) {
             Ok(v) => Some(v),
             Err(why) => {
-                self.mark_incomplete(why);
+                scope.mark_incomplete(why);
                 None
             }
         }
@@ -5260,37 +5869,37 @@ impl<'a> Gen<'a> {
     /// an unannotated parameter, an earlier binder left open — the use keeps
     /// the binder's variable and is recorded as **undecided**, which
     /// [`Self::verified`] checks once the binding is solved.
-    fn value_use(&mut self, def: DefId) -> TyVid {
-        if let Some(&scheme) = self.def_schemes.get(&def) {
-            return self.scheme_use(self.tys, scheme);
+    fn value_use(&mut self, scope: &mut Scope, def: DefId) -> TyVid {
+        if let Some(scheme) = self.binders.scheme(def) {
+            return self.scheme_use(scope, self.solver.tys, scheme);
         }
         let dv = self.def_var(def);
-        let match_local = self.match_locals.contains(&def);
-        let current_param = self.is_current_param(def) || match_local;
+        let match_local = scope.match_locals.contains(&def);
+        let current_param = scope.is_param(def) || match_local;
         if !current_param {
-            self.poison.push(dv);
-            self.opaque.push((dv, None));
+            scope.poison.push(dv);
+            scope.opaque.push((dv, None));
         }
-        let known = match self.param_annotations.get(&def) {
-            Some(ann) => Some(*ann),
+        let known = match self.binders.param_annotation(def) {
+            Some(ann) => Some(ann),
             // A match's pattern variable is typed by its pattern before its
             // clause is walked: a use of one whose type is known then is
             // loosened as FCS loosens it (`Some g -> g` with
             // `g : obj -> int` is `'a -> int` at the use).
-            None if match_local => {
-                Some(self.table.resolve(self.tys.var(dv))).filter(|&t| self.tys.is_ground(t))
-            }
+            None if match_local => Some(self.solver.table.resolve(self.solver.tys.var(dv)))
+                .filter(|&t| self.solver.tys.is_ground(t)),
             None if current_param => None,
-            None => Some(self.table.resolve(self.tys.var(dv))).filter(|&t| self.tys.is_ground(t)),
+            None => Some(self.solver.table.resolve(self.solver.tys.var(dv)))
+                .filter(|&t| self.solver.tys.is_ground(t)),
         };
         let Some(known) = known else {
-            self.undecided_uses.push(dv);
+            scope.undecided_uses.push(dv);
             return dv;
         };
-        match self.loosened(known) {
+        match self.loosened(scope, known) {
             Some(ty) => {
-                let uv = self.table.fresh();
-                self.eq(self.tys.var(uv), ty);
+                let uv = self.solver.table.fresh();
+                self.solver.eq(self.solver.tys.var(uv), ty);
                 uv
             }
             None => dv,
@@ -5305,9 +5914,9 @@ impl<'a> Gen<'a> {
     /// such a variable by its own rules (a bounded one in argument position is
     /// condensed to its bound), which are not modelled. A bound other than
     /// `obj`, which every type meets, is a constraint inference cannot check,
-    /// so its variable is recorded ([`Self::bounded_flex`]).
-    fn loosened(&mut self, ty: Ty) -> Option<Ty> {
-        let tys = self.tys;
+    /// so its variable is recorded ([`Scope::bounded_flex`]).
+    fn loosened(&mut self, scope: &mut Scope, ty: Ty) -> Option<Ty> {
+        let tys = self.solver.tys;
         let mut groups = Vec::new();
         let mut ret = ty;
         while let TyKind::Fun { arg, ret: next } = *tys.kind(ret) {
@@ -5333,10 +5942,10 @@ impl<'a> Gen<'a> {
                     if is_sealed(self.facts.env, tys, e) {
                         return e;
                     }
-                    let v = self.table.fresh();
-                    self.poison.push(v);
+                    let v = self.solver.table.fresh();
+                    scope.poison.push(v);
                     if !tys.is_named(self.facts.env.names(), e, &OBJECT_PATH) {
-                        self.bounded_flex.push(v);
+                        scope.bounded_flex.push(v);
                     }
                     tys.var(v)
                 })
@@ -5389,26 +5998,26 @@ impl<'a> Gen<'a> {
     /// .NET method-call semantics — out of scope), a project-defined type, or an
     /// unresolved head (leaving the resolver's static-member resolution
     /// untouched).
-    fn infer_method_call(&mut self, callee: &Expr, arg: &Expr) -> Option<TyVid> {
+    fn infer_method_call(&mut self, scope: &mut Scope, callee: &Expr, arg: &Expr) -> Option<TyVid> {
         // Snapshot the emissions: everything `method_callee` and the argument
         // walk record inside the call — nodes and local binders alike — is
         // discarded below (see the doc).
-        let emit_mark = self.emission_mark();
+        let emit_mark = self.out.mark();
         if let Some((path, method_tok)) = self.static_callee(callee) {
-            let arg_vids = self.method_arg_vids(arg);
+            let arg_vids = self.method_arg_vids(scope, arg);
             // The static receiver's type is the rooting entity itself, ground at
             // generation time.
-            let recv = self.table.fresh();
-            self.eq(
-                self.tys.var(recv),
-                self.tys.named_path(self.facts.env.names(), &path),
+            let recv = self.solver.table.fresh();
+            self.solver.eq(
+                self.solver.tys.var(recv),
+                self.solver.tys.named_path(self.facts.env.names(), &path),
             );
-            let result = self.table.fresh();
+            let result = self.solver.table.fresh();
             self.has_member(
+                scope,
                 recv,
-                ident_text(&method_tok),
+                &method_tok,
                 result,
-                method_tok.text_range(),
                 MemberAccessKind::Method {
                     args: arg_vids,
                     is_static: true,
@@ -5417,13 +6026,13 @@ impl<'a> Gen<'a> {
             );
             // Discard any argument sub-expression nodes (the shared method-call
             // rule: a method call emits nothing inside itself).
-            self.discard_emissions_since(emit_mark);
+            self.out.discard_since(emit_mark);
             return Some(result);
         }
-        let recorded = self.reasons_recorded();
-        let Some((recv, method_tok)) = self.method_callee(callee) else {
-            self.discard_emissions_since(emit_mark);
-            self.mark_consequence(recorded, Incomplete::MethodCallee(callee.syntax().kind()));
+        let recorded = scope.reasons_recorded();
+        let Some((recv, method_tok)) = self.method_callee(scope, callee) else {
+            self.out.discard_since(emit_mark);
+            scope.mark_consequence(recorded, Incomplete::MethodCallee(callee.syntax().kind()));
             return None;
         };
         // Walk each positional argument in **check mode**, collecting the
@@ -5437,16 +6046,16 @@ impl<'a> Gen<'a> {
         // plain positional list (a named argument, a recovery hole); the wake
         // defers such a call. A direct unit `()` is `Some([])` (no walk, no
         // gratuitous incompleteness — the common `s.M()` shape).
-        let arg_vids = self.method_arg_vids(arg);
+        let arg_vids = self.method_arg_vids(scope, arg);
         // Suspend the method lookup; `result` is the whole call's (return) type.
         // `has_member` poisons `recv` and `result` — an unwoken method relation must
         // not let either generalise (a ground discharge is unaffected).
-        let result = self.table.fresh();
+        let result = self.solver.table.fresh();
         self.has_member(
+            scope,
             recv,
-            ident_text(&method_tok),
+            &method_tok,
             result,
-            method_tok.text_range(),
             MemberAccessKind::Method {
                 args: arg_vids,
                 is_static: false,
@@ -5455,7 +6064,7 @@ impl<'a> Gen<'a> {
         );
         // Discard every node emitted inside the call (receiver + argument
         // sub-expressions): a method call emits nothing inside itself (see the doc).
-        self.discard_emissions_since(emit_mark);
+        self.out.discard_since(emit_mark);
         Some(result)
     }
 
@@ -5547,7 +6156,7 @@ impl<'a> Gen<'a> {
     /// it could wrongly generalise when the result is grounded by an annotation. A
     /// non-positional shape additionally marks the binding walk-incomplete before
     /// returning `None`.
-    fn method_arg_vids(&mut self, arg: &Expr) -> Option<Vec<TyVid>> {
+    fn method_arg_vids(&mut self, scope: &mut Scope, arg: &Expr) -> Option<Vec<TyVid>> {
         // Peel exactly the call's own argument parentheses: `M()` is a bare unit
         // const, `M(e)` wraps its argument in one `Paren`, `M e` is a bare argument.
         let inner = match arg {
@@ -5556,7 +6165,7 @@ impl<'a> Gen<'a> {
             Expr::Paren(p) => match p.inner() {
                 Some(inner) => inner,
                 None => {
-                    self.mark_incomplete(Incomplete::Recovery);
+                    scope.mark_incomplete(Incomplete::Recovery);
                     return None;
                 }
             },
@@ -5564,7 +6173,7 @@ impl<'a> Gen<'a> {
         };
         // A unit *inside* the call parens (`M(())`) is one explicit unit argument.
         if is_unit_literal(&inner) {
-            return Some(vec![self.walk_arg_element(&inner)]);
+            return Some(vec![self.walk_arg_element(scope, &inner)]);
         }
         match &inner {
             Expr::Tuple(t) if !t.is_struct() => {
@@ -5576,7 +6185,7 @@ impl<'a> Gen<'a> {
                     if is_named_arg(&el) {
                         positional = false;
                     }
-                    vids.push(self.walk_arg_element(&el));
+                    vids.push(self.walk_arg_element(scope, &el));
                 }
                 // A **well-formed** positional tuple has exactly one more element
                 // than commas. A trailing / doubled comma is a parser *recovery* on
@@ -5588,7 +6197,7 @@ impl<'a> Gen<'a> {
                     .filter(|c| c.kind() == SyntaxKind::COMMA_TOK)
                     .count();
                 if !positional || vids.len() != commas + 1 {
-                    self.mark_incomplete(Incomplete::MethodArgShape);
+                    scope.mark_incomplete(Incomplete::MethodArgShape);
                     return None;
                 }
                 Some(vids)
@@ -5597,9 +6206,9 @@ impl<'a> Gen<'a> {
             // argument is non-positional (defer + incomplete); anything else is one
             // positional value.
             _ => {
-                let v = self.walk_arg_element(&inner);
+                let v = self.walk_arg_element(scope, &inner);
                 if is_named_arg(&inner) {
-                    self.mark_incomplete(Incomplete::MethodArgShape);
+                    scope.mark_incomplete(Incomplete::MethodArgShape);
                     None
                 } else {
                     Some(vec![v])
@@ -5616,19 +6225,20 @@ impl<'a> Gen<'a> {
     /// suppresses the element's node emission and poisons its generalisable
     /// parameter uses; the overload wake later resolves the variable to a ground
     /// [`Ty`] for [`AssemblyEnv::may_apply`] / [`AssemblyEnv::must_apply`].
-    fn walk_arg_element(&mut self, el: &Expr) -> TyVid {
-        let expected = self.table.fresh();
-        let v = match self.infer_expr(el, Some(expected)) {
+    fn walk_arg_element(&mut self, scope: &mut Scope, el: &Expr) -> TyVid {
+        let expected = self.solver.table.fresh();
+        let v = match self.infer_expr(scope, el, Some(expected)) {
             Some(v) => v,
             None => {
-                self.mark_incomplete_propagated();
-                self.table.fresh()
+                scope.mark_incomplete_propagated();
+                self.solver.table.fresh()
             }
         };
         // The relation to the parameter is not the stand-in's but unknown, so
         // it is opaque rather than dropped.
-        self.dropped.retain(|&(_, e, _)| e != expected);
-        self.opaque
+        scope.dropped.retain(|&(_, e, _)| e != expected);
+        scope
+            .opaque
             .push((v, Some(self.facts.node_span(el.syntax()))));
         v
     }
@@ -5654,7 +6264,7 @@ impl<'a> Gen<'a> {
     ///
     /// An active-pattern name segment (`Foo.(|Bar|_|)`) is not a plain member token,
     /// so a path carrying one declines.
-    fn method_callee(&mut self, callee: &Expr) -> Option<(TyVid, SyntaxToken)> {
+    fn method_callee(&mut self, scope: &mut Scope, callee: &Expr) -> Option<(TyVid, SyntaxToken)> {
         match callee {
             Expr::LongIdent(li) => {
                 let long_ident = li.long_ident()?;
@@ -5665,10 +6275,10 @@ impl<'a> Gen<'a> {
                 let (head, rest) = idents.split_first()?;
                 // Need a head *and* at least one member segment (the method).
                 let (method, prefix) = rest.split_last()?;
-                let head_var = self.receiver_var(head)?;
+                let head_var = self.receiver_var(scope, head)?;
                 // Emit the receiver's own value node (coercion-free — synth).
                 self.emit(head.text_range(), head_var, None);
-                let recv = self.chain_prefix(head_var, prefix)?;
+                let recv = self.chain_prefix(scope, head_var, prefix)?;
                 Some((recv, method.clone()))
             }
             Expr::DotGet(dg) => {
@@ -5682,11 +6292,11 @@ impl<'a> Gen<'a> {
                 // The receiver is a coercion-free (synth) sub-position — a member
                 // access never coerces its receiver — so synthesize it (emitting its
                 // own node).
-                let head_var = self.infer_expr(&recv_expr, None)?;
-                let recv = self.chain_prefix(head_var, prefix)?;
+                let head_var = self.infer_expr(scope, &recv_expr, None)?;
+                let recv = self.chain_prefix(scope, head_var, prefix)?;
                 Some((recv, method.clone()))
             }
-            Expr::Paren(p) => self.method_callee(&p.inner()?),
+            Expr::Paren(p) => self.method_callee(scope, &p.inner()?),
             _ => None,
         }
     }
@@ -5696,11 +6306,16 @@ impl<'a> Gen<'a> {
     /// common `s.M(…)` shape) passes the receiver through unchanged; a non-empty one
     /// (`s.Field.M(…)`) generates the data-member chain via
     /// [`Self::gen_member_access`].
-    fn chain_prefix(&mut self, recv: TyVid, prefix: &[SyntaxToken]) -> Option<TyVid> {
+    fn chain_prefix(
+        &mut self,
+        scope: &mut Scope,
+        recv: TyVid,
+        prefix: &[SyntaxToken],
+    ) -> Option<TyVid> {
         if prefix.is_empty() {
             Some(recv)
         } else {
-            self.gen_member_access(recv, prefix)
+            self.gen_member_access(scope, recv, prefix)
         }
     }
 
@@ -5724,17 +6339,18 @@ impl<'a> Gen<'a> {
     /// `LONG_IDENT_EXPR` range in the access's own mode (`expected`).
     fn infer_long_ident_member(
         &mut self,
+        scope: &mut Scope,
         li: &LongIdentExpr,
         expected: Option<TyVid>,
     ) -> Option<TyVid> {
         let Some(long_ident) = li.long_ident() else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         // A module-qualified value (`List.length`), whose node FCS keys at
         // the whole path.
         if let Some(whole) = self.module_value_path(li) {
-            let uv = self.nonlocal_value_or_incomplete(whole)?;
+            let uv = self.nonlocal_value_or_incomplete(scope, whole)?;
             if !self.facts.case_of_fields_at(whole) {
                 self.emit(whole, uv, expected);
             }
@@ -5743,7 +6359,7 @@ impl<'a> Gen<'a> {
         // An active-pattern name segment cannot be projected as a plain member
         // token, so a path carrying one is unmodelled here.
         if long_ident.active_pat_names().next().is_some() {
-            self.mark_incomplete(Incomplete::MemberAccessShape);
+            scope.mark_incomplete(Incomplete::MemberAccessShape);
             return None;
         }
         let idents: Vec<SyntaxToken> = long_ident.idents().collect();
@@ -5751,24 +6367,24 @@ impl<'a> Gen<'a> {
         let (head, segments) = match idents.split_first() {
             Some((head, segments)) if !segments.is_empty() => (head, segments),
             _ => {
-                self.mark_incomplete(Incomplete::MemberAccessShape);
+                scope.mark_incomplete(Incomplete::MemberAccessShape);
                 return None;
             }
         };
         // The head must resolve to a value binder, in this file or a preceding
         // one; otherwise this is a qualified static path (or unresolved) we do
         // not model here.
-        let recorded = self.reasons_recorded();
-        let Some(recv) = self.receiver_var(head) else {
-            self.mark_consequence(recorded, Incomplete::QualifiedPath);
+        let recorded = scope.reasons_recorded();
+        let Some(recv) = self.receiver_var(scope, head) else {
+            scope.mark_consequence(recorded, Incomplete::QualifiedPath);
             return None;
         };
         // Emit the receiver's own value node (coercion-free — synth), guarded on
         // the access resolving: FCS keeps no receiver node for a rejected one.
-        self.open_receiver_guards(segments);
+        self.out.open_receiver_guards(segments);
         self.emit(head.text_range(), recv, None);
-        self.close_guards(segments.len());
-        let result = self.gen_member_access(recv, segments)?;
+        self.out.close_guards(segments.len());
+        let result = self.gen_member_access(scope, recv, segments)?;
         self.emit(self.facts.node_span(li.syntax()), result, expected);
         Some(result)
     }
@@ -5778,35 +6394,39 @@ impl<'a> Gen<'a> {
     /// has one — e.g. the `"hi"` literal in `"hi".Length`), and the member path
     /// chains from its variable. Returns the whole access's type, or `None` when
     /// the receiver does not synthesize or the member path is empty/unprojectable.
-    fn infer_dot_get(&mut self, dg: &DotGetExpr, expected: Option<TyVid>) -> Option<TyVid> {
+    fn infer_dot_get(
+        &mut self,
+        scope: &mut Scope,
+        dg: &DotGetExpr,
+        expected: Option<TyVid>,
+    ) -> Option<TyVid> {
         let Some(recv_expr) = dg.expr() else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         let Some(long_ident) = dg.long_ident() else {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         if long_ident.active_pat_names().next().is_some() {
-            self.mark_incomplete(Incomplete::MemberAccessShape);
+            scope.mark_incomplete(Incomplete::MemberAccessShape);
             return None;
         }
         let segments: Vec<SyntaxToken> = long_ident.idents().collect();
         if segments.is_empty() {
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return None;
         }
         // The receiver is a coercion-free (synth) sub-position — a member access
         // never coerces its receiver — so synthesize it, emitting its own node,
         // guarded on the access resolving: FCS keeps nothing inside the receiver
         // of a rejected one.
-        self.open_receiver_guards(&segments);
-        let recv = self.infer_expr(&recv_expr, None);
-        self.close_guards(segments.len());
+        self.out.open_receiver_guards(&segments);
+        let recv = self.infer_expr(scope, &recv_expr, None);
+        self.out.close_guards(segments.len());
         let recv = recv?;
-        self.dot_get_receivers
-            .push((dg.syntax().text_range(), recv));
-        let result = self.gen_member_access(recv, &segments)?;
+        self.out.dot_get_receiver(dg.syntax().text_range(), recv);
+        let result = self.gen_member_access(scope, recv, &segments)?;
         self.emit(self.facts.node_span(dg.syntax()), result, expected);
         Some(result)
     }
@@ -5822,7 +6442,7 @@ impl<'a> Gen<'a> {
     /// head does not resolve to such a value either (a qualified static path,
     /// an assembly name, or unresolved) — the caller then defers, leaving any
     /// static-member resolution untouched.
-    fn receiver_var(&mut self, head: &SyntaxToken) -> Option<TyVid> {
+    fn receiver_var(&mut self, scope: &mut Scope, head: &SyntaxToken) -> Option<TyVid> {
         let Some(def) = self.facts.def_at(head.text_range()) else {
             let Some(Resolution::Item(id)) = self.facts.resolved.resolution_at(head.text_range())
             else {
@@ -5834,29 +6454,29 @@ impl<'a> Gen<'a> {
             let ty = match self.facts.preceding.get(id) {
                 Ok(&ty) => ty,
                 Err(gap) => {
-                    self.mark_incomplete(Incomplete::PrecedingValue(gap));
+                    scope.mark_incomplete(Incomplete::PrecedingValue(gap));
                     return None;
                 }
             };
-            let body = self.instantiate(self.facts.env.types(), ty);
-            let uv = self.table.fresh();
-            self.eq(self.tys.var(uv), body);
+            let body = self.solver.instantiate(self.facts.env.types(), ty);
+            let uv = self.solver.table.fresh();
+            self.solver.eq(self.solver.tys.var(uv), body);
             return Some(uv);
         };
-        if self.withheld_defs.contains(&def) {
-            self.mark_incomplete(Incomplete::RigidTypeVariable);
+        if self.binders.is_withheld(def) {
+            scope.mark_incomplete(Incomplete::RigidTypeVariable);
             return None;
         }
-        if let Some(&scheme) = self.def_schemes.get(&def) {
-            let body = self.instantiate(self.tys, scheme);
-            let uv = self.table.fresh();
-            self.eq(self.tys.var(uv), body);
+        if let Some(scheme) = self.binders.scheme(def) {
+            let body = self.solver.instantiate(self.solver.tys, scheme);
+            let uv = self.solver.table.fresh();
+            self.solver.eq(self.solver.tys.var(uv), body);
             return Some(uv);
         }
         let dv = self.def_var(def);
-        if !self.is_current_param(def) {
-            self.poison.push(dv);
-            self.opaque.push((dv, None));
+        if !scope.is_param(def) {
+            scope.poison.push(dv);
+            scope.opaque.push((dv, None));
         }
         Some(dv)
     }
@@ -5873,7 +6493,7 @@ impl<'a> Gen<'a> {
     /// - a sealed generic application, and a **project union or record**
     ///   ([`FileFacts::sealed_project_types`]), which F# seals;
     /// - an **unbound root that is a scheme-instantiation variable of ours**
-    ///   ([`Self::scheme_inst_vars`], checked against union-find roots) — a
+    ///   ([`Solver::scheme_inst_vars`], checked against union-find roots) — a
     ///   quantified typar of one of our own schemes admits no coercion.
     ///
     /// Deliberately **excluded** (conservative — silence over a wrong type, D5):
@@ -5882,17 +6502,17 @@ impl<'a> Gen<'a> {
     /// arrays. Each leaves the `ArgCheck` undischarged, so the application
     /// defers rather than grounding to a possibly-wrong type. A function type
     /// is the other domain a check discharges against
-    /// ([`Self::function_domain`]).
-    fn no_subsumption_domain(&mut self, dom: TyVid) -> bool {
-        let resolved = self.table.resolve(self.tys.var(dom));
-        self.no_subsumption_ty(resolved)
+    /// ([`Solver::function_domain`]).
+    fn no_subsumption_domain(&mut self, scope: &Scope, dom: TyVid) -> bool {
+        let resolved = self.solver.table.resolve(self.solver.tys.var(dom));
+        self.no_subsumption_ty(scope, resolved)
     }
 
     /// The recursive core of [`Self::no_subsumption_domain`], over a **resolved**
     /// type: a sealed primitive, a tuple of such, or an unbound scheme-instantiation
     /// root. Everything else is `false`.
-    fn no_subsumption_ty(&mut self, ty: Ty) -> bool {
-        match self.tys.kind(ty) {
+    fn no_subsumption_ty(&mut self, scope: &Scope, ty: Ty) -> bool {
+        match self.solver.tys.kind(ty) {
             // A sealed BCL primitive; `obj` and other nullary named types are
             // not.
             TyKind::Named { path, args } if args.is_empty() => {
@@ -5904,11 +6524,13 @@ impl<'a> Gen<'a> {
             // first is its relation. Where it fails, FCS may still convert
             // (an `op_Implicit` into the type), and the failed equality
             // rolls the binding back ([`Self::verified`]).
-            TyKind::Named { .. } => is_sealed(self.facts.env, self.tys, ty),
-            TyKind::Tuple(elems) => elems.iter().all(|&e| self.no_subsumption_ty(e)),
+            TyKind::Named { .. } => is_sealed(self.facts.env, self.solver.tys, ty),
+            TyKind::Tuple(elems) => elems.iter().all(|&e| self.no_subsumption_ty(scope, e)),
             // An implicitly scoped type variable is an ordinary inference
             // variable while unbound, so the equality FCS tries first holds.
-            TyKind::Var(v) => self.is_scheme_inst_root(*v) || self.is_head_typar_root(*v),
+            TyKind::Var(v) => {
+                self.solver.is_scheme_inst_root(*v) || self.is_head_typar_root(scope, *v)
+            }
             // A project union or record is sealed, and relates as a sealed
             // generic application does; any other project type may be a class
             // with subtypes.
@@ -5924,13 +6546,13 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether every variable the current binding's head declares
-    /// ([`Self::rigid_typars`]) is, as solved, an unbound variable distinct
+    /// ([`Scope::rigid_typars`]) is, as solved, an unbound variable distinct
     /// from the others: FCS rejects the binding otherwise.
-    fn rigid_typars_hold(&mut self) -> bool {
+    fn rigid_typars_hold(&mut self, scope: &Scope) -> bool {
         let mut roots = Vec::new();
-        for v in self.rigid_typars.clone() {
-            let resolved = self.table.resolve(self.tys.var(v));
-            match self.tys.kind(resolved) {
+        for v in scope.rigid_typars.clone() {
+            let resolved = self.solver.table.resolve(self.solver.tys.var(v));
+            match self.solver.tys.kind(resolved) {
                 TyKind::Var(r) if !roots.contains(r) => roots.push(*r),
                 _ => return false,
             }
@@ -5939,13 +6561,13 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether every variable still open in the resolved type `ty` is one the
-    /// current binding's head declares ([`Self::rigid_typars`]).
-    fn only_rigid_typars_open(&mut self, ty: Ty) -> bool {
+    /// current binding's head declares ([`Scope::rigid_typars`]).
+    fn only_rigid_typars_open(&mut self, scope: &Scope, ty: Ty) -> bool {
         let mut open = Vec::new();
-        free_vars(self.tys, ty, &mut open);
-        let rigid = self.rigid_typars.clone();
+        free_vars(self.solver.tys, ty, &mut open);
+        let rigid = scope.rigid_typars.clone();
         open.into_iter()
-            .all(|v| rigid.iter().any(|&r| self.table.unioned(r, v)))
+            .all(|v| rigid.iter().any(|&r| self.solver.table.unioned(r, v)))
     }
 
     /// Withhold the function `f_def` where the solved binding breaks a declared
@@ -5963,55 +6585,27 @@ impl<'a> Gen<'a> {
     /// annotations are read (`<'a when 'a : equality>` is not): a relation the
     /// walk does not model (`p + "t"`, statically resolved) may be the one that
     /// fixes a declared variable, and nothing then rules the rejection out.
-    fn withhold_if_not_rigid(&mut self, f_def: Option<DefId>) {
-        if !self.declares_typars
-            || (self.complete && !self.rigid_rejected && self.rigid_typars_hold())
+    fn withhold_if_not_rigid(&mut self, scope: &mut Scope, f_def: Option<DefId>) {
+        if !scope.declares_typars
+            || (scope.complete && !scope.rigid_rejected && self.rigid_typars_hold(scope))
         {
             return;
         }
         // An incomplete binding has its cause recorded already.
-        if self.complete {
-            self.mark_incomplete(Incomplete::RigidTypeVariable);
+        if scope.complete {
+            scope.mark_incomplete(Incomplete::RigidTypeVariable);
         }
-        self.discard_emissions_since(self.binding_emissions);
-        self.withheld_defs.extend(f_def);
-        self.withheld_defs
-            .extend(self.binding_params.iter().copied());
+        self.out.discard_since(scope.emissions);
+        self.binders.withhold(f_def);
+        self.binders.withhold(scope.binding_params.iter().copied());
     }
 
     /// Whether the (resolved, unbound) variable `v` is — or is unioned with —
     /// one of the current binding's implicitly scoped type variables
-    /// ([`Self::head_typars`]).
-    fn is_head_typar_root(&mut self, v: TyVid) -> bool {
-        let vars: Vec<TyVid> = self.head_typars.values().copied().collect();
-        vars.into_iter().any(|tv| self.table.unioned(tv, v))
-    }
-
-    /// Whether the (resolved, unbound) variable `v` is — or is unioned with — a
-    /// scheme-instantiation variable ([`Self::scheme_inst_vars`]), checked against
-    /// union-find **roots** so a var unioned with an instantiation var still
-    /// counts (Stage 3.3c). The set is small (one entry per instantiated typar per
-    /// use), so the linear scan is cheap at per-binding scale.
-    fn is_scheme_inst_root(&mut self, v: TyVid) -> bool {
-        self.scheme_inst_vars
-            .iter()
-            .any(|&iv| self.table.unioned(iv, v))
-    }
-
-    /// Whether `ac`'s domain resolves to a **function type** it may discharge
-    /// against, as FCS relates them: an argument is checked against its
-    /// parameter's type by an equality first and a coercion only if that
-    /// fails, and a function type admits no coercion but equality (F# function
-    /// types are invariant), so `Eq(arg, dom)` is FCS's own relation — given
-    /// that the argument's type is the one FCS has, which a loosened use of a
-    /// value makes sure of ([`Self::value_use`]). Where the equality fixes a
-    /// variable FCS bounds by a subtype constraint, [`Self::verified`] undoes
-    /// it.
-    fn function_domain(&mut self, ac: ArgCheck) -> bool {
-        matches!(
-            self.tys.kind(self.table.resolve(self.tys.var(ac.dom))),
-            TyKind::Fun { .. }
-        )
+    /// ([`Scope::head_typars`]).
+    fn is_head_typar_root(&mut self, scope: &Scope, v: TyVid) -> bool {
+        let vars: Vec<TyVid> = scope.head_typars.values().copied().collect();
+        vars.into_iter().any(|tv| self.solver.table.unioned(tv, v))
     }
 
     /// Constrain an `if` / `while` condition to `bool`. A condition admits **no**
@@ -6023,7 +6617,7 @@ impl<'a> Gen<'a> {
     /// binder's function type (3.2c-2b).
     ///
     /// It grounds the parameter's **private function-type slot**
-    /// ([`Self::param_slots`]), *not* its binder variable — so the `bool` reaches
+    /// ([`BinderEnv::param_slot`]), *not* its binder variable — so the `bool` reaches
     /// only the function's `TyKind::Fun`, never a standalone parameter read-off. It
     /// fires only for a binder that owns such a slot (a simple named parameter of
     /// the function head), so a condition referencing any *other* binder (an
@@ -6039,10 +6633,10 @@ impl<'a> Gen<'a> {
     /// a parameter) drops FCS constraints on the condition's sub-terms, so it marks
     /// the binding **incomplete** — otherwise a function whose only openness came
     /// from an unmodelled condition would wrongly generalise.
-    fn constrain_bool(&mut self, cond: Option<Expr>) {
+    fn constrain_bool(&mut self, scope: &mut Scope, cond: Option<Expr>) {
         let Some(cond) = cond else {
             // A missing condition (recovery) is unmodelled.
-            self.mark_incomplete(Incomplete::Recovery);
+            scope.mark_incomplete(Incomplete::Recovery);
             return;
         };
         match cond {
@@ -6050,7 +6644,7 @@ impl<'a> Gen<'a> {
                 let slot = ident
                     .ident()
                     .and_then(|tok| self.facts.def_at(tok.text_range()))
-                    .and_then(|def| self.param_slots.get(&def).copied());
+                    .and_then(|def| self.binders.param_slot(def));
                 // A parameter whose annotation mentions an implicitly scoped
                 // type variable is reachable through every other mention of
                 // it too (`(y: 'a) (x: 'a)`), so no occurrence of its own is
@@ -6059,29 +6653,31 @@ impl<'a> Gen<'a> {
                 let shares_typar = ident
                     .ident()
                     .and_then(|tok| self.facts.def_at(tok.text_range()))
-                    .is_some_and(|def| self.typar_params.contains(&def));
+                    .is_some_and(|def| scope.typar_params.contains(&def));
                 match slot {
                     Some(_) if shares_typar => {
-                        self.mark_incomplete(Incomplete::ConditionNotFirstOccurrence);
+                        scope.mark_incomplete(Incomplete::ConditionNotFirstOccurrence);
                     }
                     Some(slot)
                         if ident
                             .ident()
-                            .is_some_and(|tok| self.is_first_occurrence(&tok)) =>
+                            .is_some_and(|tok| self.is_first_occurrence(scope, &tok)) =>
                     {
-                        self.eq(
-                            self.tys.var(slot),
-                            self.tys.named(self.facts.env.names(), "System.Boolean"),
+                        self.solver.eq(
+                            self.solver.tys.var(slot),
+                            self.solver
+                                .tys
+                                .named(self.facts.env.names(), "System.Boolean"),
                         )
                     }
                     // A condition on a parameter something earlier may have
                     // fixed: FCS reports the condition, it does not retype.
-                    Some(_) => self.mark_incomplete(Incomplete::ConditionNotFirstOccurrence),
+                    Some(_) => scope.mark_incomplete(Incomplete::ConditionNotFirstOccurrence),
                     // A condition ident that is not a slot-owning parameter of this
                     // binding (a value / annotated / `rec` binder, a cross-file
                     // name) is unmodelled here — its `bool`-ness is an FCS
                     // constraint we drop.
-                    None => self.mark_incomplete(Incomplete::ConditionNotParameter),
+                    None => scope.mark_incomplete(Incomplete::ConditionNotParameter),
                 }
             }
             // A literal condition is complete only when it is a `bool` literal
@@ -6089,13 +6685,13 @@ impl<'a> Gen<'a> {
             // literal in condition position is ill-typed input we do not model.
             Expr::Const(c) => {
                 if c.literal().map(|l| l.kind()) != Some(SyntaxKind::BOOL_LIT) {
-                    self.mark_incomplete(Incomplete::ConditionShape);
+                    scope.mark_incomplete(Incomplete::ConditionShape);
                 }
             }
-            Expr::Paren(p) => self.constrain_bool(p.inner()),
+            Expr::Paren(p) => self.constrain_bool(scope, p.inner()),
             // Any other condition shape (`x && y`, `p.HasValue`, a call) imposes FCS
             // constraints on its sub-terms that we drop.
-            _ => self.mark_incomplete(Incomplete::ConditionShape),
+            _ => scope.mark_incomplete(Incomplete::ConditionShape),
         }
     }
 
@@ -6113,8 +6709,8 @@ impl<'a> Gen<'a> {
     /// before" is "no earlier occurrence". The test is **syntactic**, over the
     /// body's identifier tokens: an occurrence in a subtree the walk skips, or
     /// one the resolver reads some other way, still counts.
-    fn is_first_occurrence(&self, tok: &SyntaxToken) -> bool {
-        let Some(body) = &self.cur_body else {
+    fn is_first_occurrence(&self, scope: &Scope, tok: &SyntaxToken) -> bool {
+        let Some(body) = &scope.body else {
             return false;
         };
         let name = ident_text(tok);
@@ -6146,6 +6742,7 @@ impl<'a> Gen<'a> {
     /// the binding defers.
     fn function_type(
         &mut self,
+        scope: &Scope,
         head: &LongIdentPat,
         arg_vars: &[TyVid],
         ret: Option<TyVid>,
@@ -6166,27 +6763,27 @@ impl<'a> Gen<'a> {
         // does not bound: its parameters are siblings. Past the type budget's
         // depth the chain is not built.
         if arg_vars.len() >= MAX_TYPE_DEPTH {
-            self.table.exceed(TypeBudgetExceeded::Depth);
+            self.solver.table.exceed(TypeBudgetExceeded::Depth);
             return None;
         }
         // Curry right: `Fun(a0, Fun(a1, … Fun(an, ret)))`, matching FCS.
-        let mut fun_ty = self.tys.var(ret);
+        let mut fun_ty = self.solver.tys.var(ret);
         for &arg in arg_vars.iter().rev() {
-            fun_ty = self.tys.fun(self.tys.var(arg), fun_ty);
+            fun_ty = self.solver.tys.fun(self.solver.tys.var(arg), fun_ty);
         }
         let fv = self.def_var(f_def);
-        self.eq(self.tys.var(fv), fun_ty);
-        // This binding's parameters are this head's: `begin_binding` cleared
-        // the list, and a local function is not walked.
-        for &(param, _) in &self.cur_params {
-            self.param_owner.insert(param, f_def);
+        self.solver.eq(self.solver.tys.var(fv), fun_ty);
+        // This binding's parameters are this head's: the scope is the
+        // binding's own, and a local function is not walked.
+        for &(param, _) in &scope.params {
+            self.binders.own_param(param, f_def);
         }
         Some(f_def)
     }
 
     /// The inference variable for a function parameter's slot *inside* the
     /// function type. A simple named (or parenthesised named) parameter gets a
-    /// **fresh private slot** variable, recorded in [`Self::param_slots`] under
+    /// **fresh private slot** variable, recorded in [`BinderEnv::param_slot`] under
     /// its `DefId` so condition typing can ground it — but deliberately **not**
     /// its binder's [`def_var`](Self::def_var), so the condition-derived `bool`
     /// never leaks into a standalone parameter read-off (its expression uses or
@@ -6218,20 +6815,20 @@ impl<'a> Gen<'a> {
     /// binding **incomplete** (Stage 3.2c-2c): its type comes from a shape
     /// this stage does not model, so a function with such a parameter must not
     /// generalise.
-    fn param_var(&mut self, pat: &Pat, cx: AnnotationCx<'_>) -> TyVid {
+    fn param_var(&mut self, scope: &mut Scope, pat: &Pat, cx: AnnotationCx<'_>) -> TyVid {
         match self
-            .pattern_ty(pat, BinderSite::Param, cx)
-            .map(|t| (t, self.tys.kind(t)))
+            .pattern_ty(scope, pat, BinderSite::Param, cx)
+            .map(|t| (t, self.solver.tys.kind(t)))
         {
             Ok((_, TyKind::Var(slot))) => *slot,
             Ok((t, _)) => {
-                let slot = self.table.fresh();
-                self.eq(self.tys.var(slot), t);
+                let slot = self.solver.table.fresh();
+                self.solver.eq(self.solver.tys.var(slot), t);
                 slot
             }
             Err(why) => {
-                self.mark_incomplete(why);
-                self.table.fresh()
+                scope.mark_incomplete(why);
+                self.solver.table.fresh()
             }
         }
     }
@@ -6239,7 +6836,7 @@ impl<'a> Gen<'a> {
     /// Open the implicitly scoped type variables of a module-level function
     /// binding's head — its parameters' annotations and its return annotation
     /// `ret` — returning them for the head's annotations to read
-    /// ([`AnnotationCx::Head`]), and keeping them as [`Self::head_typars`] for
+    /// ([`AnnotationCx::Head`]), and keeping them as [`Scope::head_typars`] for
     /// the binding's solve. `None` where nothing opens.
     ///
     /// FCS creates a type variable no `<…>` declares at its first mention
@@ -6253,7 +6850,7 @@ impl<'a> Gen<'a> {
     ///
     /// A variable the head **declares** (`let f<'a> …`) is one too, but
     /// rigid: FCS rejects a body that fixes it or merges it with another
-    /// declared one (FS0670), so it is recorded ([`Self::rigid_typars`]) and
+    /// declared one (FS0670), so it is recorded ([`Scope::rigid_typars`]) and
     /// checked once the binding is solved.
     ///
     /// Nothing opens, so every `'a` declines as before, where the head
@@ -6267,11 +6864,12 @@ impl<'a> Gen<'a> {
     /// than one function is a `let rec`, which is not walked.
     fn open_head_typars(
         &mut self,
+        scope: &mut Scope,
         head: &LongIdentPat,
         ret: Option<&Type>,
         body: Option<&Expr>,
     ) -> Option<HashMap<String, TyVid>> {
-        self.declares_typars = head.typar_decls().is_some();
+        scope.declares_typars = head.typar_decls().is_some();
         if head.name_pat_pairs().is_some() {
             return None;
         }
@@ -6322,10 +6920,12 @@ impl<'a> Gen<'a> {
         }
         let mut typars = HashMap::default();
         for name in names {
-            typars.entry(name).or_insert_with(|| self.table.fresh());
+            typars
+                .entry(name)
+                .or_insert_with(|| self.solver.table.fresh());
         }
-        self.rigid_typars = declared.iter().map(|n| typars[n]).collect();
-        self.head_typars = typars.clone();
+        scope.rigid_typars = declared.iter().map(|n| typars[n]).collect();
+        scope.head_typars = typars.clone();
         Some(typars)
     }
 
@@ -6337,13 +6937,20 @@ impl<'a> Gen<'a> {
     /// order, not the resolver's scoping. Each parameter then gets a fresh,
     /// unregistered variable, so no condition can ground a slot through a use
     /// resolved to the wrong binder, and the binding is incomplete.
-    fn param_vars(&mut self, head: &LongIdentPat, cx: AnnotationCx<'_>) -> Vec<TyVid> {
+    fn param_vars(
+        &mut self,
+        scope: &mut Scope,
+        head: &LongIdentPat,
+        cx: AnnotationCx<'_>,
+    ) -> Vec<TyVid> {
         let args: Vec<Pat> = head.args().collect();
         if binds_a_name_twice(&args) {
-            self.mark_incomplete(Incomplete::DuplicateBinder);
-            return args.iter().map(|_| self.table.fresh()).collect();
+            scope.mark_incomplete(Incomplete::DuplicateBinder);
+            return args.iter().map(|_| self.solver.table.fresh()).collect();
         }
-        args.iter().map(|arg| self.param_var(arg, cx)).collect()
+        args.iter()
+            .map(|arg| self.param_var(scope, arg, cx))
+            .collect()
     }
 
     /// [`Self::pattern_ty`] for the whole pattern of `binding`, declining
@@ -6352,6 +6959,7 @@ impl<'a> Gen<'a> {
     /// bare name, for which FCS creates no binders at all.
     fn binding_pattern_ty(
         &mut self,
+        scope: &mut Scope,
         binding: &Binding,
         pat: &Pat,
         site: BinderSite,
@@ -6362,7 +6970,7 @@ impl<'a> Gen<'a> {
         if binds_a_name_twice(std::slice::from_ref(pat)) {
             return Err(Incomplete::DuplicateBinder);
         }
-        self.pattern_ty(pat, site, AnnotationCx::Plain)
+        self.pattern_ty(scope, pat, site, AnnotationCx::Plain)
     }
 
     /// The type of pattern `pat`, generated structurally, with each named
@@ -6372,12 +6980,13 @@ impl<'a> Gen<'a> {
     /// adds no constraint: a name annotated beside a `()` is not left grounded.
     fn pattern_ty(
         &mut self,
+        scope: &mut Scope,
         pat: &Pat,
         site: BinderSite,
         cx: AnnotationCx<'_>,
     ) -> Result<Ty, Incomplete> {
         let shape = self.pattern_shape(pat, cx)?;
-        Ok(self.gen_pattern(&shape, site))
+        Ok(self.gen_pattern(scope, &shape, site))
     }
 
     /// Read a pattern into the shapes inference types, or name the first one it
@@ -6466,8 +7075,12 @@ impl<'a> Gen<'a> {
                     ) => {
                         let literal = c.literal().expect("a literal kind");
                         Ok(PatShape::Const(
-                            literal_kind_ty(self.facts.env.names(), self.tys, literal.kind())
-                                .expect("a typed literal"),
+                            literal_kind_ty(
+                                self.facts.env.names(),
+                                self.solver.tys,
+                                literal.kind(),
+                            )
+                            .expect("a typed literal"),
                             literal_ctor(literal.kind(), literal.text()),
                         ))
                     }
@@ -6481,7 +7094,7 @@ impl<'a> Gen<'a> {
             Pat::Typed(typed) => {
                 let Some(t) = typed
                     .ty()
-                    .and_then(|ty| self.facts.annotation_ty(self.tys, &ty, cx))
+                    .and_then(|ty| self.facts.annotation_ty(self.solver.tys, &ty, cx))
                 else {
                     return Err(Incomplete::PatternAnnotation);
                 };
@@ -6546,7 +7159,7 @@ impl<'a> Gen<'a> {
     /// suspended constraint must be:
     ///
     /// - a pending equality, argument check or dropped check-mode relation
-    ///   ([`Self::dropped`]) is applied as an equality under a snapshot, rolled
+    ///   ([`Scope::dropped`]) is applied as an equality under a snapshot, rolled
     ///   back after, and the pattern contradicts them if any of them, or
     ///   relating `pt` after them, fails (a check FCS meets by coercion fails
     ///   here where FCS succeeds, which only declines);
@@ -6554,52 +7167,57 @@ impl<'a> Gen<'a> {
     ///   known is one FCS made on a receiver it did not yet know, an error
     ///   (FS0072), so the pattern must not wake it
     ///   (`(o.Length, match o with "a" -> …)`).
-    fn pattern_preempts_earlier_relation(&mut self, sv: TyVid, pt: Ty) -> bool {
+    fn pattern_preempts_earlier_relation(&mut self, scope: &Scope, sv: TyVid, pt: Ty) -> bool {
         let mut eqs: Vec<(Ty, Ty)> = self
+            .solver
             .settled_args
             .iter()
-            .map(|ac| (self.tys.var(ac.arg), self.tys.var(ac.dom)))
+            .map(|ac| (self.solver.tys.var(ac.arg), self.solver.tys.var(ac.dom)))
             .collect();
         let mut receivers: Vec<TyVid> = Vec::new();
-        for c in &self.constraints {
+        for c in &self.solver.constraints {
             match c {
                 Constraint::Eq(a, b) => eqs.push((*a, *b)),
-                Constraint::ArgCheck(ac) => eqs.push((self.tys.var(ac.arg), self.tys.var(ac.dom))),
+                Constraint::ArgCheck(ac) => {
+                    eqs.push((self.solver.tys.var(ac.arg), self.solver.tys.var(ac.dom)))
+                }
                 Constraint::HasMember { recv, .. } => receivers.push(*recv),
             }
         }
         eqs.extend(
-            self.dropped
+            scope
+                .dropped
                 .iter()
-                .map(|&(a, b, _)| (self.tys.var(a), self.tys.var(b))),
+                .map(|&(a, b, _)| (self.solver.tys.var(a), self.solver.tys.var(b))),
         );
         // A parameter's private slot and its binder variable are one variable
         // in FCS ([`Self::slot_binder_reunify`]), so what a condition fixed on
         // the slot (`if x then (match x with 1 -> …)`) FCS applied before the
         // pattern too. A binder with no variable yet has had no use the
         // scrutinee could read.
-        eqs.extend(self.cur_params.iter().filter_map(|&(def, slot)| {
-            self.def_vars
-                .get(&def)
-                .map(|&dv| (self.tys.var(slot), self.tys.var(dv)))
+        eqs.extend(scope.params.iter().filter_map(|&(def, slot)| {
+            self.binders
+                .var(def)
+                .map(|dv| (self.solver.tys.var(slot), self.solver.tys.var(dv)))
         }));
         let mut scrutinee_roots: HashSet<TyVid> = HashSet::default();
         collect_var_roots(
-            self.tys,
-            self.table.resolve(self.tys.var(sv)),
+            self.solver.tys,
+            self.solver.table.resolve(self.solver.tys.var(sv)),
             &mut scrutinee_roots,
         );
         for recv in receivers {
             let mut recv_roots: HashSet<TyVid> = HashSet::default();
             collect_var_roots(
-                self.tys,
-                self.table.resolve(self.tys.var(recv)),
+                self.solver.tys,
+                self.solver.table.resolve(self.solver.tys.var(recv)),
                 &mut recv_roots,
             );
-            if recv_roots
-                .iter()
-                .any(|&r| scrutinee_roots.iter().any(|&v| self.table.unioned(r, v)))
-            {
+            if recv_roots.iter().any(|&r| {
+                scrutinee_roots
+                    .iter()
+                    .any(|&v| self.solver.table.unioned(r, v))
+            }) {
                 return true;
             }
         }
@@ -6609,16 +7227,21 @@ impl<'a> Gen<'a> {
         // Earlier relations that already conflict among themselves are ones
         // FCS resolved by their order, which this replay does not follow, so
         // what the pattern meets is unknown: that declines too.
-        let snapshot = self.table.snapshot();
+        let snapshot = self.solver.table.snapshot();
         let mut contradicts = false;
         for (a, b) in eqs {
-            if self.table.unify_atomic(a, b).is_err() {
+            if self.solver.table.unify_atomic(a, b).is_err() {
                 contradicts = true;
                 break;
             }
         }
-        contradicts = contradicts || self.table.unify_atomic(self.tys.var(sv), pt).is_err();
-        self.table.rollback_to(snapshot);
+        contradicts = contradicts
+            || self
+                .solver
+                .table
+                .unify_atomic(self.solver.tys.var(sv), pt)
+                .is_err();
+        self.solver.table.rollback_to(snapshot);
         contradicts
     }
 
@@ -6672,53 +7295,59 @@ impl<'a> Gen<'a> {
     /// eagerly: the annotation's `Eq` then lands before any constraint from
     /// the body, so a contradicting use fails and rolls back instead of
     /// retyping the parameter.
-    fn gen_pattern(&mut self, shape: &PatShape, site: BinderSite) -> Ty {
+    fn gen_pattern(&mut self, scope: &mut Scope, shape: &PatShape, site: BinderSite) -> Ty {
         match shape {
             PatShape::Name(def) => {
-                let v = self.register_binder(*def, site);
-                self.tys.var(v)
+                let v = self.register_binder(scope, *def, site);
+                self.solver.tys.var(v)
             }
             PatShape::Annotated(def, t) => {
                 let t = *t;
-                let v = self.register_binder(*def, site);
-                self.eq(self.tys.var(v), t);
+                let v = self.register_binder(scope, *def, site);
+                self.solver.eq(self.solver.tys.var(v), t);
                 if site == BinderSite::Param {
                     let dv = self.def_var(*def);
-                    self.eq(self.tys.var(dv), t);
+                    self.solver.eq(self.solver.tys.var(dv), t);
                     // An annotation mentioning an implicitly scoped type
                     // variable ([`Self::open_head_typars`]) fixes the
                     // parameter's structure but not its type, which the body
                     // may still fix: it is not a type known at a use.
-                    if self.tys.is_ground(t) {
-                        self.param_annotations.insert(*def, t);
+                    if self.solver.tys.is_ground(t) {
+                        self.binders.annotate_param(*def, t);
                     } else {
-                        self.typar_params.insert(*def);
+                        scope.typar_params.insert(*def);
                     }
                 } else {
-                    debug_assert!(self.tys.is_ground(t), "a type variable outside a head");
+                    debug_assert!(
+                        self.solver.tys.is_ground(t),
+                        "a type variable outside a head"
+                    );
                 }
                 t
             }
             PatShape::Wildcard => {
-                let v = self.table.fresh();
-                self.tys.var(v)
+                let v = self.solver.table.fresh();
+                self.solver.tys.var(v)
             }
-            PatShape::Unit => self.tys.named(self.facts.env.names(), UNIT),
+            PatShape::Unit => self.solver.tys.named(self.facts.env.names(), UNIT),
             PatShape::Tuple(elems) => {
-                let elems: Vec<Ty> = elems.iter().map(|el| self.gen_pattern(el, site)).collect();
-                self.tys.tuple(elems)
+                let elems: Vec<Ty> = elems
+                    .iter()
+                    .map(|el| self.gen_pattern(scope, el, site))
+                    .collect();
+                self.solver.tys.tuple(elems)
             }
             PatShape::Const(t, _) => *t,
             PatShape::Case(_, scheme, arg) => {
                 let env_tys = self.facts.env.types();
-                let instance = self.instantiate(env_tys, scheme.value_ty(env_tys));
-                match *self.tys.kind(instance) {
+                let instance = self.solver.instantiate(env_tys, scheme.value_ty(env_tys));
+                match *self.solver.tys.kind(instance) {
                     TyKind::Fun { arg: fields, ret } => {
                         if let Some(arg) = arg
                             && !matches!(**arg, PatShape::Wildcard)
                         {
-                            let at = self.gen_pattern(arg, site);
-                            self.eq(at, fields);
+                            let at = self.gen_pattern(scope, arg, site);
+                            self.solver.eq(at, fields);
                         }
                         ret
                     }
@@ -6732,78 +7361,22 @@ impl<'a> Gen<'a> {
     /// the binder as that site requires. A parameter gets a fresh private slot,
     /// recorded for condition typing and the slot=binder reunification, and is
     /// published from that slot ([`Self::finish`]). A local is published only if no emission
-    /// barrier discards it ([`Self::local_emits`]).
-    fn register_binder(&mut self, def: DefId, site: BinderSite) -> TyVid {
+    /// barrier discards it ([`Emissions::local`]).
+    fn register_binder(&mut self, scope: &mut Scope, def: DefId, site: BinderSite) -> TyVid {
         match site {
             BinderSite::Param => {
-                let slot = self.table.fresh();
-                self.param_slots.insert(def, slot);
-                self.param_defs.insert(def);
-                self.cur_params.push((def, slot));
-                self.binding_params.push(def);
+                let slot = self.solver.table.fresh();
+                self.binders.register_param(def, slot);
+                scope.params.push((def, slot));
+                scope.binding_params.push(def);
                 slot
             }
             BinderSite::Local => {
-                self.local_defs.insert(def);
-                self.local_emits
-                    .push((def, self.guard_stack.last().copied()));
+                self.out.local(def);
                 self.def_var(def)
             }
             BinderSite::Module => self.def_var(def),
         }
-    }
-
-    /// Open one [`Guard`] per member segment around a member access's receiver,
-    /// nested so the innermost — the one the receiver's emissions are tagged
-    /// with — holds only if every segment resolves: FCS drops the receiver of
-    /// `s.Length.Foo` because `Foo` is rejected, though `Length` is not.
-    /// Segment *i*'s wake confirms guard *i* ([`Self::guard_on_member`]). The
-    /// caller walks the receiver, then [`Self::close_guards`].
-    fn open_receiver_guards(&mut self, segments: &[SyntaxToken]) {
-        for seg in segments {
-            let g = self.guards.len();
-            self.guards.push(Guard {
-                parent: self.guard_stack.last().copied(),
-                confirmed: false,
-            });
-            self.guard_stack.push(g);
-            self.guard_on_member.insert(seg.text_range(), g);
-        }
-    }
-
-    /// Close the `n` guards [`Self::open_receiver_guards`] opened.
-    fn close_guards(&mut self, n: usize) {
-        let keep = self.guard_stack.len() - n;
-        self.guard_stack.truncate(keep);
-    }
-
-    /// Whether an emission tagged with `guard` may be published: the guard and
-    /// every guard enclosing it were confirmed.
-    fn guard_holds(&self, guard: Option<GuardId>) -> bool {
-        let mut cur = guard;
-        while let Some(g) = cur {
-            if !self.guards[g].confirmed {
-                return false;
-            }
-            cur = self.guards[g].parent;
-        }
-        true
-    }
-
-    /// The current length of both emission lists — the expression nodes and the
-    /// local binders — for a barrier to [discard back to](Self::discard_emissions_since).
-    fn emission_mark(&self) -> (usize, usize) {
-        (self.exprs.len(), self.local_emits.len())
-    }
-
-    /// Discard every emission recorded since `mark`: the nodes *and* the local
-    /// binders a walk inside a barrier produced. A method call is such a barrier
-    /// (FCS keeps nothing inside a call it rejects, so we keep nothing inside any
-    /// call); the two lists are cut together so a `let` in a call's argument
-    /// cannot publish its binder while the argument's nodes are dropped.
-    fn discard_emissions_since(&mut self, (exprs, locals): (usize, usize)) {
-        self.exprs.truncate(exprs);
-        self.local_emits.truncate(locals);
     }
 
     /// Record an expression's type variable `v` at `range` for read-off — but
@@ -6817,8 +7390,7 @@ impl<'a> Gen<'a> {
     /// here — emitting the coerced type when the synthesized one is a subtype.
     fn emit(&mut self, range: TextRange, v: TyVid, expected: Option<TyVid>) {
         if expected.is_none() {
-            self.exprs
-                .push((range, v, self.guard_stack.last().copied()));
+            self.out.node(range, v);
         }
     }
 
@@ -6842,7 +7414,7 @@ impl<'a> Gen<'a> {
     /// - **`ArgCheck`** (Stage 3.3c) is *suspended*: it fires once the enclosing
     ///   binding is walk-complete **and** its domain `dom` resolves to a
     ///   [no-subsumption](Self::no_subsumption_domain) type or a
-    ///   [function type](Self::function_domain), discharging `Eq(arg, dom)`. An
+    ///   [function type](Solver::function_domain), discharging `Eq(arg, dom)`. An
     ///   `ArgCheck` that never fires, or whose `Eq` fails, is **undischarged**
     ///   and — after the fixpoint — poisons `arg`, `dom`, and the application
     ///   result `r`, so an unwoken arg relation never generalises.
@@ -6867,27 +7439,27 @@ impl<'a> Gen<'a> {
     /// which they are applied cannot matter. Otherwise everything the checks did
     /// is undone and the binding is solved with none of them firing: each stays
     /// undischarged and poisoned, which is silence.
-    fn solve(&mut self) {
-        let constraints = self.constraints.clone();
-        let settled_args = self.settled_args.clone();
-        let poison = self.poison.len();
-        let eq_failures = self.eq_failures;
-        let snapshot = self.table.snapshot();
-        self.trial = Some(TrialLog::default());
-        let outcome = self.run_worklist(Fire::All);
-        let log = self.trial.take().unwrap_or_default();
-        let speculative = self.probed_constraint_verdict(&outcome);
-        let outcome = if outcome.discharged == 0 || self.verified(&outcome, speculative) {
-            self.table.commit(snapshot);
+    fn solve(&mut self, scope: &mut Scope) {
+        let constraints = self.solver.constraints.clone();
+        let settled_args = self.solver.settled_args.clone();
+        let poison = scope.poison.len();
+        let eq_failures = scope.eq_failures;
+        let snapshot = self.solver.table.snapshot();
+        self.out.begin_trial();
+        let outcome = self.run_worklist(scope, Fire::All);
+        let log = self.out.end_trial();
+        let speculative = self.probed_constraint_verdict(scope, &outcome);
+        let outcome = if outcome.discharged == 0 || self.verified(scope, &outcome, speculative) {
+            self.solver.table.commit(snapshot);
             outcome
         } else {
-            self.table.rollback_to(snapshot);
-            self.undo(log);
-            self.poison.truncate(poison);
-            self.eq_failures = eq_failures;
-            self.constraints = constraints;
-            self.settled_args = settled_args;
-            self.run_worklist(Fire::None)
+            self.solver.table.rollback_to(snapshot);
+            self.out.undo(log);
+            scope.poison.truncate(poison);
+            scope.eq_failures = eq_failures;
+            self.solver.constraints = constraints;
+            self.solver.settled_args = settled_args;
+            self.run_worklist(scope, Fire::None)
         };
         // Deferred poison (Stage 3.3c): every arg check still pending never fired
         // (its domain never became ready, the binding is incomplete, or its
@@ -6896,48 +7468,48 @@ impl<'a> Gen<'a> {
         // fired-and-failed check was already poisoned in the worklist; a
         // fired-and-succeeded one poisons nothing.) Members that never woke are
         // dropped.
-        if !self.rigid_typars.is_empty() {
-            self.rigid_rejected = !self.rigid_under_every_relation(&outcome);
+        if !scope.rigid_typars.is_empty() {
+            scope.rigid_rejected = !self.rigid_under_every_relation(scope, &outcome);
         }
         // The loosening invariant holds of the solution, however it was
         // reached: [`Self::verified`] checks it of a speculative one, and a
         // binding where no check discharged is not speculated at all, yet an
         // annotation can still give a use its structure
         // (`let f (g: obj -> 'a) = g`).
-        if !self.loosening_holds() {
-            self.poison.extend(self.undecided_uses.iter().copied());
-            self.poison.extend(self.bounded_flex.iter().copied());
-            if self.complete {
-                self.mark_incomplete(Incomplete::LoosenedUse);
+        if !self.loosening_holds(scope) {
+            scope.poison.extend(scope.undecided_uses.iter().copied());
+            scope.poison.extend(scope.bounded_flex.iter().copied());
+            if scope.complete {
+                scope.mark_incomplete(Incomplete::LoosenedUse);
             }
         }
         for ac in outcome.args {
-            self.poison_arg_check(ac);
+            self.poison_arg_check(scope, ac);
         }
-        self.check_constraints(speculative);
+        self.check_constraints(scope, speculative);
     }
 
-    /// Whether the current binding's declared variables ([`Self::rigid_typars`])
+    /// Whether the current binding's declared variables ([`Scope::rigid_typars`])
     /// stay distinct and unbound with every relation it holds — the pending
     /// argument checks of `outcome` and the dropped check-mode relations —
     /// applied as an equality, and none of them failing. FCS tries the
     /// equality first, so a relation that would fix a declared variable is an
     /// error there (FS0670), and one that fails is an error too: in either
     /// case the declaration may be rejected whole.
-    fn rigid_under_every_relation(&mut self, outcome: &WorklistOutcome) -> bool {
-        if self.eq_failures > 0 {
+    fn rigid_under_every_relation(&mut self, scope: &Scope, outcome: &WorklistOutcome) -> bool {
+        if scope.eq_failures > 0 {
             return false;
         }
         let relations: Vec<(TyVid, TyVid)> = outcome
             .args
             .iter()
             .map(|ac| (ac.arg, ac.dom))
-            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
+            .chain(scope.dropped.iter().map(|&(a, b, _)| (a, b)))
             .collect();
-        let rigid = self.rigid_typars.clone();
+        let rigid = scope.rigid_typars.clone();
         let mut holds = false;
-        let tys = self.tys;
-        let _ = self.table.probe(|t| -> Result<(), ()> {
+        let tys = self.solver.tys;
+        let _ = self.solver.table.probe(|t| -> Result<(), ()> {
             let unified = relations
                 .iter()
                 .all(|(a, b)| t.unify(tys.var(*a), tys.var(*b)).is_ok());
@@ -6958,30 +7530,35 @@ impl<'a> Gen<'a> {
     }
 
     /// The worst verdict ([`satisfies`]) over the current binding's
-    /// constrained instantiations ([`Self::constrained`]) in the table as it
+    /// constrained instantiations ([`Scope::constrained`]) in the table as it
     /// stands.
-    fn constraint_verdict(&mut self) -> Verdict {
-        constraint_verdict_of(&mut self.table, self.facts.env, self.tys, &self.constrained)
+    fn constraint_verdict(&mut self, scope: &Scope) -> Verdict {
+        constraint_verdict_of(
+            &mut self.solver.table,
+            self.facts.env,
+            self.solver.tys,
+            &scope.constrained,
+        )
     }
 
     /// [`Self::constraint_verdict`] once every relation the solve left
     /// unapplied — the argument checks still pending and the check-mode
-    /// relations the walk dropped ([`Self::dropped`]) — is applied too, as
+    /// relations the walk dropped ([`Scope::dropped`]) — is applied too, as
     /// [`Self::verified`]'s probe applies them: a constrained instantiation
     /// that only such a relation fixes is met there and nowhere else. The table
     /// is left as it was.
-    fn probed_constraint_verdict(&mut self, outcome: &WorklistOutcome) -> Verdict {
+    fn probed_constraint_verdict(&mut self, scope: &Scope, outcome: &WorklistOutcome) -> Verdict {
         let relations: Vec<(TyVid, TyVid)> = outcome
             .args
             .iter()
             .map(|ac| (ac.arg, ac.dom))
-            .chain(self.dropped.iter().map(|&(a, b, _)| (a, b)))
+            .chain(scope.dropped.iter().map(|&(a, b, _)| (a, b)))
             .collect();
         let env = self.facts.env;
-        let constrained = &self.constrained;
+        let constrained = &scope.constrained;
         let mut verdict = Verdict::Holds;
-        let tys = self.tys;
-        let _ = self.table.probe(|t| -> Result<(), ()> {
+        let tys = self.solver.tys;
+        let _ = self.solver.table.probe(|t| -> Result<(), ()> {
             for (a, b) in &relations {
                 // A relation that does not unify fails the speculation in
                 // `verified` on its own; the rest still decide the verdict.
@@ -6994,7 +7571,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Record in the census what the binding just solved did to its
-    /// constrained instantiations ([`Self::constrained`]): the worse of
+    /// constrained instantiations ([`Scope::constrained`]): the worse of
     /// `speculative`, their verdict under the speculative solve, and their
     /// verdict now.
     ///
@@ -7004,15 +7581,16 @@ impl<'a> Gen<'a> {
     /// one known to be — and [`Self::verified`] has already refused the
     /// speculative solve that produced it. A variable left open needs nothing
     /// here: it was poisoned when it was made, so it does not generalise.
-    fn check_constraints(&mut self, speculative: Verdict) {
-        match worse(speculative, self.constraint_verdict()) {
+    fn check_constraints(&mut self, scope: &mut Scope, speculative: Verdict) {
+        match worse(speculative, self.constraint_verdict(scope)) {
             Verdict::Holds | Verdict::Open => {}
-            Verdict::Fails => self.mark_incomplete(Incomplete::Constraint(ConstraintGap::Violated)),
+            Verdict::Fails => {
+                scope.mark_incomplete(Incomplete::Constraint(ConstraintGap::Violated))
+            }
             Verdict::Undecided => {
-                self.mark_incomplete(Incomplete::Constraint(ConstraintGap::Undecided))
+                scope.mark_incomplete(Incomplete::Constraint(ConstraintGap::Undecided))
             }
         }
-        self.constrained.clear();
     }
 
     /// Whether a speculative solve's argument checks may be kept
@@ -7024,12 +7602,12 @@ impl<'a> Gen<'a> {
     ///
     /// - no equality to have failed, and no fired check;
     /// - the relations the solve did not apply — the checks still pending and
-    ///   the check-mode relations the walk dropped ([`Self::dropped`]) — to
+    ///   the check-mode relations the walk dropped ([`Scope::dropped`]) — to
     ///   unify with the result, all together;
     /// - no member to have been resolved through a check FCS applies only
     ///   after it ([`WorklistOutcome::late_member`]): FCS rejects a member
     ///   access on a receiver it does not know yet (FS0072), consistent or not;
-    /// - every constrained instantiation ([`Self::constrained`]) to satisfy
+    /// - every constrained instantiation ([`Scope::constrained`]) to satisfy
     ///   its constraint, or be open, with the relations above applied
     ///   (`constraints`, [`Self::probed_constraint_verdict`]): a branch that
     ///   joins an open parameter to a function can be what fixes one. A
@@ -7043,15 +7621,15 @@ impl<'a> Gen<'a> {
     /// and, in the result with every relation applied, each value use
     /// loosened as FCS loosens it:
     ///
-    /// - no bounded loosened variable ([`Self::bounded_flex`]) fixed to a
+    /// - no bounded loosened variable ([`Scope::bounded_flex`]) fixed to a
     ///   type, a subtype constraint nothing checks;
-    /// - no undecided use ([`Self::undecided_uses`]) of a value taking a
+    /// - no undecided use ([`Scope::undecided_uses`]) of a value taking a
     ///   parameter of a type that is not sealed: whether FCS loosened it
     ///   depends on whether it knew that type at the use.
     ///
     /// The joint unification is a probe: the table is left as it was.
-    fn verified(&mut self, outcome: &WorklistOutcome, constraints: Verdict) -> bool {
-        if self.eq_failures > 0 || outcome.failed > 0 || outcome.late_member {
+    fn verified(&mut self, scope: &Scope, outcome: &WorklistOutcome, constraints: Verdict) -> bool {
+        if scope.eq_failures > 0 || outcome.failed > 0 || outcome.late_member {
             return false;
         }
         if matches!(constraints, Verdict::Fails | Verdict::Undecided) {
@@ -7062,31 +7640,31 @@ impl<'a> Gen<'a> {
             .args
             .iter()
             .map(|ac| (ac.arg, ac.dom, ac.span))
-            .chain(self.dropped.iter().copied())
+            .chain(scope.dropped.iter().copied())
             .collect();
         // A relation touching what FCS knows and inference does not proves
         // nothing by being consistent here.
         let mut opaque: Option<OpaqueRoots> = None;
         for &(a, b, span) in &relations {
-            let roots = self.relation_roots(a, b);
+            let roots = self.solver.relation_roots(a, b);
             if roots.is_empty() {
                 continue;
             }
             let opaque = match &opaque {
                 Some(opaque) => opaque,
-                None => opaque.insert(self.opaque_roots()),
+                None => opaque.insert(self.opaque_roots(scope)),
             };
-            if self.roots_touch_opaque(roots, span, opaque) {
+            if self.roots_touch_opaque(scope, roots, span, opaque) {
                 return false;
             }
         }
         let relations: Vec<(TyVid, TyVid)> =
             relations.into_iter().map(|(a, b, _)| (a, b)).collect();
-        let bounded = &self.bounded_flex;
-        let undecided = &self.undecided_uses;
+        let bounded = &scope.bounded_flex;
+        let undecided = &scope.undecided_uses;
         let mut consistent = false;
-        let tys = self.tys;
-        let _ = self.table.probe(|t| -> Result<(), ()> {
+        let tys = self.solver.tys;
+        let _ = self.solver.table.probe(|t| -> Result<(), ()> {
             let unified = relations
                 .iter()
                 .all(|(a, b)| t.unify(tys.var(*a), tys.var(*b)).is_ok());
@@ -7102,42 +7680,24 @@ impl<'a> Gen<'a> {
     /// of every relation applied: a relation `solve` did not apply is
     /// poisoned rather than published, so it cannot make a published use the
     /// wrong one. The probe leaves the table as it was.
-    fn loosening_holds(&mut self) -> bool {
+    fn loosening_holds(&mut self, scope: &Scope) -> bool {
         let env = self.facts.env;
-        let bounded = &self.bounded_flex;
-        let undecided = &self.undecided_uses;
+        let bounded = &scope.bounded_flex;
+        let undecided = &scope.undecided_uses;
         let mut holds = false;
-        let tys = self.tys;
-        let _ = self.table.probe(|t| -> Result<(), ()> {
+        let tys = self.solver.tys;
+        let _ = self.solver.table.probe(|t| -> Result<(), ()> {
             holds = loosened_as_fcs(env, tys, t, bounded, undecided);
             Err(())
         });
         holds
     }
 
-    /// Undo what a speculative solve recorded outside the table
-    /// ([`TrialLog`]), latest first.
-    fn undo(&mut self, log: TrialLog) {
-        for (range, previous) in log.resolutions.into_iter().rev() {
-            match previous {
-                Some(res) => {
-                    self.member_resolutions.insert(range, res);
-                }
-                None => {
-                    self.member_resolutions.remove(&range);
-                }
-            }
-        }
-        for g in log.guards {
-            self.guards[g].confirmed = false;
-        }
-    }
-
     /// Settle the constraints generated **so far** in the current binding,
     /// mid-walk (CE-1): discharge the eager `Eq`s and wake members to a fixpoint,
     /// then put every suspension still pending back on the constraint list,
     /// and every [`ArgCheck`], none of which fires here, on
-    /// [`Self::settled_args`], for the binding's final [`Self::solve`]. Used to
+    /// [`Solver::settled_args`], for the binding's final [`Self::solve`]. Used to
     /// ask whether a local binder or a statement is ground *at that point in
     /// the walk*.
     ///
@@ -7147,10 +7707,10 @@ impl<'a> Gen<'a> {
     /// what the final solve would do anyway. An argument check is gated on the
     /// **whole** binding's walk-completeness, which is not known until the walk
     /// ends, so it waits for [`Self::solve`].
-    fn settle(&mut self) {
-        let outcome = self.run_worklist(Fire::None);
+    fn settle(&mut self, scope: &mut Scope) {
+        let outcome = self.run_worklist(scope, Fire::None);
         for m in outcome.members {
-            self.constraints.push(Constraint::HasMember {
+            self.solver.constraints.push(Constraint::HasMember {
                 recv: m.recv,
                 name: m.name,
                 result: m.result,
@@ -7159,8 +7719,11 @@ impl<'a> Gen<'a> {
                 args_by: m.args_by,
             });
         }
-        debug_assert!(self.settled_args.is_empty(), "the worklist took them");
-        self.settled_args = outcome.args;
+        debug_assert!(
+            self.solver.settled_args.is_empty(),
+            "the worklist took them"
+        );
+        self.solver.settled_args = outcome.args;
     }
 
     /// The worklist behind [`Self::solve`] and [`Self::settle`]: discharge every
@@ -7168,16 +7731,16 @@ impl<'a> Gen<'a> {
     /// suspensions that never fired. `fire` gates the [`ArgCheck`] wake —
     /// [`Self::settle`] runs without it, since the check's completeness gate is
     /// not yet decided.
-    fn run_worklist(&mut self, fire: Fire) -> WorklistOutcome {
+    fn run_worklist(&mut self, scope: &mut Scope, fire: Fire) -> WorklistOutcome {
         // Split the batch: discharge every eager `Eq` now, park suspensions.
         let mut suspended: Vec<SuspendedMember> = Vec::new();
         // No argument check fires under `Fire::None`, so the ones a settle
         // parked wait outside the fixpoint, ahead of those this run parks.
         let (held_args, mut suspended_args) = match fire {
-            Fire::None => (std::mem::take(&mut self.settled_args), Vec::new()),
-            Fire::All => (Vec::new(), std::mem::take(&mut self.settled_args)),
+            Fire::None => (std::mem::take(&mut self.solver.settled_args), Vec::new()),
+            Fire::All => (Vec::new(), std::mem::take(&mut self.solver.settled_args)),
         };
-        self.discharge_eqs(&mut suspended, &mut suspended_args);
+        self.discharge_eqs(scope, &mut suspended, &mut suspended_args);
         let mut outcome = WorklistOutcome::default();
         // The latest end of a discharged check's argument, which a member
         // resolved afterwards may have learned its receiver from.
@@ -7192,8 +7755,8 @@ impl<'a> Gen<'a> {
             let mut still_pending: Vec<SuspendedMember> = Vec::new();
             let mut woke = false;
             for m in std::mem::take(&mut suspended) {
-                let head = self.table.resolve(self.tys.var(m.recv));
-                match self.tys.kind(head) {
+                let head = self.solver.table.resolve(self.solver.tys.var(m.recv));
+                match self.solver.tys.kind(head) {
                     // Unresolved receiver — keep it parked for a later wake.
                     TyKind::Var(_) => still_pending.push(SuspendedMember {
                         waited_on_receiver: true,
@@ -7220,7 +7783,7 @@ impl<'a> Gen<'a> {
                     }
                     TyKind::Named { path, .. } => {
                         let path = path.spelled(self.facts.env.names());
-                        if self.wake_member(&path, &m.name, m.result, m.use_range, &m.kind) {
+                        if self.wake_member(scope, &path, &m.name, m.result, m.use_range, &m.kind) {
                             woke = true;
                             if m.late(latest_discharge) {
                                 outcome.late_member = true;
@@ -7252,9 +7815,7 @@ impl<'a> Gen<'a> {
                     // count the binding complete with an untyped access in it.
                     TyKind::Project { .. } => {
                         woke = true;
-                        if let Some(reasons) = self.incompleteness.last_mut() {
-                            reasons.push(Incomplete::ProjectTypeMember);
-                        }
+                        scope.reasons.push(Incomplete::ProjectTypeMember);
                     }
                 }
             }
@@ -7270,9 +7831,10 @@ impl<'a> Gen<'a> {
             let mut still_pending_args: Vec<ArgCheck> = Vec::new();
             for ac in std::mem::take(&mut suspended_args) {
                 if fire == Fire::All
-                    && self.complete
-                    && (self.no_subsumption_domain(ac.dom) || self.function_domain(ac))
-                    && self.arg_check_binds_only_current_vars(ac)
+                    && scope.complete
+                    && (self.no_subsumption_domain(scope, ac.dom)
+                        || self.solver.function_domain(ac))
+                    && self.arg_check_binds_only_current_vars(scope, ac)
                 {
                     // Fire: discharge the arg↔param relation as a genuine equality,
                     // **immediately** (not via the deferred `Eq` queue) so we learn
@@ -7282,11 +7844,12 @@ impl<'a> Gen<'a> {
                     // *undischarged*, so its `arg`/`dom`/`r` are poisoned. Either
                     // way the check has fired and is not re-parked.
                     if self
+                        .solver
                         .table
-                        .unify_atomic(self.tys.var(ac.arg), self.tys.var(ac.dom))
+                        .unify_atomic(self.solver.tys.var(ac.arg), self.solver.tys.var(ac.dom))
                         .is_err()
                     {
-                        self.poison_arg_check(ac);
+                        self.poison_arg_check(scope, ac);
                         outcome.failed += 1;
                     } else {
                         outcome.discharged += 1;
@@ -7300,7 +7863,7 @@ impl<'a> Gen<'a> {
             suspended_args = still_pending_args;
 
             // Discharge the `Eq`s a wake produced (grounding the next chain link).
-            self.discharge_eqs(&mut suspended, &mut suspended_args);
+            self.discharge_eqs(scope, &mut suspended, &mut suspended_args);
             // Nothing fired this pass ⇒ no watched variable can become more ready ⇒
             // fixpoint.
             if !woke {
@@ -7317,16 +7880,16 @@ impl<'a> Gen<'a> {
     /// 3.3c): never fired, or fired but its `Eq(arg, dom)` failed. A *ground*
     /// endpoint (e.g. a ground application result) is unaffected — poison bites only
     /// open vars — so ground payoffs still emit.
-    fn poison_arg_check(&mut self, ac: ArgCheck) {
-        self.poison.push(ac.arg);
-        self.poison.push(ac.dom);
-        self.poison.push(ac.r);
+    fn poison_arg_check(&mut self, scope: &mut Scope, ac: ArgCheck) {
+        scope.poison.push(ac.arg);
+        scope.poison.push(ac.dom);
+        scope.poison.push(ac.r);
     }
 
     /// The [`Constraint::ArgCheck`] wake's **environment guard**: whether every
     /// *open* variable the `Eq(arg, dom)` discharge could bind was created in
     /// the **current** binding (no union-find class member older than
-    /// [`Self::cur_mark`]). An earlier binder's still-open variable — `g` in
+    /// [`Scope::mark`]). An earlier binder's still-open variable — `g` in
     /// `let g = id` under a later `g 1`, or an open `a` from an unmodelled
     /// `let a = h 0` used as `fb a` — has its type fixed by FCS at *its own*
     /// binding; grounding it through a later use's wake would retro-type it
@@ -7346,54 +7909,37 @@ impl<'a> Gen<'a> {
     /// whatever it does. So no variable the resolution of an environment use
     /// in this binding mentions may be bound either — nor one in a method
     /// call's argument, which FCS fixes against the method's parameter
-    /// ([`Self::opaque`]).
-    fn arg_check_binds_only_current_vars(&mut self, ac: ArgCheck) -> bool {
-        !self.touches_opaque(ac.arg, ac.dom, ac.span)
+    /// ([`Scope::opaque`]).
+    fn arg_check_binds_only_current_vars(&mut self, scope: &Scope, ac: ArgCheck) -> bool {
+        !self.touches_opaque(scope, ac.arg, ac.dom, ac.span)
     }
 
     /// Whether relating `a` to `b`, at `span` in the source, could bind a
     /// variable whose type FCS decides by something inference does not see:
-    /// one older than this binding, or one an [`Self::opaque`] entry's
+    /// one older than this binding, or one an [`Scope::opaque`] entry's
     /// resolution mentions — unless that entry is a method argument whose
     /// span holds `span`, a relation FCS checks before it relates the argument
     /// to the method's parameter.
-    fn touches_opaque(&mut self, a: TyVid, b: TyVid, span: TextRange) -> bool {
-        let roots = self.relation_roots(a, b);
+    fn touches_opaque(&mut self, scope: &Scope, a: TyVid, b: TyVid, span: TextRange) -> bool {
+        let roots = self.solver.relation_roots(a, b);
         if roots.is_empty() {
             return false;
         }
-        let opaque = self.opaque_roots();
-        self.roots_touch_opaque(roots, span, &opaque)
+        let opaque = self.opaque_roots(scope);
+        self.roots_touch_opaque(scope, roots, span, &opaque)
     }
 
-    /// The open variables of `a` and `b`, as roots of their classes.
-    fn relation_roots(&mut self, a: TyVid, b: TyVid) -> HashSet<TyVid> {
-        let mut roots = self.open_roots(a);
-        roots.extend(self.open_roots(b));
-        roots
-    }
-
-    /// The variables of `v`'s resolution, each as the root of its class.
-    /// A resolution's variables are already roots, except where the table is
-    /// past its budget and returns what it was given.
-    fn open_roots(&mut self, v: TyVid) -> HashSet<TyVid> {
-        let ty = self.table.resolve(self.tys.var(v));
-        let mut vars = HashSet::default();
-        collect_var_roots(self.tys, ty, &mut vars);
-        vars.into_iter().map(|v| self.table.root(v)).collect()
-    }
-
-    /// The open variables of every [`Self::opaque`] entry's resolution, as
+    /// The open variables of every [`Scope::opaque`] entry's resolution, as
     /// roots of their classes: valid until the table next changes.
     ///
     /// There is one entry per environment use in the binding, so a batch of
     /// relations reads them once ([`Self::verified`]): reading them for each
     /// relation would cost a binding of `n` statements `n²`. And a relation
     /// with no open variable ([`Self::touches_opaque`]) does not read them.
-    fn opaque_roots(&mut self) -> OpaqueRoots {
+    fn opaque_roots(&mut self, scope: &Scope) -> OpaqueRoots {
         let mut out = OpaqueRoots::default();
-        for (u, within) in self.opaque.clone() {
-            let roots = self.open_roots(u);
+        for (u, within) in scope.opaque.clone() {
+            let roots = self.solver.open_roots(u);
             match within {
                 None => out.everywhere.extend(roots),
                 Some(arg) => out.outside.push((arg, roots)),
@@ -7408,12 +7954,13 @@ impl<'a> Gen<'a> {
     /// when they are equal.
     fn roots_touch_opaque(
         &mut self,
+        scope: &Scope,
         roots: HashSet<TyVid>,
         span: TextRange,
         opaque: &OpaqueRoots,
     ) -> bool {
         roots.into_iter().any(|v| {
-            self.table.any_older_unioned(v, self.cur_mark)
+            self.solver.table.any_older_unioned(v, scope.mark)
                 || opaque.everywhere.contains(&v)
                 || opaque
                     .outside
@@ -7422,21 +7969,22 @@ impl<'a> Gen<'a> {
         })
     }
 
-    /// Discharge every pending `Eq` in `self.constraints` (best-effort, via
+    /// Discharge every pending `Eq` in `self.solver.constraints` (best-effort, via
     /// [`InferTable::unify_atomic`]), routing each suspended constraint into its
     /// pending list instead. Shared by [`Self::solve`]'s initial split and its
     /// per-wake re-drain (a wake pushes a fresh `Eq`, and a member/arg wake could
     /// in principle push a fresh suspension).
     fn discharge_eqs(
         &mut self,
+        scope: &mut Scope,
         suspended: &mut Vec<SuspendedMember>,
         suspended_args: &mut Vec<ArgCheck>,
     ) {
-        for c in std::mem::take(&mut self.constraints) {
+        for c in std::mem::take(&mut self.solver.constraints) {
             match c {
                 Constraint::Eq(a, b) => {
-                    if self.table.unify_atomic(a, b).is_err() {
-                        self.eq_failures += 1;
+                    if self.solver.table.unify_atomic(a, b).is_err() {
+                        scope.eq_failures += 1;
                     }
                 }
                 Constraint::HasMember {
@@ -7475,7 +8023,7 @@ impl<'a> Gen<'a> {
     /// receiver inference learns only later is that record too, or FCS
     /// rejects the program.
     fn wake_record_field(&mut self, head: Ty, m: &SuspendedMember) -> bool {
-        let TyKind::Project { path, args } = self.tys.kind(head) else {
+        let TyKind::Project { path, args } = self.solver.tys.kind(head) else {
             return false;
         };
         if !matches!(m.kind, MemberAccessKind::Data) {
@@ -7498,10 +8046,10 @@ impl<'a> Gen<'a> {
         let declared = record.record;
         let env_tys = self.facts.env.types();
         let mut fresh: HashMap<u32, TyVid> = HashMap::default();
-        let receiver = self.instantiate_rec(env_tys, declared, &mut fresh);
-        let field = self.instantiate_rec(env_tys, field, &mut fresh);
-        self.eq(receiver, head);
-        self.eq(self.tys.var(m.result), field);
+        let receiver = self.solver.instantiate_rec(env_tys, declared, &mut fresh);
+        let field = self.solver.instantiate_rec(env_tys, field, &mut fresh);
+        self.solver.eq(receiver, head);
+        self.solver.eq(self.solver.tys.var(m.result), field);
         true
     }
 
@@ -7530,6 +8078,7 @@ impl<'a> Gen<'a> {
     /// premature attempt.
     fn wake_member(
         &mut self,
+        scope: &mut Scope,
         path: &[String],
         name: &str,
         result: TyVid,
@@ -7574,7 +8123,7 @@ impl<'a> Gen<'a> {
                 // open) ground type — the applicability matcher's input.
                 let arg_tys: Vec<Ty> = arg_vids
                     .iter()
-                    .map(|v| self.table.resolve(self.tys.var(*v)))
+                    .map(|v| self.solver.table.resolve(self.solver.tys.var(*v)))
                     .collect();
                 // **Extension-absence gate** (§4.1(4), the P15 landmine): an in-scope
                 // extension member of the name would join FCS's method group and
@@ -7686,7 +8235,7 @@ impl<'a> Gen<'a> {
                     // commit the unique applicable candidate or defer
                     // ([`AssemblyEnv::resolve_overload`]).
                     _ => {
-                        if !arg_tys.iter().all(|&t| self.tys.is_ground(t)) {
+                        if !arg_tys.iter().all(|&t| self.solver.tys.is_ground(t)) {
                             return false;
                         }
                         // The matcher reads each candidate's parameter types,
@@ -7701,7 +8250,9 @@ impl<'a> Gen<'a> {
                         }) {
                             return true;
                         }
-                        self.facts.env.resolve_overload(&group, self.tys, &arg_tys)
+                        self.facts
+                            .env
+                            .resolve_overload(&group, self.solver.tys, &arg_tys)
                     }
                 }
                 // The curried-member gate above already deferred the whole call
@@ -7721,7 +8272,7 @@ impl<'a> Gen<'a> {
         // `member_ty_ref` from `self.facts.env` would otherwise conflict with the insert
         // / unify below); `type_ref_to_ty` yields an owned `Ty` or `None`, and the
         // void check reads the `TypeRef` while it is still borrowed.
-        let member_ty = type_ref_to_ty(self.facts.env.names(), self.tys, member_ty_ref);
+        let member_ty = type_ref_to_ty(self.facts.env.names(), self.solver.tys, member_ty_ref);
         // A `void`-returning method's call type is F# `unit`, which this phase does
         // not model — so its type defers even though its identity is known (a data
         // member is never `void`, so this is a no-op for `kind = Data`). Bridging
@@ -7732,16 +8283,13 @@ impl<'a> Gen<'a> {
         // even if the type bridge failed (a generic member type) or the return is
         // void — the member's *identity* is known, so hover / go-to-definition can
         // render it though the type defers.
-        let previous = self.member_resolutions.insert(
+        self.out.member_resolution(
             use_range,
             Resolution::Member {
                 parent: decl_handle,
                 idx,
             },
         );
-        if let Some(log) = &mut self.trial {
-            log.resolutions.push((use_range, previous));
-        }
         // The access is one FCS accepts, so what its receiver emitted stands.
         // Whether the receiver has nodes at all is then an assembly reading —
         // the member's existence — so under the seal below it is not confirmed:
@@ -7755,15 +8303,8 @@ impl<'a> Gen<'a> {
             self.facts.env.entity(decl_handle).kind,
             EntityKind::Record | EntityKind::Union | EntityKind::Exception
         );
-        if let Some(&g) = self.guard_on_member.get(&use_range)
-            && !fsharp_field_carrier
-            && !self.facts.env.identities_incomplete()
-            && !self.guards[g].confirmed
-        {
-            self.guards[g].confirmed = true;
-            if let Some(log) = &mut self.trial {
-                log.guards.push(g);
-            }
+        if !fsharp_field_carrier && !self.facts.env.identities_incomplete() {
+            self.out.confirm_guard(use_range);
         }
         if is_void {
             return true;
@@ -7793,11 +8334,12 @@ impl<'a> Gen<'a> {
             return true;
         }
         if self
+            .solver
             .table
-            .unify_atomic(self.tys.var(result), member_ty)
+            .unify_atomic(self.solver.tys.var(result), member_ty)
             .is_err()
         {
-            self.eq_failures += 1;
+            scope.eq_failures += 1;
         }
         true
     }
@@ -7811,18 +8353,18 @@ impl<'a> Gen<'a> {
     ///   docs), so we do not gate it.
     /// - **Open** ⇒ try to [generalise](Self::generalise) it into a scheme, iff the
     ///   binding is walk-complete and every open variable is created-this-binding
-    ///   (the `mark`) and unpoisoned. A stored scheme is emitted by `finish`; a use
-    ///   [instantiates](Self::instantiate) it. If generalisation is not sound
+    ///   ([`Scope::mark`]) and unpoisoned. A stored scheme is emitted by `finish`; a use
+    ///   [instantiates](Solver::instantiate) it. If generalisation is not sound
     ///   (incomplete, an environment/poisoned var), the binder simply stays open →
     ///   silence (D5).
-    fn finalise_function(&mut self, f_def: DefId, mark: u32) {
+    fn finalise_function(&mut self, scope: &Scope, f_def: DefId) {
         let fv = self.def_var(f_def);
-        let fn_ty = self.table.resolve(self.tys.var(fv));
-        if self.tys.is_ground(fn_ty) {
+        let fn_ty = self.solver.table.resolve(self.solver.tys.var(fv));
+        if self.solver.tys.is_ground(fn_ty) {
             // The monomorphic case: `finish` reads `fv` back and emits it.
             return;
         }
-        if !self.complete {
+        if !scope.complete {
             // An incomplete binding must not generalise (its openness may be an
             // artefact of an unmodelled constraint FCS uses to ground it).
             return;
@@ -7830,18 +8372,18 @@ impl<'a> Gen<'a> {
         // A head that declares its variables generalises those alone: FCS
         // defaults every other variable left open to `obj`
         // (`let f<'a> (x: 'a) y` is `'a -> obj -> …`), which is not modelled.
-        if !self.rigid_typars.is_empty() && !self.only_rigid_typars_open(fn_ty) {
+        if !scope.rigid_typars.is_empty() && !self.only_rigid_typars_open(scope, fn_ty) {
             return;
         }
-        if let Some(scheme) = self.generalise(fn_ty, mark) {
-            self.def_schemes.insert(f_def, scheme);
+        if let Some(scheme) = self.generalise(scope, fn_ty) {
+            self.binders.generalised(f_def, scheme);
         }
     }
 
     /// Generalise a resolved, **open** function type into a scheme, or return
     /// `None` to defer (Stage 3.2c-2c). Every open variable in `fn_ty` must be
     /// **quantifiable**: created during this binding (no variable with index
-    /// `< mark` is unioned with it — an environment variable inherited from an
+    /// `< scope.mark` is unioned with it — an environment variable inherited from an
     /// earlier binder, whose openness we do not control, must defer this function)
     /// and **not poisoned** (a dropped check-mode relation could have grounded it
     /// in FCS). If all pass, each distinct open root is replaced by a [`TyKind::Param`]
@@ -7849,30 +8391,26 @@ impl<'a> Gen<'a> {
     /// walk — matching FCS's canonical numbering — and the substituted body is the
     /// scheme. Parameters are never bound *into* the table, so a `debug_assert`
     /// pins that the resolved `fn_ty` carries none before we introduce them.
-    fn generalise(&mut self, fn_ty: Ty, mark: u32) -> Option<Ty> {
+    fn generalise(&mut self, scope: &Scope, fn_ty: Ty) -> Option<Ty> {
         debug_assert!(
-            !contains_param(self.tys, fn_ty),
+            !contains_param(self.solver.tys, fn_ty),
             "a resolved fn_ty must not already contain a Ty::Param before generalisation"
         );
         // The poison closure: every variable reachable (after resolution) from a
         // poisoned variable. `resolve` is deep, so one pass reaches a fixpoint.
-        let poison = std::mem::take(&mut self.poison);
         let mut poison_roots: HashSet<TyVid> = HashSet::default();
-        for v in &poison {
-            let resolved = self.table.resolve(self.tys.var(*v));
-            collect_var_roots(self.tys, resolved, &mut poison_roots);
+        for v in &scope.poison {
+            let resolved = self.solver.table.resolve(self.solver.tys.var(*v));
+            collect_var_roots(self.solver.tys, resolved, &mut poison_roots);
         }
-        // Restore the poison list (it is per-binding and cleared at the next
-        // binding's start anyway, but keep `finalise_function`'s contract clean).
-        self.poison = poison;
 
         // The open roots of `fn_ty`, in first-appearance (DFS) order.
         let mut order: Vec<TyVid> = Vec::new();
-        collect_open_order(self.tys, fn_ty, &mut order);
+        collect_open_order(self.solver.tys, fn_ty, &mut order);
 
         // Every open root must be quantifiable, else defer the whole function.
         for &v in &order {
-            if poison_roots.contains(&v) || self.table.any_older_unioned(v, mark) {
+            if poison_roots.contains(&v) || self.solver.table.any_older_unioned(v, scope.mark) {
                 return None;
             }
         }
@@ -7883,64 +8421,7 @@ impl<'a> Gen<'a> {
             let next = assign.len() as u32;
             assign.entry(v).or_insert(next);
         }
-        Some(subst_params(self.tys, fn_ty, &assign))
-    }
-
-    /// Instantiate a scheme body with a **fresh** inference variable per distinct
-    /// [`TyKind::Param`], memoised within this one instantiation so the same index maps
-    /// to the same variable (Stage 3.2c-2c). The fresh variables are `>= ` the
-    /// current binding's mark, so a use inside a later function generalises in turn
-    /// (`let h x = (id, x)` ⇒ `'a -> ('b -> 'b) * 'a`).
-    ///
-    /// `scheme` is a type of `from`: the env's table for a scheme the env
-    /// holds (an earlier file's published type, an assembly function's or
-    /// case's, a project case's or record's), or the session's for one of the
-    /// file's own generalised binders. The instance is the session's.
-    fn instantiate(&mut self, from: &TyTable, scheme: Ty) -> Ty {
-        let mut fresh: HashMap<u32, TyVid> = HashMap::default();
-        self.instantiate_rec(from, scheme, &mut fresh)
-    }
-
-    fn instantiate_rec(&mut self, from: &TyTable, ty: Ty, fresh: &mut HashMap<u32, TyVid>) -> Ty {
-        let tys = self.tys;
-        let mut all = |cx: &mut Self, args: &[Ty]| -> Vec<Ty> {
-            args.iter()
-                .map(|&a| cx.instantiate_rec(from, a, fresh))
-                .collect()
-        };
-        match from.kind(ty) {
-            TyKind::Param(i) => {
-                let v = *fresh.entry(*i).or_insert_with(|| self.table.fresh());
-                // Record the provenance: this fresh var is an instantiation of a
-                // quantified typar of one of our schemes (Stage 3.3c). Such a typar
-                // admits no coercion, so it is a **no-subsumption** domain against
-                // which a suspended `ArgCheck` may safely discharge.
-                self.scheme_inst_vars.insert(v);
-                tys.var(v)
-            }
-            TyKind::Var(v) => tys.var(*v),
-            TyKind::Named { path, args } => {
-                let args = all(self, args);
-                tys.app(path.clone(), args)
-            }
-            TyKind::Project { path, args } => {
-                let args = all(self, args);
-                tys.project(path.clone(), args)
-            }
-            TyKind::Array { elem, rank } => {
-                let elem = self.instantiate_rec(from, *elem, fresh);
-                tys.array(elem, *rank)
-            }
-            TyKind::Tuple(elems) => {
-                let elems = all(self, elems);
-                tys.tuple(elems)
-            }
-            TyKind::Fun { arg, ret } => {
-                let arg = self.instantiate_rec(from, *arg, fresh);
-                let ret = self.instantiate_rec(from, *ret, fresh);
-                tys.fun(arg, ret)
-            }
-        }
+        Some(subst_params(self.solver.tys, fn_ty, &assign))
     }
 
     /// Read each recorded expression's and binder's type back from its (now
@@ -7952,57 +8433,69 @@ impl<'a> Gen<'a> {
     /// here ([`Resolution::sealed_under_incomplete_projection`]); an
     /// assembly-derived *type* is sealed at its door instead, so by here it has
     /// simply never been unified in — see the seal's comment below.
-    fn finish(mut self) -> Walked {
+    fn finish(self) -> Walked {
+        let Gen {
+            facts,
+            mut solver,
+            binders,
+            out,
+        } = self;
+        // Every constraint belongs to a binding, and each binding's solve
+        // ([`Self::solve`]) leaves none behind: nothing is left for a solve
+        // outside one.
+        debug_assert!(
+            solver.constraints.is_empty() && solver.settled_args.is_empty(),
+            "a constraint outlived its binding's solve"
+        );
+        let emitted = out.into_emitted();
         // Past the budget the table's answers are not answers, so nothing is
         // read from it. The check repeats below, after the last read: the
         // read-off resolves every recorded variable, and one of those can be
         // the first walk to pass the budget.
-        if let Some(why) = self.table.over_budget() {
-            return self.finish_over_budget(why);
+        if let Some(why) = solver.table.over_budget() {
+            return Self::finish_over_budget(
+                facts,
+                &binders,
+                &solver,
+                emitted.incompleteness,
+                emitted.deepest_expr_depth,
+                why,
+            );
         }
-        let exprs = std::mem::take(&mut self.exprs);
-        let def_vars = std::mem::take(&mut self.def_vars);
-        let published_locals: HashSet<DefId> = std::mem::take(&mut self.local_emits)
-            .into_iter()
-            .filter(|(_, guard)| self.guard_holds(*guard))
-            .map(|(def, _)| def)
-            .collect();
+        let tys = solver.tys;
         let mut types = HashMap::default();
-        for (range, var, guard) in exprs {
-            if !self.guard_holds(guard) || self.ungraded_ranges.contains(&range) {
-                continue;
-            }
-            let ty = self.table.resolve(self.tys.var(var));
-            if self.tys.is_ground(ty) {
+        for (range, var) in emitted.exprs {
+            let ty = solver.table.resolve(tys.var(var));
+            if tys.is_ground(ty) {
                 types.insert(range, ty);
             }
         }
         let mut def_types = HashMap::default();
-        for (def, var) in def_vars {
+        for (def, var) in binders.vars() {
             // A **parameter** is published below, from what fixes it, never
             // from its binder variable: on an incomplete binding that variable
             // is decoupled from the function type's slot, and can be grounded
             // by a use the binding's unmodelled constraints contradict.
-            if self.param_defs.contains(&def) || self.withheld_defs.contains(&def) {
+            if binders.is_param(def) || binders.is_withheld(def) {
                 continue;
             }
             // A local binder is published only if no emission barrier discarded
             // it (CE-1).
-            if self.local_defs.contains(&def) && !published_locals.contains(&def) {
+            if emitted.local_defs.contains(&def) && !emitted.published_locals.contains(&def) {
                 continue;
             }
             // A **generalised** binder publishes its scheme (its table variable
             // stays open, since `Param`s are never bound into the table). The
             // scheme was computed at the binding's finalisation, in document order.
-            if let Some(&scheme) = self.def_schemes.get(&def) {
+            if let Some(scheme) = binders.scheme(def) {
                 def_types.insert(def, scheme);
                 continue;
             }
             // Otherwise a value / function binder is emitted only when ground
             // (3.2b-1 values via their RHS, 3.2c-2b monomorphic functions via
             // `TyKind::Fun`); an open variable stays silent (D5).
-            let ty = self.table.resolve(self.tys.var(var));
-            if self.tys.is_ground(ty) {
+            let ty = solver.table.resolve(tys.var(var));
+            if tys.is_ground(ty) {
                 def_types.insert(def, ty);
             }
         }
@@ -8018,28 +8511,27 @@ impl<'a> Gen<'a> {
         // A generic parameter is not published: FCS renders a parameter's type
         // renumbered on its own (`'a` for the second of `'a -> 'b -> 'a`),
         // where hover would name it as its function does.
-        for &def in &self.param_defs {
-            if self.withheld_defs.contains(&def) {
+        for def in binders.params() {
+            if binders.is_withheld(def) {
                 continue;
             }
-            if let Some(&ann) = self.param_annotations.get(&def) {
+            if let Some(ann) = binders.param_annotation(def) {
                 def_types.insert(def, ann);
                 continue;
             }
-            let (Some(owner), Some(&slot)) =
-                (self.param_owner.get(&def), self.param_slots.get(&def))
+            let (Some(owner), Some(slot)) = (binders.param_owner(def), binders.param_slot(def))
             else {
                 continue;
             };
-            if !def_types.contains_key(owner) {
+            if !def_types.contains_key(&owner) {
                 continue;
             }
-            let ty = self.table.resolve(self.tys.var(slot));
-            if self.tys.is_ground(ty) {
+            let ty = solver.table.resolve(tys.var(slot));
+            if tys.is_ground(ty) {
                 def_types.insert(def, ty);
             }
         }
-        let mut member_resolutions = std::mem::take(&mut self.member_resolutions);
+        let mut member_resolutions = emitted.member_resolutions;
         // Inference's half of the incomplete-projection seal (the resolver seals
         // its own two maps): a member identified on a referenced-assembly type is
         // an assembly reading like any other, and a DLL the env could not read
@@ -8059,16 +8551,17 @@ impl<'a> Gen<'a> {
         // variable open, and the ground-only read-off above turns open into
         // silence — while a literal's type, owing the assemblies nothing, is
         // untouched.
-        if self.facts.env.identities_incomplete() {
+        if facts.env.identities_incomplete() {
             for res in member_resolutions.values_mut() {
                 *res = res.sealed_under_incomplete_projection();
             }
         }
-        let receiver_types: HashMap<TextRange, Ty> = std::mem::take(&mut self.dot_get_receivers)
+        let receiver_types: HashMap<TextRange, Ty> = emitted
+            .dot_get_receivers
             .into_iter()
             .filter_map(|(range, var)| {
-                let ty = self.table.resolve(self.tys.var(var));
-                self.tys.is_ground(ty).then_some((range, ty))
+                let ty = solver.table.resolve(tys.var(var));
+                tys.is_ground(ty).then_some((range, ty))
             })
             .collect();
         // What the file publishes is the env's: each type is copied out of
@@ -8076,30 +8569,29 @@ impl<'a> Gen<'a> {
         let mut memo = HashMap::default();
         let types: HashMap<TextRange, Ty> = types
             .into_iter()
-            .map(|(range, ty)| (range, self.publish(ty, &mut memo)))
+            .map(|(range, ty)| (range, facts.publish(tys, ty, &mut memo)))
             .collect();
         let def_types: HashMap<DefId, Ty> = def_types
             .into_iter()
-            .map(|(def, ty)| (def, self.publish(ty, &mut memo)))
+            .map(|(def, ty)| (def, facts.publish(tys, ty, &mut memo)))
             .collect();
         let receiver_types: HashMap<TextRange, Ty> = receiver_types
             .into_iter()
-            .map(|(range, ty)| (range, self.publish(ty, &mut memo)))
+            .map(|(range, ty)| (range, facts.publish(tys, ty, &mut memo)))
             .collect();
         // What each module-level binder publishes to later files. A rejected
         // use or an `inline` binding declines whatever its type; otherwise the
         // binder's published type is exactly its hover type above.
-        let module_values = self
-            .module_binders
-            .iter()
-            .map(|(&def, binder)| {
-                let verdict = if self.facts.use_may_be_rejected(def) || binder.header_rejects {
+        let module_values = binders
+            .module_binders()
+            .map(|(def, binder)| {
+                let verdict = if facts.use_may_be_rejected(def) || binder.header_rejects {
                     ModuleValue::Declined(PrecedingGap::RejectedUse)
                 } else if binder.inline {
                     ModuleValue::Declined(PrecedingGap::Inline)
                 } else if let Some(&ty) = def_types.get(&def) {
                     ModuleValue::Typed(ty)
-                } else if self.walked_binders.contains(&def) {
+                } else if binders.was_walked(def) {
                     ModuleValue::Declined(PrecedingGap::Untyped)
                 } else {
                     ModuleValue::Declined(PrecedingGap::NotWalked)
@@ -8107,19 +8599,26 @@ impl<'a> Gen<'a> {
                 (def, verdict)
             })
             .collect();
-        if let Some(why) = self.table.over_budget() {
-            return self.finish_over_budget(why);
+        if let Some(why) = solver.table.over_budget() {
+            return Self::finish_over_budget(
+                facts,
+                &binders,
+                &solver,
+                emitted.incompleteness,
+                emitted.deepest_expr_depth,
+                why,
+            );
         }
         Walked {
             types,
             def_types,
             member_resolutions,
-            incompleteness: std::mem::take(&mut self.incompleteness),
+            incompleteness: emitted.incompleteness,
             receiver_types,
             module_values,
-            deepest_expr_depth: self.deepest_expr_depth,
+            deepest_expr_depth: emitted.deepest_expr_depth,
             type_budget_exceeded: None,
-            type_walks: self.table.walks(),
+            type_walks: solver.table.walks(),
         }
     }
 
@@ -8128,12 +8627,18 @@ impl<'a> Gen<'a> {
     /// is read, since past the budget its answers are not answers
     /// ([`InferTable`]), and before it they may lean on a type it never
     /// finished. What the file declares is kept.
-    fn finish_over_budget(mut self, why: TypeBudgetExceeded) -> Walked {
-        let module_values = self
-            .module_binders
-            .iter()
-            .map(|(&def, binder)| {
-                let verdict = if self.facts.use_may_be_rejected(def) || binder.header_rejects {
+    fn finish_over_budget(
+        facts: &FileFacts<'_>,
+        binders: &BinderEnv,
+        solver: &Solver<'_>,
+        incompleteness: Vec<Vec<Incomplete>>,
+        deepest_expr_depth: usize,
+        why: TypeBudgetExceeded,
+    ) -> Walked {
+        let module_values = binders
+            .module_binders()
+            .map(|(def, binder)| {
+                let verdict = if facts.use_may_be_rejected(def) || binder.header_rejects {
                     PrecedingGap::RejectedUse
                 } else if binder.inline {
                     PrecedingGap::Inline
@@ -8147,12 +8652,12 @@ impl<'a> Gen<'a> {
             types: HashMap::default(),
             def_types: HashMap::default(),
             member_resolutions: HashMap::default(),
-            incompleteness: std::mem::take(&mut self.incompleteness),
+            incompleteness,
             receiver_types: HashMap::default(),
             module_values,
-            deepest_expr_depth: self.deepest_expr_depth,
+            deepest_expr_depth,
             type_budget_exceeded: Some(why),
-            type_walks: self.table.walks(),
+            type_walks: solver.table.walks(),
         }
     }
 }
@@ -10658,8 +11163,54 @@ mod tests {
         }
     }
 
+    /// Every binding construct with a pattern that names one binder more than
+    /// once — an or-pattern's alternatives share their binders, so the
+    /// resolver gives both occurrences one [`crate::DefId`] — infers without
+    /// panicking: the walk may meet a binder twice, and what it records of
+    /// one must not assume otherwise ([`super::BinderEnv`]).
+    #[test]
+    fn a_binder_named_twice_in_one_pattern_infers() {
+        let contexts: &[&dyn Fn(&str) -> String] = &[
+            &|p| format!("let {p} = 1\n"),
+            &|p| format!("let {p}, z = 1, 2\n"),
+            &|p| format!("let f {p} = 0\n"),
+            &|p| format!("let f {p} y = y\n"),
+            &|p| format!("let f {p} : int = 0\n"),
+            &|p| format!("let g = fun {p} -> 0\n"),
+            &|p| format!("let h () =\n    let {p} = 1\n    0\n"),
+            &|p| format!("let k v =\n    match v with\n    | {p} -> 0\n"),
+            &|p| format!("let m () =\n    for {p} in [1] do ()\n"),
+        ];
+        let patterns = [
+            "(x | x)",
+            "(x, x)",
+            "x x",
+            "(x: int | x: int)",
+            "((x: int) | (x: int))",
+            "(x as x)",
+            "(Some x | Some x)",
+            "[x; x]",
+            "(x, (x | x))",
+            "((x | x), x)",
+        ];
+        let env = primitive_env();
+        for context in contexts {
+            for p in patterns {
+                let src = format!("module M\n\n{}", context(p));
+                let parsed = parse(&src);
+                let recovery = SyntaxRecovery::of(&parsed);
+                let file = ImplFile::cast(parsed.root).expect("impl file");
+                let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    super::infer_file(&file, &resolved, &env, &crate::PrecedingTypes::default())
+                }));
+                assert!(run.is_ok(), "inference panicked on {src:?}");
+            }
+        }
+    }
+
     /// An empty file and its resolution, so a [`Gen`] can be constructed for
-    /// unit tests of the substrate helpers ([`Gen::instantiate`] /
+    /// unit tests of the substrate helpers ([`Solver::instantiate`] /
     /// [`Gen::generalise`]) that do not need real name resolution.
     fn empty_resolved() -> (ImplFile, ResolvedFile) {
         use borzoi_cst::parser::parse;
@@ -10689,7 +11240,7 @@ mod tests {
         let mut cx = Gen::new(&facts, &tys);
         let p = |i| tys.param(i);
         let scheme = tys.fun(p(0), tys.tuple(vec![p(0), p(1)]));
-        let inst = cx.instantiate(&tys, scheme);
+        let inst = cx.solver.instantiate(&tys, scheme);
         // Structure preserved, no Param survives.
         assert!(
             !super::contains_param(&tys, inst),
@@ -10724,13 +11275,13 @@ mod tests {
         let preceding = crate::PrecedingTypes::default();
         let facts = super::FileFacts::build(&file, &resolved, &env, &tys, &preceding, None);
         let mut cx = Gen::new(&facts, &tys);
-        let mark = cx.table.mark();
+        let scope = cx.enter_scope();
         let p = |i| tys.param(i);
         let scheme = tys.fun(p(0), tys.fun(p(1), tys.tuple(vec![p(1), p(0)])));
-        let inst = cx.instantiate(&tys, scheme);
-        let resolved_inst = cx.table.resolve(inst);
+        let inst = cx.solver.instantiate(&tys, scheme);
+        let resolved_inst = cx.solver.table.resolve(inst);
         let regen = cx
-            .generalise(resolved_inst, mark)
+            .generalise(&scope, resolved_inst)
             .expect("fresh vars generalise");
         assert_eq!(regen, scheme, "generalise ∘ instantiate is the identity");
     }

@@ -53,6 +53,19 @@ pub(crate) const VERSIONS: &[(&str, &str, f64)] = &[
     ("preview", "Preview", 9999.0),
 ];
 
+/// FCS's decimal for a version's table spelling: the text read as a number
+/// (`"8.0"` is 8.0), and 9999 for `"preview"` (FCS's `previewVersion`). It is
+/// read from the text rather than looked up in the table's version list, so
+/// a version the table does not list yet has one too (astgen's
+/// synthetic-feature test adds one). Panics on text that is neither.
+pub fn version_decimal(text: &str) -> f64 {
+    if text == "preview" {
+        return 9999.0;
+    }
+    text.parse()
+        .unwrap_or_else(|_| panic!("{text:?} is not a language version"))
+}
+
 /// Where FCS consults a feature (`fcs_stage`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
@@ -172,13 +185,9 @@ impl FeatureRow {
                 .any(|m| matches!(m, Modelling::Kind(_) | Modelling::Positional(_)))
     }
 
-    /// FCS's decimal for the row's version (`preview` is 9999).
+    /// FCS's decimal for the row's version ([`version_decimal`]).
     pub fn introduced_decimal(&self) -> f64 {
-        VERSIONS
-            .iter()
-            .find(|(t, _, _)| *t == self.introduced)
-            .unwrap()
-            .2
+        version_decimal(&self.introduced)
     }
 }
 

@@ -177,6 +177,8 @@ struct Facts {
     /// inference made.
     walked_nodes: usize,
     walked_depth: usize,
+    /// The deepest a unification reached.
+    unified_depth: usize,
     /// The most expression levels inference had open at once.
     expression_nesting: usize,
     /// The most bytes the case held on top of what the child held before it.
@@ -186,7 +188,7 @@ struct Facts {
 impl Facts {
     fn spell(&self) -> String {
         format!(
-            "{} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {}",
             match self.exceeded {
                 None => "within",
                 Some(TypeBudgetExceeded::Nodes) => "nodes",
@@ -196,6 +198,7 @@ impl Facts {
             self.published_depth,
             self.walked_nodes,
             self.walked_depth,
+            self.unified_depth,
             self.expression_nesting,
             self.peak_bytes
         )
@@ -203,8 +206,18 @@ impl Facts {
 
     fn read(s: &str) -> Facts {
         let fields: Vec<&str> = s.split(' ').collect();
-        let [exceeded, nodes, depth, walked_nodes, walked, nesting, peak] = fields[..] else {
-            panic!("seven fields: {s:?}")
+        let [
+            exceeded,
+            nodes,
+            depth,
+            walked_nodes,
+            walked,
+            unified,
+            nesting,
+            peak,
+        ] = fields[..]
+        else {
+            panic!("eight fields: {s:?}")
         };
         let num = |f: &str| {
             f.parse::<usize>()
@@ -221,6 +234,7 @@ impl Facts {
             published_depth: num(depth),
             walked_nodes: num(walked_nodes),
             walked_depth: num(walked),
+            unified_depth: num(unified),
             expression_nesting: num(nesting),
             peak_bytes: num(peak),
         }
@@ -260,13 +274,15 @@ fn infer_facts(src: &str, env: &AssemblyEnv) -> Facts {
         published_depth: largest.depth,
         walked_nodes: walks.resolve.nodes,
         walked_depth: walks.resolve.depth.max(walks.unify.depth),
+        unified_depth: walks.unify.depth,
         expression_nesting: inferred.deepest_expression_walk(),
         peak_bytes: 0,
     }
 }
 
-/// A case spelled for the child: `<family> <lines>`, or `deep <additions>`
-/// for [`deep_case`], then a tab and [`references`].
+/// A case spelled for the child: `<family> <lines>`, or
+/// `deep:<nest>:<inner> <levels>` for [`deep_case`], then a tab and
+/// [`references`].
 fn spell(kind: &str, n: usize) -> String {
     format!("{kind} {n}\t{}", references())
 }
@@ -301,17 +317,68 @@ fn env_from(references: &str) -> AssemblyEnv {
     AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
 }
 
+/// The expression nest [`the_deepest_admissible_type_fits_under_the_tallest_expression`]
+/// walks down to its innermost binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Nest {
+    /// A left-nested chain of additions, the innermost operand deepest.
+    Additions,
+    /// A chain of `let … in`, each the body of the one before.
+    Lets,
+    /// A nest of applications, `idf (idf (… ))`.
+    Applications,
+}
+
+/// What the innermost binding does with a function `h` whose type is exactly
+/// [`MAX_TYPE_DEPTH`] deep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Inner {
+    /// Applies it: a local's type is settled where the local is, so the
+    /// resolution walk over the deep type runs at the bottom of the nest.
+    Apply,
+    /// Unifies two instantiations of it, `if true then h else h`: a
+    /// unification that recurses through the deep type at the bottom of the
+    /// nest.
+    Unify,
+}
+
+/// Every nest under every innermost binding.
+const DEEP: [(Nest, Inner); 6] = [
+    (Nest::Additions, Inner::Apply),
+    (Nest::Additions, Inner::Unify),
+    (Nest::Lets, Inner::Apply),
+    (Nest::Lets, Inner::Unify),
+    (Nest::Applications, Inner::Apply),
+    (Nest::Applications, Inner::Unify),
+];
+
+fn deep_kind(nest: Nest, inner: Inner) -> String {
+    format!("deep:{nest:?}:{inner:?}")
+}
+
+fn deep_named(kind: &str) -> Option<(Nest, Inner)> {
+    DEEP.into_iter().find(|&(n, i)| deep_kind(n, i) == kind)
+}
+
 /// The program [`the_deepest_admissible_type_fits_under_the_tallest_expression`]
-/// walks: a function `h` whose type is exactly [`MAX_TYPE_DEPTH`] deep, applied
-/// by a local in the innermost operand of a left-nested chain of `ops`
-/// additions, where the expression walk is deepest.
-fn deep_case(ops: usize) -> String {
+/// walks: a function `h` whose type is exactly [`MAX_TYPE_DEPTH`] deep, which
+/// a local in the innermost position of `n` levels of `nest` applies or
+/// unifies, where the expression walk is deepest.
+fn deep_case(nest: Nest, inner: Inner, n: usize) -> String {
     let params: Vec<String> = (1..MAX_TYPE_DEPTH).map(|i| format!("p{i}")).collect();
+    let innermost = match inner {
+        Inner::Apply => "(let y = h 0 in 0)",
+        Inner::Unify => "(let y = (if true then h else h) in 0)",
+    };
+    let body = match nest {
+        Nest::Additions => format!("{innermost}{}", " + a".repeat(n)),
+        Nest::Lets => format!("{}{innermost}", "let v = 0 in ".repeat(n)),
+        Nest::Applications => format!("{}{innermost}{}", "idf (".repeat(n), ")".repeat(n)),
+    };
     format!(
-        "let a = 0\nlet (+) (x: int) (y: int) = x\nlet h {} = 0\n\
-         let deep x = (let y = h 0 in 0){}\n",
+        "let a = 0\nlet (+) (x: int) (y: int) = x\nlet idf x = x\nlet h {} = 0\n\
+         let deep x = {body}\n",
         params.join(" "),
-        " + a".repeat(ops)
     )
 }
 
@@ -326,9 +393,9 @@ fn probe_child() {
     let (case, refs) = spec.split_once('\t').expect("a case and its references");
     let (kind, n) = case.split_once(' ').expect("a kind and a count");
     let n: usize = n.parse().expect("a count");
-    let src = match kind {
-        "deep" => deep_case(n),
-        family => Family::named(family).source(n),
+    let src = match deep_named(kind) {
+        Some((nest, inner)) => deep_case(nest, inner, n),
+        None => Family::named(kind).source(n),
     };
     // The env is loaded before the allowance is measured from: it is shared
     // by every file, not part of what a case costs.
@@ -459,45 +526,74 @@ fn inference_declines_past_the_type_budget_within_bounds() {
 /// The walks over a type recurse once per level, and some run in the middle
 /// of the expression walk (a local's type is settled where the local is), so
 /// the stack they need is the expression walk's at its deepest plus theirs at
-/// [`MAX_TYPE_DEPTH`]. The case is a function of `MAX_TYPE_DEPTH - 1`
-/// parameters — a type exactly at the depth bound — applied by a local in the
-/// innermost operand of as long an operator chain as the parser accepts
-/// cleanly.
+/// [`MAX_TYPE_DEPTH`]. Each case is a function of `MAX_TYPE_DEPTH - 1`
+/// parameters — a type exactly at the depth bound — applied, or unified with
+/// another instantiation of itself, by a local in the innermost position of as
+/// tall a nest ([`Nest`]) as the parser accepts cleanly. A stage that unifies
+/// where the walk generates a constraint, rather than at the binding's end,
+/// moves more of that work to the bottom of the nest, which is what the
+/// unifying cases hold it to.
 #[test]
 fn the_deepest_admissible_type_fits_under_the_tallest_expression() {
-    let clean = |ops: usize| parse(&deep_case(ops)).errors.is_empty();
-    let (mut lo, mut hi) = (1, 2 * MAX_TREE_HEIGHT);
-    assert!(
-        clean(lo) && !clean(hi),
-        "the parse stops somewhere below the bound"
-    );
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
-        if clean(mid) {
-            lo = mid;
-        } else {
-            hi = mid;
+    let outcomes = par_map(DEEP.len(), |k| {
+        let (nest, inner) = DEEP[k];
+        let clean = |n: usize| parse(&deep_case(nest, inner, n)).errors.is_empty();
+        let (mut lo, mut hi) = (1, 2 * MAX_TREE_HEIGHT);
+        assert!(
+            clean(lo) && !clean(hi),
+            "the parse of {nest:?} stops somewhere below the bound"
+        );
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if clean(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let spec = spell(&deep_kind(nest, inner), lo);
+        (
+            lo,
+            stack_probe::run_case_limited(CHILD, CASE_VAR, &spec, CASE_TIMEOUT),
+        )
+    });
+    let mut failures = Vec::new();
+    for (&(nest, inner), (n, outcome)) in DEEP.iter().zip(outcomes) {
+        let case = format!("{} at {n} levels", deep_kind(nest, inner));
+        let Limited::Survived(facts) = outcome else {
+            failures.push(format!(
+                "{case}: the deepest admissible type did not fit in a {} MiB stack, {} MiB \
+                 of memory and {CASE_TIMEOUT:?}: {outcome:?}",
+                PROBE_STACK_BYTES >> 20,
+                MEMORY_ALLOWANCE >> 20
+            ));
+            continue;
+        };
+        let facts = Facts::read(&facts);
+        if facts.exceeded.is_some() || facts.walked_depth != MAX_TYPE_DEPTH {
+            failures.push(format!(
+                "{case}: a walk should reach exactly the depth bound, within the budget: \
+                 {facts:?}"
+            ));
+        }
+        if inner == Inner::Unify && facts.unified_depth + 1 < MAX_TYPE_DEPTH {
+            failures.push(format!(
+                "{case}: the unification should recurse through the deep type: {facts:?}"
+            ));
+        }
+        // Every level is an expression level, so the walk reached the
+        // innermost binding; an addition is one tree level too, so that nest
+        // takes the expression walk to the tree bound itself (a `let` costs
+        // the tree several levels, an application two).
+        if facts.expression_nesting < n
+            || (nest == Nest::Additions && facts.expression_nesting < MAX_TREE_HEIGHT - 128)
+        {
+            failures.push(format!(
+                "{case}: the expression walk should reach the innermost binding: {facts:?}"
+            ));
         }
     }
-    let outcome = stack_probe::run_case_limited(CHILD, CASE_VAR, &spell("deep", lo), CASE_TIMEOUT);
-    let Limited::Survived(facts) = outcome else {
-        panic!(
-            "the deepest admissible type under {lo} additions did not fit in a {} MiB \
-             stack, {} MiB of memory and {CASE_TIMEOUT:?}: {outcome:?}",
-            PROBE_STACK_BYTES >> 20,
-            MEMORY_ALLOWANCE >> 20
-        );
-    };
-    let facts = Facts::read(&facts);
-    assert_eq!(facts.exceeded, None, "{facts:?}");
-    assert_eq!(
-        facts.walked_depth, MAX_TYPE_DEPTH,
-        "a walk reached exactly the depth bound: {facts:?}"
-    );
-    assert!(
-        facts.expression_nesting >= MAX_TREE_HEIGHT - 128,
-        "the expression walk reached near the tree bound under {lo} additions: {facts:?}"
-    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// One parameter more than [`the_deepest_admissible_type_fits_under_the_tallest_expression`]'s
