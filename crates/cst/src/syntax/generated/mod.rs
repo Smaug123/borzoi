@@ -1,20 +1,21 @@
 //! GENERATED typed-AST facade modules (`tools/astgen`), re-exported from
 //! [`crate::syntax`] as the real facade.
 //!
-//! **Status (plan PR D).** All dispatch-enum categories are now generated and
-//! wired in: [`union_types`] (`Type`, PR D1), [`union_pats`] (`Pat`, PR D2),
-//! [`union_exprs`] (`Expr`, PR D3), and [`union_decls`] (`ModuleDecl`, `SigDecl`,
-//! `TypeDefnRepr`, `MemberDefn`, `Measure`, `RationalConst`, PR D4) — the
-//! hand-written enums and their member newtypes are gone; the bespoke accessors
-//! stay hand-written in `crate::syntax`. (Standalone non-enum newtypes — e.g.
-//! `ImplFile`, `Binding`, `LongIdent` — remain hand-written `ast_node!`s.) The
-//! generated boilerplate's fidelity is guarded by the whole existing suite — the
-//! FCS differential normaliser, the parser tests, and the nullness projection
-//! properties all run against the generated facade now.
+//! astgen's tables declare every typed node of the union: the dispatch-enum
+//! categories [`union_types`] (`Type`), [`union_pats`] (`Pat`),
+//! [`union_exprs`] (`Expr`) and [`union_decls`] (`ModuleDecl`, `SigDecl`,
+//! `TypeDefnRepr`, `MemberDefn`, `Measure`, `RationalConst`), each with its
+//! member newtypes, and [`union_standalone`], the newtypes no dispatch enum
+//! holds (`ImplFile`, `Binding`, `LongIdent`, …) and the value enums the
+//! accessors return. The accessors stay hand-written in `crate::syntax`'s
+//! `union` module. The generated boilerplate's fidelity is guarded by the
+//! whole existing suite — the FCS differential normaliser, the parser tests,
+//! and the nullness projection properties all run against it.
 
 pub mod union_decls;
 pub mod union_exprs;
 pub mod union_pats;
+pub mod union_standalone;
 pub mod union_types;
 
 // The frozen, published per-version facades (plan PR E / D4): projections of the
