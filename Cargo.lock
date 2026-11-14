@@ -192,6 +192,7 @@ name = "borzoi-astgen"
 version = "0.1.0"
 dependencies = [
  "borzoi-spawn",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -489,7 +489,7 @@ tests/fsharp/core/topinit/lib_deterministic_init28.fs@563 token	outside-damage 5
 tests/fsharp/core/topinit/lib_deterministic_init33.fs@78 token	outside-damage 4/4/6
 tests/fsharp/core/topinit/lib_deterministic_init37.fs@459 token	exact 4/4/6
 tests/fsharp/core/topinit/lib_deterministic_init8.fs@165 token	exact 4/4/6
-tests/fsharp/core/topinit/lib_deterministic_init82.fs@71 token	divergent 1/1/2
+tests/fsharp/core/topinit/lib_deterministic_init82.fs@71 token	exact 1/1/2
 tests/fsharp/core/unicode/kanji-unicode-utf8-withsig-codepage-65001.fs@74 token	exact 4/4/4
 tests/fsharp/regression/5531/test.fs@270 token	outside-damage 13/13/14
 tests/fsharp/regression/literal-value-bug-1/test.fs@18 token	divergent 1/1/3

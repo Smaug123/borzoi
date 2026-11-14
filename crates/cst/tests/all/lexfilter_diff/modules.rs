@@ -181,3 +181,25 @@ fn diff_filtered_open_simple() {
 fn diff_filtered_open_type() {
     assert_filtered_streams_match("open type System.Math\nlet x = 1\n");
 }
+
+/// A first token deeper than the next line's: the next line pops the file's
+/// root SeqBlock, leaving the stack empty. FCS's declaration-keyword arms
+/// all match a non-empty stack, so from there each keyword is returned raw
+/// and pushes nothing: no ModuleHead for `module`, no OLET for `let`, no
+/// CtxtException, until a keyword whose arm matches any stack (`type`)
+/// starts a context again.
+#[test]
+fn diff_filtered_empty_stack_returns_keywords_raw() {
+    for src in [
+        " [<AutoOpen>]\nmodule N = let y = 2\nlet x = 1\n",
+        " [<AutoOpen>]\nnamespace N\nlet x = 1\n",
+        " [<A>]\nexception E of int\nlet x = 1\n",
+        " [<Literal>]\nlet L = 1\nlet x = 1\n",
+        " [<A>]\nmember x.M = 1\nnew() = 2\n",
+        " [<A>]\nlet! x = 1\nand! y = 2\nuse z = 3\n",
+        " [<A>]\nopen System\nlet x = 1\n",
+        " [<A>]\ntype T = int\nlet x = 1\n",
+    ] {
+        assert_filtered_streams_match(src);
+    }
+}

@@ -1,6 +1,7 @@
-//! Staleness gate: every checked-in generated facade must equal a fresh
-//! generation. Runs under the normal workspace `cargo test`, so a stale
-//! `crates/cst/src/syntax/generated/*.rs` fails CI. Fix with
+//! Staleness gate: every checked-in generated facade, and the union's lock, must
+//! equal a fresh generation. Runs under the normal workspace `cargo test`, so a
+//! stale `crates/cst/src/syntax/generated/*.rs` or `crates/cst/facades/union.lock`
+//! fails CI. Fix with
 //! `cargo run -p borzoi-astgen --example generate`.
 
 use std::path::Path;

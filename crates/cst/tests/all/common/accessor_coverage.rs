@@ -225,19 +225,6 @@ pub fn facade() -> Facade {
             }
         }
     }
-    // `ast_node!(Name, KIND)` declares the hand-written node types.
-    for path in syntax_sources() {
-        let text = std::fs::read_to_string(&path).expect("read a syntax source");
-        let file = syn::parse_file(&text).expect("already parsed");
-        for item in &file.items {
-            if let syn::Item::Macro(m) = item
-                && m.mac.path.is_ident("ast_node")
-                && let Some(TokenTree::Ident(name)) = m.mac.tokens.clone().into_iter().next()
-            {
-                type_names.insert(name.to_string());
-            }
-        }
-    }
     assert!(
         untraced.is_empty(),
         "these public accessors do not open with their own `accessor!(\"Type::method\")`, \

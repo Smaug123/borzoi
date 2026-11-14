@@ -6,8 +6,9 @@ license.workspace = true
 publish = false
 description = "Code generator for the borzoi-cst typed-AST facades and language-feature table."
 
-# No external dependencies: the generator is a pure-Rust descriptor table, so it
-# adds nothing to `borzoi-cst`'s dependency closure (it is a sibling tool,
-# never a dependency of the crate it generates).
+# A sibling tool, never a dependency of the crate it generates, so nothing here
+# reaches `borzoi-cst`'s dependency closure. `syn` reads the accessor
+# signatures out of `crates/cst/src/syntax/union.rs` for the union's lock.
 [dependencies]
 borzoi-spawn.workspace = true
+syn.workspace = true
