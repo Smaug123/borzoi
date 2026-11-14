@@ -40,7 +40,7 @@ use lsp_types::{
     TextDocumentSyncKind,
 };
 
-use crate::batch::{Incoming, Refusal, Restart, Shape, Step as BatchStep, TextSync};
+use crate::batch::{Incoming, Refusal, Shape, Step as BatchStep, TextSync};
 use crate::diagnostics::FileDiagnostics;
 use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
@@ -708,7 +708,8 @@ pub fn run_with_fetcher(
 /// [`crate::batch::plan`]: notifications first, a superseded text sync applied
 /// without its diagnostics, a cancelled request answered `RequestCancelled`
 /// and a request whose document has a newer change answered
-/// `ContentModified`, neither of them run. The [`Dispatcher`] executes the
+/// `ContentModified`, neither of them run, and identical requests answered
+/// from one run. The [`Dispatcher`] executes the
 /// plan one step at a time, reading the inbox again before each. A request
 /// that is running stops at its next checkpoint once a notification arrives,
 /// and is planned again with it ([`crate::inbox`]).
@@ -832,13 +833,15 @@ pub struct Dispatcher {
     shapes: Vec<Shape>,
     /// Whether `shutdown` was acknowledged before the epoch began.
     epoch_shutting_down: bool,
-    /// The requests of the epoch whose runs stopped at a checkpoint, each
-    /// with how many messages the epoch held after the loop read what had
-    /// arrived: the plan runs each again behind those.
-    restarts: Vec<Restart>,
-    /// The request whose run stopped in the last step, waiting for the next
-    /// step to read what arrived before it becomes a [`Restart`].
-    stopped: Option<usize>,
+    /// For each message of the epoch, whether a run of it stopped at a
+    /// checkpoint, and if so how many messages the epoch held after the loop
+    /// read what had arrived when its last run stopped: the plan runs it
+    /// again behind those. One entry per message, overwritten by each stop.
+    restarted: Vec<Option<usize>>,
+    /// The requests whose shared run stopped in the last step (the one that
+    /// ran, and those its answer was to answer too), waiting for the next
+    /// step to read what arrived before each is marked restarted.
+    stopped: Vec<usize>,
     /// [`crate::batch::plan`] of [`Self::epoch`], made again whenever a
     /// message joins it or a request stops.
     plan: Vec<BatchStep>,
@@ -876,8 +879,8 @@ impl Dispatcher {
             epoch: Vec::new(),
             shapes: Vec::new(),
             epoch_shutting_down: false,
-            restarts: Vec::new(),
-            stopped: None,
+            restarted: Vec::new(),
+            stopped: Vec::new(),
             plan: Vec::new(),
         }
     }
@@ -893,6 +896,7 @@ impl Dispatcher {
             let message = Incoming::read(message);
             self.shapes.push(message.shape());
             self.epoch.push(Some(message));
+            self.restarted.push(None);
         }
         if self.epoch.len() > before {
             self.replan();
@@ -900,7 +904,13 @@ impl Dispatcher {
     }
 
     fn replan(&mut self) {
-        self.plan = crate::batch::plan(&self.shapes, &self.restarts, self.epoch_shutting_down);
+        let handled: Vec<bool> = self.epoch.iter().map(Option::is_none).collect();
+        self.plan = crate::batch::plan(
+            &self.shapes,
+            &handled,
+            &self.restarted,
+            self.epoch_shutting_down,
+        );
     }
 
     /// Forget the epoch, every message of which is handled, and begin the
@@ -908,8 +918,8 @@ impl Dispatcher {
     fn end_epoch(&mut self) {
         self.epoch.clear();
         self.shapes.clear();
-        self.restarts.clear();
-        self.stopped = None;
+        self.restarted.clear();
+        self.stopped.clear();
         self.plan.clear();
         self.epoch_shutting_down = self.shutting_down;
     }
@@ -952,13 +962,15 @@ impl Dispatcher {
         let room = MAX_PENDING.saturating_sub(self.pending_len());
         let (watch, arrived) = self.inbox.begin_step(room);
         self.admit(arrived);
-        if let Some(index) = self.stopped.take() {
+        if !self.stopped.is_empty() {
             // After reading what arrived while it ran, so that it waits
-            // behind every request that came with the notification.
-            self.restarts.push(Restart {
-                index,
-                held: self.epoch.len(),
-            });
+            // behind every request that came with the notification. Every
+            // request the run was to answer restarts with it, so none keeps
+            // its arrival place ahead of those.
+            let held = self.epoch.len();
+            for index in std::mem::take(&mut self.stopped) {
+                self.restarted[index] = Some(held);
+            }
             self.replan();
         }
         let Some(step) = self.next_step() else {
@@ -1091,8 +1103,29 @@ impl Dispatcher {
                             .sender
                             .send(Message::Response(ok_response(id, &())))?;
                     }
-                    (BatchStep::Run { index }, Incoming::Request { request, document }) => {
+                    (
+                        BatchStep::Run { index },
+                        Incoming::Request {
+                            request,
+                            document,
+                            share,
+                        },
+                    ) => {
                         let method = request.method.clone();
+                        // The identical requests this run answers too
+                        // ([`crate::batch`], rule 3), as the plan stood when
+                        // the step began: one read since is not among them.
+                        let members: Vec<usize> = self
+                            .plan
+                            .iter()
+                            .filter_map(|step| match *step {
+                                BatchStep::Share {
+                                    index: member,
+                                    leader,
+                                } if leader == index => Some(member),
+                                _ => None,
+                            })
+                            .collect();
                         // Kept for a run that stops: the request is then
                         // unhandled again, and runs or is refused later.
                         let again = request.clone();
@@ -1120,13 +1153,18 @@ impl Dispatcher {
                             // the refreshes) is derived from the state, and
                             // the step that applies the notification it
                             // stopped for does it, so the notification
-                            // waits for nothing more.
+                            // waits for nothing more. Its members are
+                            // untouched: none is answered, and each is
+                            // planned again with it.
                             Err(Superseded) => {
                                 self.epoch[index] = Some(Incoming::Request {
                                     request: again,
                                     document,
+                                    share,
                                 });
-                                self.stopped = Some(index);
+                                self.stopped = std::iter::once(index)
+                                    .chain(members.iter().copied())
+                                    .collect();
                                 // A refresh a stale fold's rebuild would owe is
                                 // owed now: the rebuild may never finish.
                                 state.semantic.settle_stale_folds();
@@ -1135,6 +1173,7 @@ impl Dispatcher {
                                 tracing::debug!(
                                     name: crate::inbox::STOPPED_EVENT,
                                     method = %method,
+                                    shared = members.len(),
                                     "a request stopped at a checkpoint"
                                 );
                                 return Ok(Progress::Stopped);
@@ -1147,10 +1186,39 @@ impl Dispatcher {
                         // unrelated. The fold itself has no way to reach the
                         // client, so the shell reports what it observed.
                         refresh_project_deferrals(state, connection);
+                        // Each member is taken from the epoch here, once, so
+                        // it is answered here and never again.
+                        let member_ids: Vec<RequestId> = members
+                            .iter()
+                            .map(|&member| match self.epoch[member].take() {
+                                Some(Incoming::Request { request, .. }) => request.id,
+                                other => unreachable!(
+                                    "a share names a request not yet handled: {other:?}"
+                                ),
+                            })
+                            .collect();
                         match dispatch {
-                            // Synchronous request: reply immediately.
+                            // Synchronous request: reply immediately, to it
+                            // and to every request it answers for.
                             Dispatch::Reply(response) => {
-                                enqueue_response(connection, &method, response)?;
+                                // One copy is made per member as the one
+                                // before it is sent, so the writer's
+                                // backpressure bounds what is held at two
+                                // answers, however many share it.
+                                let mut next = response;
+                                for id in member_ids {
+                                    let following = Response { id, ..next.clone() };
+                                    enqueue_response(connection, &method, next)?;
+                                    next = following;
+                                }
+                                enqueue_response(connection, &method, next)?;
+                            }
+                            Dispatch::Defer { .. } | Dispatch::Sweep { .. }
+                                if !member_ids.is_empty() =>
+                            {
+                                unreachable!(
+                                    "{method} is shareable, but its run did not answer synchronously"
+                                )
                             }
                             // Cold SourceLink fetch: hand to the pool, which
                             // replies out-of-band when it completes. The loop
@@ -1170,6 +1238,9 @@ impl Dispatcher {
                             }
                         }
                         maybe_send_refresh(state, connection, SweepStatus::of(&self.sweep));
+                    }
+                    (BatchStep::Share { .. }, _) => {
+                        unreachable!("a share is answered by its leader's run, never on its own")
                     }
                     (step, message) => {
                         unreachable!(

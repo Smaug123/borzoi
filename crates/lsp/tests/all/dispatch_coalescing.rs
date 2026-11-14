@@ -15,9 +15,10 @@
 //!   `ContentModified`; one after `shutdown` is refused `InvalidRequest`;
 //!   every other one is answered with a result. The model states this per
 //!   message by scanning the batch, from the file each URI names.
-//! - **A refusal runs nothing.** The coalescing session opens one
-//!   `lsp.request` span per request it answers with a result, and none for a
-//!   refusal.
+//! - **A refusal runs nothing, and identical requests run once.** The
+//!   coalescing session opens one `lsp.request` span per request it answers
+//!   with a result, except that requests of a shareable method with equal
+//!   parameters open one between them, and none for a refusal.
 //! - **A superseded sync publishes nothing.** The coalescing session computes
 //!   a document's push diagnostics (`publish_diagnostics`) exactly as often as
 //!   the sequential one less once per `didOpen` or `didChange` that a later
@@ -25,6 +26,8 @@
 //! - **No answer is computed against a superseded text.** Every answer with a
 //!   result equals the sequential session's answer to the same request asked
 //!   after the whole batch: the texts it read are the newest the client sent.
+//!   That holds for an answer shared from another request's run as for one
+//!   computed for the request itself.
 //! - **The final state is the sequential one.** The diagnostics each session
 //!   last published per URI agree, and so does every handler's answer at
 //!   every identifier of every open document, every document's diagnostics,
@@ -59,7 +62,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use borzoi::inbox::CHECKPOINT_EVENT;
+use borzoi::inbox::{CHECKPOINT_EVENT, STOPPED_EVENT};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::server::{Dispatcher, Progress, SERVER_STACK_BYTES, State};
 use borzoi::uri::UriExt as _;
@@ -262,6 +265,10 @@ enum Op {
     CancelRecent(usize),
     /// Cancel an id no request carries.
     CancelUnknown,
+    /// Send the `n`-th latest document request this batch has sent again,
+    /// with the same method and parameters and a new id; `workspace/symbol`
+    /// if it has sent none.
+    Repeat(usize),
     Shutdown,
     Exit,
 }
@@ -338,6 +345,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         1 => Just(Op::WorkspaceDiagnostic),
         3 => (0usize..3).prop_map(Op::CancelRecent),
         1 => Just(Op::CancelUnknown),
+        4 => (0usize..3).prop_map(Op::Repeat),
     ]
 }
 
@@ -449,6 +457,9 @@ struct Player<'w> {
     next_id: u64,
     /// Every request id sent, by earlier batches too.
     sent: Vec<RequestId>,
+    /// The document requests this batch has sent: method, parameters and
+    /// document.
+    asked: Vec<(String, Value, Doc)>,
 }
 
 impl Player<'_> {
@@ -579,8 +590,16 @@ impl Player<'_> {
                         json!({ "textDocument": document }),
                     ),
                 };
+                self.asked.push((method.to_string(), params.clone(), doc));
                 self.request(method, params, Some(doc))
             }
+            Op::Repeat(n) => match self.asked.iter().rev().nth(n % self.asked.len().max(1)) {
+                Some((method, params, doc)) => {
+                    let (method, params, doc) = (method.clone(), params.clone(), *doc);
+                    self.request(&method, params, Some(doc))
+                }
+                None => self.request("workspace/symbol", json!({ "query": "" }), None),
+            },
             Op::WorkspaceSymbol => self.request("workspace/symbol", json!({ "query": "" }), None),
             Op::WorkspaceDiagnostic => self.request(
                 "workspace/diagnostic",
@@ -741,6 +760,10 @@ fn spared_publishes(batch: &[Played], shut_down: bool) -> BTreeMap<String, usize
 struct Seen {
     requests_run: usize,
     publishes: BTreeMap<String, usize>,
+    /// Checkpoints passed.
+    checkpoints: usize,
+    /// Runs that stopped while they were to answer other requests too.
+    shared_stops: usize,
 }
 
 struct Counter(Arc<Mutex<Seen>>, Option<Arc<Mutex<MidRun>>>);
@@ -749,6 +772,8 @@ struct Counter(Arc<Mutex<Seen>>, Option<Arc<Mutex<MidRun>>>);
 struct MidRun {
     /// Checkpoints to pass before sending.
     countdown: usize,
+    /// A file to write, with what, just before the rest is sent.
+    write: Option<(PathBuf, &'static str)>,
     rest: Option<Vec<Message>>,
     input: borzoi::inbox::InboxSender,
     client: crossbeam_channel::Receiver<Message>,
@@ -768,6 +793,9 @@ impl MidRun {
             return;
         }
         self.sent_before = Some(self.client.len());
+        if let Some((path, text)) = self.write.take() {
+            std::fs::write(path, text).unwrap();
+        }
         for message in self.rest.take().unwrap() {
             self.input.send(message).expect("the inbox is alive");
         }
@@ -780,6 +808,19 @@ impl tracing::field::Visit for UriField {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "uri" {
             self.0 = Some(value.to_string());
+        }
+    }
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn fmt::Debug) {}
+}
+
+/// The `shared` field of a [`STOPPED_EVENT`]: how many other requests the
+/// stopped run was to answer.
+struct SharedField(u64);
+
+impl tracing::field::Visit for SharedField {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "shared" {
+            self.0 = value;
         }
     }
     fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn fmt::Debug) {}
@@ -798,7 +839,7 @@ impl tracing::Subscriber for Counter {
     }
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         (metadata.is_span() && matches!(metadata.name(), "lsp.request" | "publish_diagnostics"))
-            || (metadata.is_event() && metadata.name() == CHECKPOINT_EVENT)
+            || (metadata.is_event() && matches!(metadata.name(), CHECKPOINT_EVENT | STOPPED_EVENT))
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let mut seen = self.0.lock().unwrap();
@@ -817,9 +858,16 @@ impl tracing::Subscriber for Counter {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
-        if event.metadata().name() == CHECKPOINT_EVENT
-            && let Some(mid_run) = &self.1
-        {
+        if event.metadata().name() == STOPPED_EVENT {
+            let mut shared = SharedField(0);
+            event.record(&mut shared);
+            if shared.0 > 0 {
+                self.0.lock().unwrap().shared_stops += 1;
+            }
+            return;
+        }
+        self.0.lock().unwrap().checkpoints += 1;
+        if let Some(mid_run) = &self.1 {
             mid_run.lock().unwrap().checkpoint();
         }
     }
@@ -951,6 +999,7 @@ impl Session {
         let rest = messages.split_off(prefix.min(messages.len()));
         let mid_run = Arc::new(Mutex::new(MidRun {
             countdown: checkpoint,
+            write: None,
             rest: Some(rest),
             input: self.input.clone(),
             client: self.client.receiver.clone(),
@@ -1111,6 +1160,32 @@ struct Coverage {
     /// batch's specification, and those answered with a result.
     after_arrival: usize,
     after_arrival_with_a_result: usize,
+    /// Answers with a result taken from another request's run, in batches
+    /// handed over whole.
+    shared_answers: usize,
+    /// Runs that stopped while they were to answer other requests too.
+    shared_stops: usize,
+}
+
+/// What a request must equal another in to share its run, by the model: a
+/// method whose handler answers from its parameters and the texts it reads,
+/// synchronously, and the parameters themselves.
+fn share_key(message: &Message) -> Option<(String, Value)> {
+    const SHAREABLE: [&str; 7] = [
+        "textDocument/hover",
+        "textDocument/completion",
+        "textDocument/documentSymbol",
+        "textDocument/references",
+        "workspace/symbol",
+        "textDocument/semanticTokens/full",
+        "textDocument/diagnostic",
+    ];
+    match message {
+        Message::Request(request) if SHAREABLE.contains(&request.method.as_str()) => {
+            Some((request.method.clone(), request.params.clone()))
+        }
+        _ => None,
+    }
 }
 
 fn fail(message: String) -> TestCaseError {
@@ -1134,6 +1209,7 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
             client: client.clone(),
             next_id,
             sent: std::mem::take(&mut sent),
+            asked: Vec::new(),
         };
         let batch_start = player.sent.len();
         let played: Vec<Played> = batch
@@ -1165,6 +1241,7 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
             }
         };
         let stopped = coalescing.stops - stops_before;
+        coverage.borrow_mut().shared_stops += seen.lock().unwrap().shared_stops;
         if whole && stopped > 0 {
             return Err(fail(format!(
                 "batch {b}: a batch handed over whole stopped {stopped} runs, with nothing arriving"
@@ -1247,8 +1324,30 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
                     Fate::Shutdown | Fate::Abandoned | Fate::Unread => {}
                 }
             }
-            let ran = expected.values().filter(|f| f.runs()).count();
-            // A refusal runs nothing.
+            // A refusal runs nothing, and the requests answered with a
+            // result that are identical share one run.
+            let mut alone = 0;
+            let mut shared: Vec<(String, Value)> = Vec::new();
+            let mut shareable_answers = 0;
+            for played in &played {
+                let Some(req) = &played.request else {
+                    continue;
+                };
+                let Some(&fate) = expected.get(&req.id) else {
+                    continue;
+                };
+                match share_key(&played.message) {
+                    Some(key) if fate == Fate::Answered => {
+                        shareable_answers += 1;
+                        if !shared.contains(&key) {
+                            shared.push(key);
+                        }
+                    }
+                    _ => alone += usize::from(fate.runs()),
+                }
+            }
+            let ran = alone + shared.len();
+            coverage.borrow_mut().shared_answers += shareable_answers - shared.len();
             if seen_coalescing.requests_run != ran {
                 return Err(fail(format!(
                     "batch {b}: the coalescing session ran {} requests, but the specification runs {ran}",
@@ -1528,7 +1627,9 @@ fn a_coalesced_batch_agrees_with_its_messages_one_at_a_time() {
                 && coverage.spared_publishes > 0
                 && coverage.chunked_batches > 0
                 && coverage.mid_run_stops > 0
-                && coverage.after_arrival_with_a_result > 0,
+                && coverage.after_arrival_with_a_result > 0
+                && coverage.shared_answers > 0
+                && coverage.shared_stops > 0,
             "the generated cases left a property unexercised: {coverage:#?}"
         );
     });
@@ -2317,6 +2418,7 @@ fn an_edit_that_arrives_mid_request_is_answered_before_it() {
         // The rest arrives at the hover's first checkpoint.
         let mid_run = Arc::new(Mutex::new(MidRun {
             countdown: 0,
+            write: None,
             rest: Some(rest),
             input: session.input.clone(),
             client: session.client.receiver.clone(),
@@ -2361,6 +2463,312 @@ fn an_edit_that_arrives_mid_request_is_answered_before_it() {
         )
         .unwrap();
         assert_eq!(got, want, "the hover reads the text the change brought");
+    });
+}
+
+/// Every response the session's client has received, in order.
+fn responses(session: &Session) -> Vec<Response> {
+    session
+        .client
+        .receiver
+        .try_iter()
+        .filter_map(|message| match message {
+            Message::Response(response) => Some(response),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A response as the probes compare it.
+fn outcome(response: &Response) -> Value {
+    serde_json::to_value(
+        response
+            .response_result
+            .clone()
+            .map_err(|e| (e.code, e.message)),
+    )
+    .unwrap()
+}
+
+/// A hover on `C` at its `A.x` (line 2, column 16 of `C`'s second version).
+fn hover_c(world: &World, id: &str) -> Message {
+    request(
+        id,
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": world.uri(Doc::Src(Src::C)) },
+            "position": { "line": 2, "character": 16 },
+        }),
+    )
+}
+
+/// Identical requests in one batch run once between them, and each is
+/// answered, under its own id, with what it answers asked alone. Requests that
+/// differ in a parameter, or name the document under another spelling, or
+/// whose method is not shareable (a definition may be answered by a fetch),
+/// run on their own.
+#[test]
+fn identical_requests_in_a_batch_share_one_run() {
+    on_server_stack(|| {
+        let world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let alias = world.uri(Doc::AliasA);
+        let c = world.uri(Doc::Src(Src::C));
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        session.settle();
+        let at = |uri: &str, line: u32, character: u32| {
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character },
+            })
+        };
+        let tokens = json!({ "textDocument": { "uri": c } });
+        let batch = vec![
+            hover_c(&world, "h1"),
+            request("t1", "textDocument/semanticTokens/full", tokens.clone()),
+            hover_c(&world, "h2"),
+            request("z", "textDocument/hover", at(&c, 2, 4)),
+            request("d1", "textDocument/definition", at(&c, 2, 16)),
+            request("t2", "textDocument/semanticTokens/full", tokens.clone()),
+            request("d2", "textDocument/definition", at(&c, 2, 16)),
+            request("a1", "textDocument/hover", at(&a, 2, 4)),
+            request("a2", "textDocument/hover", at(&alias, 2, 4)),
+            hover_c(&world, "h3"),
+        ];
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let answers = crate::common::with_subscriber(Counter(Arc::clone(&seen), None), || {
+            session.deliver(batch)
+        });
+        assert_eq!(
+            seen.lock().unwrap().requests_run,
+            7,
+            "one run for the three hovers at `A.x`, one for both token requests, and one each \
+             for the hover at `z`, the two definitions and the two spellings of `A`"
+        );
+        let answer = |id: &str| {
+            let got = &answers[&RequestId::from(id.to_string())];
+            assert_eq!(got.len(), 1, "{id} is answered once");
+            assert!(got[0].response_result.is_ok(), "{id}: {:?}", got[0]);
+            outcome(&got[0])
+        };
+        assert_eq!(answers.len(), 10, "every request is answered: {answers:?}");
+        let Message::Request(hover) = hover_c(&world, "probe") else {
+            unreachable!()
+        };
+        let alone = session.ask(&hover.method, hover.params);
+        assert_ne!(alone, json!({ "Ok": null }), "the hover finds `A.x`");
+        for id in ["h1", "h2", "h3"] {
+            assert_eq!(answer(id), alone, "{id} answers as the hover asked alone");
+        }
+        let alone = session.ask("textDocument/semanticTokens/full", tokens);
+        for id in ["t1", "t2"] {
+            assert_eq!(answer(id), alone, "{id} answers as the request asked alone");
+        }
+        for id in ["z", "d1", "d2", "a1", "a2"] {
+            answer(id);
+        }
+    });
+}
+
+/// A shared run that a notification stops answers none of the requests it
+/// was to answer: each is planned again, behind the requests that came with
+/// the notification, and is then answered once, against the new text.
+#[test]
+fn a_shared_run_that_stops_answers_its_requests_after_the_notification() {
+    on_server_stack(|| {
+        let world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let c = world.uri(Doc::Src(Src::C));
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        session.settle();
+        let rest = vec![
+            did_change(&a, Src::A.text(1)),
+            request(
+                "pull",
+                "textDocument/diagnostic",
+                json!({ "textDocument": { "uri": a } }),
+            ),
+        ];
+        let mid_run = Arc::new(Mutex::new(MidRun {
+            countdown: 0,
+            write: None,
+            rest: Some(rest),
+            input: session.input.clone(),
+            client: session.client.receiver.clone(),
+            sent_before: None,
+        }));
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        crate::common::with_subscriber(
+            Counter(Arc::clone(&seen), Some(Arc::clone(&mid_run))),
+            || {
+                session
+                    .dispatcher
+                    .admit([hover_c(&world, "h1"), hover_c(&world, "h2")]);
+                session.run_out();
+            },
+        );
+        assert_eq!(mid_run.lock().unwrap().sent_before, Some(0));
+        assert_eq!(session.stops, 1, "the shared run stopped");
+        assert_eq!(seen.lock().unwrap().shared_stops, 1);
+        let answered = responses(&session);
+        let ids: Vec<String> = answered.iter().map(|r| r.id.to_string()).collect();
+        assert_eq!(
+            ids,
+            ["\"pull\"", "\"h1\"", "\"h2\""],
+            "the pull is answered before the hovers it interrupted, each once"
+        );
+        let mut fresh = Session::start(&world.root, false);
+        fresh.deliver(vec![
+            did_open(&a, Src::A.text(1)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        let Message::Request(hover) = hover_c(&world, "probe") else {
+            unreachable!()
+        };
+        let want = fresh.ask(&hover.method, hover.params);
+        for response in &answered[1..] {
+            assert_eq!(
+                outcome(response),
+                want,
+                "{} reads the text the change brought",
+                response.id
+            );
+        }
+    });
+}
+
+/// A request that a shared run was to answer, cancelled while that run
+/// runs, is refused; the run stops, and runs again for the rest.
+#[test]
+fn a_request_cancelled_while_its_shared_run_runs_is_refused_alone() {
+    on_server_stack(|| {
+        let world = World::new();
+        let a = world.uri(Doc::Src(Src::A));
+        let c = world.uri(Doc::Src(Src::C));
+        let mut session = Session::start(&world.root, false);
+        session.deliver(vec![
+            did_open(&a, Src::A.text(0)),
+            did_open(&c, Src::C.text(1)),
+        ]);
+        session.settle();
+        let mid_run = Arc::new(Mutex::new(MidRun {
+            countdown: 0,
+            write: None,
+            rest: Some(vec![notification("$/cancelRequest", json!({ "id": "h2" }))]),
+            input: session.input.clone(),
+            client: session.client.receiver.clone(),
+            sent_before: None,
+        }));
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        crate::common::with_subscriber(
+            Counter(Arc::clone(&seen), Some(Arc::clone(&mid_run))),
+            || {
+                session.dispatcher.admit([
+                    hover_c(&world, "h1"),
+                    hover_c(&world, "h2"),
+                    hover_c(&world, "h3"),
+                ]);
+                session.run_out();
+            },
+        );
+        assert_eq!(session.stops, 1, "the shared run stopped");
+        let answered = responses(&session);
+        let ids: Vec<String> = answered.iter().map(|r| r.id.to_string()).collect();
+        assert_eq!(ids, ["\"h1\"", "\"h3\"", "\"h2\""], "each answered once");
+        assert_eq!(
+            answered[2].response_result.as_ref().err().map(|e| e.code),
+            Some(lsp_server::ErrorCode::RequestCanceled as i32)
+        );
+        let Message::Request(hover) = hover_c(&world, "probe") else {
+            unreachable!()
+        };
+        let want = session.ask(&hover.method, hover.params);
+        assert_eq!(outcome(&answered[0]), want);
+        assert_eq!(outcome(&answered[1]), want);
+    });
+}
+
+/// A request read while an identical one runs is not answered from that
+/// run, which may have read the disk before the request was sent: here `A`
+/// is rewritten on disk, with no notification, after the hover on `C` has
+/// computed its answer and before it is sent, and the identical hover sent
+/// then reads the new `A`. A request on `B` waits behind the first hover, so
+/// the epoch holds the handled hover beside the identical one read after it.
+#[test]
+fn a_request_read_while_an_identical_one_runs_runs_again() {
+    on_server_stack(|| {
+        let world = World::new();
+        let c = world.uri(Doc::Src(Src::C));
+        let start = |world: &World| {
+            let mut session = Session::start(&world.root, false);
+            session.deliver(vec![did_open(&c, Src::C.text(1))]);
+            session.settle();
+            session
+        };
+        // The same run on a session of its own: its checkpoints, and its
+        // answer with `A` as it is.
+        let mut dry = start(&world);
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let before = crate::common::with_subscriber(Counter(Arc::clone(&seen), None), || {
+            let mut answers = dry.deliver(vec![hover_c(&world, "dry")]);
+            outcome(&answers.remove(&RequestId::from("dry".to_string())).unwrap()[0])
+        });
+        let checkpoints = seen.lock().unwrap().checkpoints;
+        assert!(checkpoints > 0);
+
+        let mut session = start(&world);
+        // At the last checkpoint, the one after the handler: the answer is
+        // computed, and a request stops nothing.
+        let mid_run = Arc::new(Mutex::new(MidRun {
+            countdown: checkpoints - 1,
+            write: Some((world.path(Src::A), Src::A.text(1))),
+            rest: Some(vec![hover_c(&world, "h2")]),
+            input: session.input.clone(),
+            client: session.client.receiver.clone(),
+            sent_before: None,
+        }));
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        crate::common::with_subscriber(
+            Counter(Arc::clone(&seen), Some(Arc::clone(&mid_run))),
+            || {
+                session.dispatcher.admit([
+                    hover_c(&world, "h1"),
+                    request(
+                        "s",
+                        "textDocument/documentSymbol",
+                        json!({ "textDocument": { "uri": world.uri(Doc::Src(Src::B)) } }),
+                    ),
+                ]);
+                session.run_out();
+            },
+        );
+        assert_eq!(
+            mid_run.lock().unwrap().sent_before,
+            Some(0),
+            "sent before h1 was answered"
+        );
+        assert_eq!(session.stops, 0, "a request stops nothing");
+        assert_eq!(seen.lock().unwrap().requests_run, 3);
+        let answered = responses(&session);
+        let ids: Vec<String> = answered.iter().map(|r| r.id.to_string()).collect();
+        assert_eq!(ids, ["\"h1\"", "\"s\"", "\"h2\""]);
+        assert_eq!(outcome(&answered[0]), before, "h1 read `A` as it was");
+        let after = start(&world).ask("textDocument/hover", {
+            let Message::Request(hover) = hover_c(&world, "probe") else {
+                unreachable!()
+            };
+            hover.params
+        });
+        assert_ne!(before, after, "the rewrite moves the hover");
+        assert_eq!(outcome(&answered[2]), after, "h2 reads the rewritten `A`");
     });
 }
 
