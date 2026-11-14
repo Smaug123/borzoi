@@ -15,7 +15,7 @@ use crate::observed::Unobserved;
 use crate::parses::{ParseMemo, SourceParse};
 use crate::vfs::Vfs;
 use borzoi_cst::parser::FileKind;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,8 +24,8 @@ use borzoi_assembly::doc_id::DocIdDialect;
 use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, ImportError, Version};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
-use borzoi_msbuild::ItemKind;
 use borzoi_msbuild::observed::{self as msbuild_observed, EntryKind, Observer, ReadSet};
+use borzoi_msbuild::{ItemKind, UntrustedCause};
 use borzoi_sema::{
     AbbreviationVisibility, AssemblyEnv, InferredProject, ProjectFile, ResolvedProject, SourceFile,
     SyntaxRecovery,
@@ -169,16 +169,19 @@ pub struct ProjectParses {
     pub texts: Vec<Arc<str>>,
 }
 
-/// A project's cached [`ProjectParses`], the evaluation they were built
-/// from, and the generation in which their texts were last found current
+/// A project's cached [`ProjectParses`], what they read from the project's
+/// evaluation, the evaluation last found to give that, and the generation
+/// in which their texts were last found current
 /// ([`SemanticState::validate_cached_fold`]).
 #[derive(Debug)]
 struct CachedParses {
     parses: ProjectParses,
-    /// The project evaluation whose Compile items, symbols, language
-    /// version and provenance the parses were built from
-    /// ([`Workspace::evaluation_id`]): they stand only while the workspace
-    /// serves that evaluation.
+    /// Everything the parses read from the evaluation ([`ParseInputs`]):
+    /// they stand while the evaluation the workspace serves gives these.
+    inputs: ParseInputs,
+    /// The project evaluation last found to give `inputs`
+    /// ([`Workspace::evaluation_id`]). While the workspace serves it, the
+    /// inputs need no comparing; a new evaluation is compared once.
     evaluation: Option<EvaluationId>,
     /// The [`Vfs::generation`] that last validated `parses`; `None` before
     /// any has, or when the last validation ran outside a generation.
@@ -279,12 +282,13 @@ pub struct SemanticState {
     /// Per-project compile-ordered parses, keyed by [`ProjectId`].
     ///
     /// **Validated, not invalidated** (`docs/incremental-lsp-plan.md`, Stage
-    /// 7): every read of an entry first checks that the workspace still
-    /// serves the evaluation it was built from, and, once per generation,
-    /// that every Compile item's text is the one it was built from
-    /// ([`Self::validate_cached_fold`]). So an edit, a write on disk with or
-    /// without a watch event, and a moved evaluation are all seen by the
-    /// next read, and nothing has to call an invalidator.
+    /// 7): every read of an entry first checks that the evaluation the
+    /// workspace serves gives it the inputs it was built from
+    /// ([`ParseInputs`], compared once per new evaluation), and, once per
+    /// generation, that every Compile item's text is the one it was built
+    /// from ([`Self::validate_cached_fold`]). So an edit, a write on disk
+    /// with or without a watch event, and a moved evaluation are all seen by
+    /// the next read, and nothing has to call an invalidator.
     project_parses: HashMap<ProjectId, CachedParses>,
     /// The last fold refusal per project, keyed by [`ProjectId`], with the
     /// project evaluation the refused fold read.
@@ -346,16 +350,21 @@ pub struct SemanticState {
     /// silently disabling assembly resolution for the rest of the run.
     ///
     /// **Validated, not invalidated** (`docs/incremental-lsp-plan.md`, Stage
-    /// 6b): each entry carries the read set of the resolution that built it,
-    /// less the contents of the installed versions it trusts
-    /// ([`EnvEntry::checks`]), and the first lookup of it in a generation
-    /// confirms every one of those reads ([`Workspace::confirm_env`]). An
-    /// entry any of whose answers moved is dropped, with every fold against
-    /// its env, and built afresh. Editor edits never reach it: the env reads
-    /// only disk state. A watch event drops exactly the entries whose reads
-    /// it names ([`Self::hint_assembly_paths`]), which covers an in-place
-    /// rewrite inside an installed version and a file system whose stamps do
-    /// not move.
+    /// 6b): each entry carries what building it read (each DLL's stamp,
+    /// [`EnvEntry::contents`]) and what resolving its references read
+    /// ([`EnvEntry::resolution`]), each less the contents of the installed
+    /// versions it trusts, and the first lookup of it in a generation
+    /// confirms them ([`Workspace::confirm_env`]). An entry a DLL of which
+    /// moved is dropped, with every fold against its env, and built afresh.
+    /// One whose resolution's reads moved is resolved again, and kept if its
+    /// references resolve to the inputs it was built from ([`EnvInputs`]:
+    /// the follow-up "cutoffs on the evaluation's consumed outputs"), so a
+    /// `.fsproj` edit that moves no reference, no TFM and no restore output
+    /// (a define, a comment) keeps the env. Editor edits never reach it: the
+    /// env reads only disk state. A watch event drops exactly the entries
+    /// whose reads it names ([`Self::hint_assembly_paths`]), which covers an
+    /// in-place rewrite inside an installed version and a file system whose
+    /// stamps do not move.
     ///
     /// An entry whose resolution consulted a reader that records nothing (an
     /// on-demand restore, the C# sidecar: [`EnvReads::unrecorded`]) is never
@@ -528,6 +537,10 @@ pub struct SemanticState {
     name_table_cap: NameTableCap,
     /// Envs built in the open generation ([`Self::end_generation`]).
     envs_built: u64,
+    /// Cached envs kept in the open generation by resolving their
+    /// references again to the inputs they were built from
+    /// ([`Self::keep_if_resolved_alike`]).
+    envs_resolved_again: u64,
     /// Compile-order folds computed in the open generation
     /// ([`Self::end_generation`]).
     folds: u64,
@@ -546,6 +559,9 @@ pub struct SemanticCounts {
     pub parses: crate::parses::ParseCounts,
     /// Assembly envs built.
     pub envs_built: u64,
+    /// Cached assembly envs kept by resolving their references again to the
+    /// inputs they were built from.
+    pub envs_resolved_again: u64,
     /// Compile-order folds computed, cold or incremental.
     pub folds: u64,
 }
@@ -631,6 +647,7 @@ impl SemanticState {
     pub fn begin_generation(&mut self) {
         self.parses.begin_generation();
         self.envs_built = 0;
+        self.envs_resolved_again = 0;
         self.folds = 0;
     }
 
@@ -640,6 +657,7 @@ impl SemanticState {
         SemanticCounts {
             parses: self.parses.end_generation(),
             envs_built: std::mem::take(&mut self.envs_built),
+            envs_resolved_again: std::mem::take(&mut self.envs_resolved_again),
             folds: std::mem::take(&mut self.folds),
         }
     }
@@ -737,7 +755,11 @@ impl SemanticState {
         let named: Vec<Arc<AssemblyEnv>> = self
             .assembly_envs
             .values()
-            .filter(|entry| paths.iter().any(|path| entry.checks.named_by(path)))
+            .filter(|entry| {
+                paths
+                    .iter()
+                    .any(|path| entry.resolution.named_by(path) || entry.contents.named_by(path))
+            })
             .map(|entry| Arc::clone(&entry.cached.env))
             .collect();
         for env in &named {
@@ -949,14 +971,46 @@ impl SemanticState {
         workspace: &Workspace,
         observer: &Observer,
     ) -> ReferenceSet {
-        let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), observer);
-        let graph =
-            workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms, observer);
-        let ref_targets = graph_ref_targets(&graph, project, observer);
         // Observability / differential surface: it diffs against MSBuild's
         // `ReferencePath` on *restored* projects, so it reads the assets file
         // like the assets path does and never drives the on-demand restore
         // (`None` restore environment).
+        self.resolve_references(
+            project,
+            dotnet_root,
+            target_framework,
+            workspace,
+            None,
+            observer,
+        )
+    }
+
+    /// Resolve `project`'s references under the key's root and TFM,
+    /// recording every query in `observer`: the reference **edges** from the
+    /// parsed `<ProjectReference>` graph (plan E1), evaluated fresh off-cache
+    /// so they reflect current disk — never from `project.assets.json`,
+    /// which may lag the fsproj in both directions — and the artifacts from
+    /// the assets file. Producer-TFM recovery (fsproj 3.3c Phase 2b rooted
+    /// at the entry) runs first because it feeds the graph walk too: each
+    /// node is evaluated under the TFM NuGet selected for it, so a
+    /// `$(TargetFramework)`-gated `<ProjectReference>` in a multi-targeted
+    /// dependency contributes the edges the real build would.
+    fn resolve_references(
+        &mut self,
+        project: &Path,
+        dotnet_root: Option<&Path>,
+        target_framework: &ServedTfm,
+        workspace: &Workspace,
+        restore_env: Option<&SdkDiscoveryEnv>,
+        observer: &Observer,
+    ) -> ReferenceSet {
+        let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), observer);
+        let graph =
+            workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms, observer);
+        let ref_targets = graph_ref_targets(&graph, project, observer);
+        // Borrow `sidecar` (mut) as a disjoint field — it drives any C#
+        // `.csproj` references this project has, lazily spawning on first
+        // need, when the host opted into them.
         resolve_reference_dlls(
             project,
             dotnet_root,
@@ -964,7 +1018,7 @@ impl SemanticState {
             CsharpReferences::gated(self.csharp_project_references_enabled, &mut self.sidecar),
             &ref_targets,
             &recovered_ref_tfms,
-            None,
+            restore_env,
             observer,
         )
     }
@@ -1101,7 +1155,14 @@ impl SemanticState {
         self.assembly_envs
             .values()
             .find(|entry| Arc::ptr_eq(&entry.cached.env, &cached.env))
-            .map(|entry| entry.checks.reads().cloned().collect())
+            .map(|entry| {
+                entry
+                    .resolution
+                    .reads()
+                    .chain(entry.contents.reads())
+                    .cloned()
+                    .collect()
+            })
     }
 
     /// The cache entry for `project`'s env: the env and the reference-DLL list
@@ -1116,7 +1177,7 @@ impl SemanticState {
         workspace: &Workspace,
         restore_env: Option<&SdkDiscoveryEnv>,
     ) -> (CachedAssemblyEnv, bool) {
-        // Key on the three *value* inputs `build_assembly_env` reads. Without
+        // Key on the three *value* inputs the resolution is run under. Without
         // the root in the key, a lookup made before the SDK root is known
         // (`None`, or a wrong root) would cache an empty env under the project
         // path and hand it back to every later call with the real root —
@@ -1125,10 +1186,12 @@ impl SemanticState {
         // target (plan E3) — the full [`ServedTfm`], not its `Option`
         // projection, because `NoneDeclared` and `Untrusted` build different
         // envs and must not share an entry. The graph-sourced reference
-        // edges are *not* in the key: like
-        // every other env input they are read fresh from disk on a miss, and a
-        // `.fsproj` edit reaches this cache the same way a restore does —
-        // through the read set, which records both.
+        // edges are *not* in the key: like every other input of the
+        // resolution they are read fresh from disk on a miss, and a `.fsproj`
+        // edit reaches this cache the same way a restore does — through the
+        // resolution's read set, which records both. When that moves, the
+        // references are resolved again, and the env is kept if they resolve
+        // to the same [`EnvInputs`].
         // The env's references and TFM come from project evaluations, which
         // the caller confirmed for this generation in reading `dotnet_root`
         // and `target_framework`, and its read set holds what they read. An
@@ -1139,66 +1202,59 @@ impl SemanticState {
         // Built, restored and reported as the key spells it, so the entry holds
         // exactly the env of the project it names.
         let project = id.as_path();
-        // Every query the resolution makes is recorded here, and the env
-        // carries the read set ([`EnvReads`]), with what choosing its key
-        // read: the canonical spelling of the root, and `root_reads`, what
-        // choosing the root read (a probe for a project that records no SDK
-        // root). A cached fold's fast path never computes the key again, so
-        // the env's confirmation is what notices it would move.
-        let observer = Observer::new();
+        // Every query the resolution makes is recorded here, with what
+        // choosing its key read: the canonical spelling of the root, and
+        // `root_reads`, what choosing the root read (a probe for a project
+        // that records no SDK root). A cached fold's fast path never computes
+        // the key again, so the resolution's confirmation is what notices it
+        // would move.
+        let resolving = Observer::new();
         let key = (
             id.clone(),
             dotnet_root.map(|root| {
-                msbuild_observed::canonicalize(&observer, root)
+                msbuild_observed::canonicalize(&resolving, root)
                     .unwrap_or_else(|_| root.to_path_buf())
             }),
             target_framework.clone(),
         );
-        if let Some(cached) = self.confirmed_env(&key, workspace) {
+        let lookup = self.confirmed_env(&key, workspace);
+        if let EnvLookup::Served(cached) = lookup {
             return (cached, false);
         }
-        // The reference EDGES come from the parsed `<ProjectReference>` graph
-        // (plan E1), evaluated fresh off-cache so they reflect current disk —
-        // never from `project.assets.json`, which may lag the fsproj in both
-        // directions. Producer-TFM recovery (fsproj 3.3c Phase 2b rooted at
-        // the entry) runs first because it feeds the graph walk too: each
-        // node is evaluated under the TFM NuGet selected for it, so a
-        // `$(TargetFramework)`-gated `<ProjectReference>` in a multi-targeted
-        // dependency contributes the edges the real build would. Only done on
-        // a miss: both re-read the closure from disk, which would be wasteful
-        // per lookup.
         // A package the resolution reads is trusted as installed only if it
         // was complete before the resolution began.
         let started = workspace.generation_time();
-        let recovered_ref_tfms = env_ref_tfms(project, target_framework.as_deref(), &observer);
-        let graph =
-            workspace.project_graph_with_producer_tfms(project, &recovered_ref_tfms, &observer);
-        let ref_targets = graph_ref_targets(&graph, project, &observer);
-        // Borrow `assembly_cache` (shared) and `sidecar` (mut) as disjoint
-        // fields — the sidecar drives any C# `.csproj` references this project
-        // has, lazily spawning on first need, when the host opted into them.
-        let BuiltEnv {
-            env,
-            dlls,
-            retryable,
-            unrecorded,
-            package_folders,
-        } = build_assembly_env(
+        let refs = self.resolve_references(
             project,
             dotnet_root,
             target_framework,
-            &self.assembly_cache,
-            CsharpReferences::gated(self.csharp_project_references_enabled, &mut self.sidecar),
-            &ref_targets,
-            &recovered_ref_tfms,
+            workspace,
             restore_env,
-            &observer,
+            &resolving,
         );
-        let (reads, counts) = observer.finish();
-        let reads = reads.union(root_reads);
-        let checks = workspace.env_checks(&id, dotnet_root, &package_folders, &reads, started);
-        let reads = EnvReads { reads, unrecorded };
-        crate::observed::report_env_resolution(counts, &reads);
+        let (resolution_reads, counts) = resolving.finish();
+        let resolution_reads = resolution_reads.union(root_reads);
+        if matches!(lookup, EnvLookup::ResolutionMoved)
+            && let Some(kept) = self.keep_if_resolved_alike(
+                &key,
+                dotnet_root,
+                &refs,
+                resolution_reads.clone(),
+                counts,
+                started,
+                workspace,
+            )
+        {
+            return (kept, false);
+        }
+        let contents = Observer::new();
+        let (env, dlls) = build_assembly_env(project, &refs, &self.assembly_cache, &contents);
+        let (contents_reads, contents_counts) = contents.finish();
+        let reads = EnvReads {
+            reads: resolution_reads.clone().union(contents_reads.clone()),
+            unrecorded: refs.unrecorded.clone(),
+        };
+        crate::observed::report_env_resolution(counts + contents_counts, &reads);
         self.envs_built += 1;
         let cached = CachedAssemblyEnv {
             env: Arc::new(env),
@@ -1214,75 +1270,204 @@ impl SemanticState {
         // caches, so we don't rebuild (or re-restore) on every call. A later
         // manual `dotnet restore` reaches this cache through its read set,
         // which records `project.assets.json` (as absent, before it).
-        if retryable {
+        if refs.retryable {
             tracing::info!(
                 project = %project.display(),
                 "not caching assembly env after a transient C# sidecar failure; will retry on next request"
             );
         } else {
+            let resolution = workspace.env_checks(
+                &id,
+                dotnet_root,
+                &refs.package_folders,
+                &resolution_reads,
+                started,
+            );
+            let contents = workspace.env_checks(
+                &id,
+                dotnet_root,
+                &refs.package_folders,
+                &contents_reads,
+                started,
+            );
             self.assembly_envs.insert(
                 key,
                 EnvEntry {
                     cached: cached.clone(),
-                    checks,
+                    inputs: EnvInputs::of(&refs),
+                    resolution,
+                    contents,
+                    contents_reads,
                     // Read in this generation, so confirmed for it.
                     confirmed_in: workspace.generation(),
                     event_since: false,
                 },
             );
         }
-        (cached, retryable)
+        (cached, refs.retryable)
     }
 
-    /// The cached env under `key`, once confirmed for the open generation
-    /// ([`Workspace::confirm_env`]): an entry confirmed earlier in the
-    /// generation is served, and one not yet confirmed is confirmed now. An
-    /// entry whose reads no longer hold is dropped, with every fold against
-    /// its env, and `None` returned, so the caller builds it afresh.
+    /// The cached env under `key`, its resolution's reads having moved, kept
+    /// if resolving its references again (`refs`, which read `reads`) gives
+    /// the inputs it was built from: its checks of what the resolution read
+    /// become those of `reads`, its unrecorded readers those `refs` names
+    /// (which decide what drops it besides its checks:
+    /// [`Self::invalidate_assembly_state`]), and it is confirmed for the
+    /// generation. Otherwise the entry is dropped, with every fold against
+    /// its env, and `None` returned.
+    #[allow(clippy::too_many_arguments)]
+    fn keep_if_resolved_alike(
+        &mut self,
+        key: &(ProjectId, Option<PathBuf>, ServedTfm),
+        dotnet_root: Option<&Path>,
+        refs: &ReferenceSet,
+        reads: ReadSet,
+        counts: msbuild_observed::ReadCounts,
+        started: Option<crate::vfs::Nanos>,
+        workspace: &Workspace,
+    ) -> Option<CachedAssemblyEnv> {
+        let _span =
+            tracing::info_span!(ENV_RESOLVED_AGAIN_SPAN, project = %key.0.as_path().display())
+                .entered();
+        let entry = self.assembly_envs.get_mut(key)?;
+        if refs.retryable || EnvInputs::of(refs) != entry.inputs {
+            let env = Arc::clone(&entry.cached.env);
+            tracing::info!(
+                project = %key.0.as_path().display(),
+                "an assembly env's references resolve differently; building it again"
+            );
+            self.drop_env(&env);
+            return None;
+        }
+        entry.resolution =
+            workspace.env_checks(&key.0, dotnet_root, &refs.package_folders, &reads, started);
+        let reads = EnvReads {
+            reads: reads.union(entry.contents_reads.clone()),
+            unrecorded: refs.unrecorded.clone(),
+        };
+        crate::observed::report_env_resolution(counts, &reads);
+        entry.cached.reads = Arc::new(reads);
+        if workspace.generation().is_some() {
+            entry.confirmed_in = workspace.generation();
+            entry.event_since = false;
+        }
+        self.envs_resolved_again += 1;
+        Some(entry.cached.clone())
+    }
+
+    /// The cached env under `key`, as far as confirming it for the open
+    /// generation can say ([`Workspace::confirm_env`]). An entry confirmed
+    /// earlier in the generation is served. Otherwise what building it read
+    /// (its DLLs' stamps) is confirmed, and an entry for which that fails
+    /// is dropped, with every fold against its env; then what resolving its
+    /// references read, and an entry for which that fails is left for the
+    /// caller to resolve again and compare
+    /// ([`Self::keep_if_resolved_alike`]).
     fn confirmed_env(
         &mut self,
         key: &(ProjectId, Option<PathBuf>, ServedTfm),
         workspace: &Workspace,
-    ) -> Option<CachedAssemblyEnv> {
+    ) -> EnvLookup {
         let generation = workspace.generation();
-        let entry = self.assembly_envs.get_mut(key)?;
+        let Some(entry) = self.assembly_envs.get_mut(key) else {
+            return EnvLookup::Absent;
+        };
         // A generation number is this workspace's: one under another
         // workspace says nothing about these checks.
         let confirmed = generation.is_some()
             && entry.confirmed_in == generation
             && !entry.event_since
-            && workspace.owns(&entry.checks);
-        if !confirmed {
-            if !workspace.confirm_env(&entry.checks, entry.event_since) {
-                let env = Arc::clone(&entry.cached.env);
-                tracing::info!(
-                    project = %key.0.as_path().display(),
-                    "an assembly env's inputs moved; resolving it again"
-                );
-                self.drop_env(&env);
-                return None;
-            }
-            // Outside a generation nothing was confirmed: the record of the
-            // last generation that did stands.
-            if generation.is_some() {
-                entry.confirmed_in = generation;
-                entry.event_since = false;
-            }
+            && workspace.owns(&entry.contents);
+        if confirmed {
+            return EnvLookup::Served(entry.cached.clone());
         }
-        Some(entry.cached.clone())
+        if !workspace.confirm_env(&entry.contents, entry.event_since) {
+            let env = Arc::clone(&entry.cached.env);
+            tracing::info!(
+                project = %key.0.as_path().display(),
+                "a DLL an assembly env holds moved; building it again"
+            );
+            self.drop_env(&env);
+            return EnvLookup::Absent;
+        }
+        if !workspace.confirm_env(&entry.resolution, entry.event_since) {
+            return EnvLookup::ResolutionMoved;
+        }
+        // Outside a generation nothing was confirmed: the record of the
+        // last generation that did stands.
+        if generation.is_some() {
+            entry.confirmed_in = generation;
+            entry.event_since = false;
+        }
+        EnvLookup::Served(entry.cached.clone())
     }
 
-    /// Whether `env`, which a cached fold was folded against, is still the
-    /// env its entry serves, once confirmed for the open generation
-    /// ([`Self::confirmed_env`]). An env with no entry (dropped, or never
-    /// cached) is not: the fold is dropped with it.
-    fn env_still_served(&mut self, env: &Arc<AssemblyEnv>, workspace: &Workspace) -> bool {
+    /// Whether `env`, which a cached fold of `project` was folded against,
+    /// is still the env its entry serves, once confirmed for the open
+    /// generation ([`Self::confirmed_env`]). An env with no entry (dropped,
+    /// or never cached) is not: the fold is dropped with it.
+    ///
+    /// An entry whose resolution's reads moved is resolved again. Its key
+    /// (the dotnet root and the served TFM) was chosen from the project's
+    /// evaluation, which may have moved with them, so the key is chosen
+    /// again first: an env under another key than the one the project
+    /// would choose now is not served, whatever it holds.
+    fn env_still_served(
+        &mut self,
+        env: &Arc<AssemblyEnv>,
+        project: &Path,
+        workspace: &mut Workspace,
+    ) -> bool {
         let key = self
             .assembly_envs
             .iter()
             .find(|(_, entry)| Arc::ptr_eq(&entry.cached.env, env))
             .map(|(key, _)| key.clone());
-        let served = key.is_some_and(|key| self.confirmed_env(&key, workspace).is_some());
+        let served = match key {
+            None => false,
+            Some(key) => match self.confirmed_env(&key, workspace) {
+                EnvLookup::Served(_) => true,
+                EnvLookup::Absent => false,
+                EnvLookup::ResolutionMoved => {
+                    let (dotnet_root, root_reads) =
+                        workspace.dotnet_root_and_reads_for_project(project);
+                    let target_framework = workspace.served_tfm_for_project(project);
+                    let resolving = Observer::new();
+                    let chosen = (
+                        key.0.clone(),
+                        dotnet_root.as_deref().map(|root| {
+                            msbuild_observed::canonicalize(&resolving, root)
+                                .unwrap_or_else(|_| root.to_path_buf())
+                        }),
+                        target_framework.clone(),
+                    );
+                    chosen == key && {
+                        let workspace: &Workspace = workspace;
+                        let restore_env = self.restore_env(workspace);
+                        let started = workspace.generation_time();
+                        let refs = self.resolve_references(
+                            key.0.as_path(),
+                            dotnet_root.as_deref(),
+                            &target_framework,
+                            workspace,
+                            restore_env,
+                            &resolving,
+                        );
+                        let (reads, counts) = resolving.finish();
+                        self.keep_if_resolved_alike(
+                            &key,
+                            dotnet_root.as_deref(),
+                            &refs,
+                            reads.union(root_reads),
+                            counts,
+                            started,
+                            workspace,
+                        )
+                        .is_some()
+                    }
+                }
+            },
+        };
         if !served {
             self.drop_env(env);
         }
@@ -1386,7 +1571,7 @@ impl SemanticState {
                 && resolved.len() >= want_len
             {
                 let (resolved, env) = (Arc::clone(resolved), Arc::clone(env));
-                if self.env_still_served(&env, workspace) {
+                if self.env_still_served(&env, project, workspace) {
                     lookup_span.record("cache_hit", true);
                     return Some((resolved, env));
                 }
@@ -1728,8 +1913,8 @@ impl SemanticState {
         self.validate_cached_fold(&key, workspace, docs);
         if !self.project_parses.contains_key(&key) {
             let stale = self.superseded.remove(&key);
-            let parses = match self.fold(project, workspace, docs) {
-                Ok(parses) => parses,
+            let (parses, inputs) = match self.fold(project, workspace, docs) {
+                Ok(folded) => folded,
                 Err(_) => {
                     // A fold that dropped a stale one and is now refused
                     // changes what every open buffer shows.
@@ -1746,6 +1931,7 @@ impl SemanticState {
                 key.clone(),
                 CachedParses {
                     parses,
+                    inputs,
                     // The fold read the evaluation the workspace serves now.
                     evaluation: workspace.evaluation_id(&key),
                     // Every text was read through `docs` just now.
@@ -1776,19 +1962,21 @@ impl SemanticState {
         }
     }
 
-    /// Drop `key`'s cached parses and resolved fold if the workspace no
-    /// longer serves the evaluation they were built from, or any Compile
-    /// item's text is no longer the text they were built from. Called by
-    /// every read of a cached fold; after the first call in a generation it
-    /// costs one lookup of the evaluation's identity.
+    /// Drop `key`'s cached parses and resolved fold if the evaluation the
+    /// workspace serves no longer gives them the inputs they were built from
+    /// ([`ParseInputs`]), or any Compile item's text is no longer the text
+    /// they were built from. Called by every read of a cached fold; after
+    /// the first call in a generation it costs one lookup of the
+    /// evaluation's identity.
     ///
     /// First, `key`'s evaluation is confirmed for the generation
     /// ([`Workspace::validate`]), which evaluates it afresh if its reads
-    /// moved: the parses were built from its Compile items, symbols,
-    /// language version and provenance, so they stand only while the
-    /// workspace serves the very evaluation they were built from. (An
-    /// evaluation equal in value to the one it replaces still drops them;
-    /// the per-file parse cache keeps the rebuild to a lookup per item.)
+    /// moved. The parses read the evaluation only through [`ParseInputs`]
+    /// (the Compile items in order, the `#if` symbols, the language version
+    /// and its provenance), so a new evaluation is compared with them once,
+    /// and one that gives the same inputs keeps the parses and the fold
+    /// (`docs/incremental-lsp-plan.md`, "Follow-up: cutoffs on the
+    /// evaluation's consumed outputs").
     ///
     /// Each item is asked of `docs` again: the open buffer, or a disk read the
     /// [`Vfs`] confirms with one `stat` per generation and answers with the
@@ -1798,13 +1986,22 @@ impl SemanticState {
     fn validate_cached_fold(&mut self, key: &ProjectId, workspace: &mut Workspace, docs: &Vfs) {
         workspace.validate(key);
         self.sync_with_evaluations(workspace.projects_generation());
-        let evaluation = workspace.evaluation_id(key);
         let Some(cached) = self.project_parses.get_mut(key) else {
             return;
         };
+        // The cutoff: an evaluation run again stands in for the one the
+        // parses were found to agree with when it gives them the same
+        // inputs, compared once per evaluation.
+        let same_inputs = cached.evaluation == workspace.evaluation_id(key) || {
+            let same =
+                ParseInputs::of(key.as_path(), workspace).is_ok_and(|now| now == cached.inputs);
+            if same {
+                cached.evaluation = workspace.evaluation_id(key);
+            }
+            same
+        };
         let generation = docs.generation();
-        let same_evaluation = cached.evaluation == evaluation;
-        let current = same_evaluation
+        let current = same_inputs
             && ((generation.is_some() && cached.validated_in == generation)
                 || cached
                     .parses
@@ -1821,27 +2018,27 @@ impl SemanticState {
         }
         tracing::debug!(
             project = %key.as_path().display(),
-            "a cached fold's evaluation or a Compile item's text moved; dropping it"
+            "what a cached fold read from its evaluation, or a Compile item's text, moved; dropping it"
         );
         let stale = self.project_parses.remove(key);
         self.resolved_projects.remove(key);
         self.observed_fold_refusals.remove(key);
-        if same_evaluation {
+        if same_inputs {
             // Whether a refresh is owed is decided by the rebuild, which
             // reads every item's text anyway (`Self::parses_for_project`).
             self.superseded
                 .extend(stale.map(|stale| (key.clone(), stale)));
         } else {
             // A moved evaluation is announced by the moved projects
-            // generation, but the refresh is owed again here rather than
-            // reasoned about.
+            // generation, but the refresh is owed again here, for inputs
+            // that moved, rather than reasoned about.
             self.wants_refresh = true;
         }
     }
 
     /// Owe a semantic-token refresh unless every Compile item whose text
-    /// moved between `stale` and `fresh` (folded under one evaluation, so
-    /// over one Compile list) moved to the text an open buffer holds now.
+    /// moved between `stale` and `fresh` (folded under the same
+    /// [`ParseInputs`], so over one Compile list) moved to the text an open buffer holds now.
     /// A fold reads a buffer in preference to the disk, so such a move is
     /// the buffer's opening or one of its edits since `stale` was last
     /// confirmed, and each of those owed the refresh when it was synced
@@ -1886,15 +2083,18 @@ impl SemanticState {
         project: &Path,
         workspace: &mut Workspace,
         docs: &Vfs,
-    ) -> Result<ProjectParses, FoldRefusal> {
+    ) -> Result<(ProjectParses, ParseInputs), FoldRefusal> {
         let key = ProjectId::new(project);
-        let outcome = build_parses(
-            key.as_path(),
-            workspace,
-            docs,
-            &mut self.parses,
-            &mut self.file_parses,
-        );
+        let outcome = ParseInputs::of(key.as_path(), workspace).and_then(|inputs| {
+            let parses = build_parses(
+                key.as_path(),
+                &inputs,
+                docs,
+                &mut self.parses,
+                &mut self.file_parses,
+            )?;
+            Ok((parses, inputs))
+        });
         match &outcome {
             Ok(_) => {
                 // A refusal recovering changes every open buffer's tokens
@@ -1952,89 +2152,131 @@ impl SemanticState {
     }
 }
 
-/// Build the compile-ordered parses for a fresh cache miss. Pure (modulo
-/// disk reads for files not in `docs` and the workspace's own caching).
+/// Everything a project's parses read from its evaluation: every input of
+/// [`build_parses`] that is not a source text
+/// (`docs/incremental-lsp-plan.md`, "Follow-up: cutoffs on the evaluation's
+/// consumed outputs").
+///
+/// [`build_parses`] is handed this and the [`Vfs`], never the workspace,
+/// so it can read nothing else of the evaluation: two evaluations that give
+/// equal inputs give equal parses of equal texts. A cached fold therefore
+/// outlives an evaluation run again to the same values (a comment or a
+/// property nothing reads added to the `.fsproj`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseInputs {
+    /// The Compile items (`CompileBefore`, `Compile`, `CompileAfter`), in
+    /// the order the evaluation lists them: the fold's order.
+    items: Vec<PathBuf>,
+    /// The `#if` symbols every item is parsed under.
+    symbols: HashSet<String>,
+    /// The language version every item is parsed at.
+    lang: LanguageVersion,
+    /// Why the evaluation's `LangVersion` is untrusted, if it is: the
+    /// version-boundary gate runs exactly when it is, and a refusal it
+    /// makes names it.
+    lang_version_untrust: Option<UntrustedCause>,
+}
+
+impl ParseInputs {
+    /// What the evaluation of `project` the workspace serves now gives the
+    /// parses, or the refusal of a project whose evaluation declines the
+    /// fold.
+    fn of(project: &Path, workspace: &mut Workspace) -> Result<ParseInputs, FoldRefusal> {
+        let symbols = workspace.symbols_for_project(project);
+        let lang = workspace.lang_version_for_project(project);
+        // Every exit below is a *value*, not a bare `None`: a refusal the user is
+        // never told about is the defect `crate::project_deferral` exists to close,
+        // and only a typed refusal makes "we went quiet" and "we said why" the same
+        // decision at every exit, not just the first.
+        if crate::project_deferral::evaluation_declines_project_fold(
+            workspace.project_evaluation(project),
+        ) {
+            return Err(FoldRefusal::ProjectEvaluation);
+        }
+        let parsed = workspace
+            .project(project)
+            .expect("the evaluation gate above accepted this project");
+        // Gate on `items_uncertain`, *not* `is_partial`: we only need the Compile
+        // *order* to be trustworthy to fold over it. `is_partial` flips for any
+        // divergence from MSBuild — including the undefined properties and skipped
+        // `<Target>`s every real SDK project's imported targets emit, none of which
+        // change the Compile set — so gating on it would refuse essentially every
+        // real project. `items_uncertain` is the narrow signal: a Compile item or
+        // its group couldn't be included/excluded faithfully (see
+        // `Workspace::membership`'s `Membership::Unknown` arm, gated the same way).
+        // When it's set we refuse and let handlers fall back to single-file
+        // resolution rather than feed sema a misleading Compile order.
+        //
+        // `define_constants_uncertain` is the second axis sema needs: each file is
+        // parsed under the project's `$(DefineConstants)` `#if` symbols, so if those
+        // are unreliable (a user define gated on an unresolved property — e.g. a
+        // multi-targeted `'$(TargetFramework)' == …` condition) we'd fold files
+        // under the wrong branches and export the wrong bindings. Refuse there too.
+        //
+        // Both are asked through `crate::project_deferral::evaluation_declines_project_fold`
+        // above, so that the refusal and the editor message the user gets for it are
+        // the same decision.
+        // `LangVersion` provenance is the third axis, gated per *source shape*
+        // below rather than here: the language version shapes the token stream
+        // (the lex-filter's `relaxWhitespace2` pops at the F# 6 boundary and its
+        // strict-indentation push decision at F# 8), so an unknowable version can
+        // mis-shape the fold. An ordinary SDK project's provenance is trusted (the
+        // SDK's own `LangVersion` writes sit under gates the walker decides —
+        // `sdk_project_fold_e2e::ordinary_sdk_projects_have_trusted_langversion_provenance`),
+        // so this axis bites only on a project whose `LangVersion` write sits under
+        // a gate the walker cannot pin. Even there the mark alone would refuse
+        // every file, however version-invariant; instead each parse reports
+        // whether its shape actually depends on the version
+        // (`Parse::shape_depends_on_language_version`, whose `false` *proves*
+        // version-invariance), and the fold refuses only the intersection:
+        // untrusted provenance × a file that genuinely straddles the boundary.
+        let lang_version_untrust = parsed.property_untrusted_cause("LangVersion").cloned();
+        // Accept every Compile flavour `ParsedProject.items` produces:
+        // `[CompileBefore, Compile, CompileAfter]` — F#-specific item kinds the
+        // msbuild parser already orders for us. Excluding any of them would
+        // silently drop real source from projects like FSharp.Core that depend
+        // on `<CompileBefore>` / `<CompileAfter>`. `ProjectReference` is *not*
+        // in `items` (it lives on `project_references`); even so, we filter
+        // defensively in case the parser's split ever loosens.
+        let items: Vec<PathBuf> = parsed
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.kind,
+                    ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter
+                )
+            })
+            .map(|item| item.include.clone())
+            .collect();
+        Ok(ParseInputs {
+            items,
+            symbols,
+            lang,
+            lang_version_untrust,
+        })
+    }
+}
+
+/// Build the compile-ordered parses for a fresh cache miss from what the
+/// evaluation gives them (`inputs`) and the texts `docs` holds. Pure
+/// (modulo disk reads for files not in `docs`).
 fn build_parses(
     project: &Path,
-    workspace: &mut Workspace,
+    inputs: &ParseInputs,
     docs: &Vfs,
     parses: &mut ParseMemo,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
 ) -> Result<ProjectParses, FoldRefusal> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
-    let symbols = workspace.symbols_for_project(project);
-    let lang = workspace.lang_version_for_project(project);
-    // Every exit below is a *value*, not a bare `None`: a refusal the user is
-    // never told about is the defect `crate::project_deferral` exists to close,
-    // and only a typed refusal makes "we went quiet" and "we said why" the same
-    // decision at every exit, not just the first.
-    if crate::project_deferral::evaluation_declines_project_fold(
-        workspace.project_evaluation(project),
-    ) {
-        return Err(FoldRefusal::ProjectEvaluation);
-    }
-    let parsed = workspace
-        .project(project)
-        .expect("the evaluation gate above accepted this project");
-    // Gate on `items_uncertain`, *not* `is_partial`: we only need the Compile
-    // *order* to be trustworthy to fold over it. `is_partial` flips for any
-    // divergence from MSBuild — including the undefined properties and skipped
-    // `<Target>`s every real SDK project's imported targets emit, none of which
-    // change the Compile set — so gating on it would refuse essentially every
-    // real project. `items_uncertain` is the narrow signal: a Compile item or
-    // its group couldn't be included/excluded faithfully (see
-    // `Workspace::membership`'s `Membership::Unknown` arm, gated the same way).
-    // When it's set we refuse and let handlers fall back to single-file
-    // resolution rather than feed sema a misleading Compile order.
-    //
-    // `define_constants_uncertain` is the second axis sema needs: each file is
-    // parsed under the project's `$(DefineConstants)` `#if` symbols, so if those
-    // are unreliable (a user define gated on an unresolved property — e.g. a
-    // multi-targeted `'$(TargetFramework)' == …` condition) we'd fold files
-    // under the wrong branches and export the wrong bindings. Refuse there too.
-    //
-    // Both are asked through `crate::project_deferral::evaluation_declines_project_fold`
-    // above, so that the refusal and the editor message the user gets for it are
-    // the same decision.
-    // `LangVersion` provenance is the third axis, gated per *source shape*
-    // below rather than here: the language version shapes the token stream
-    // (the lex-filter's `relaxWhitespace2` pops at the F# 6 boundary and its
-    // strict-indentation push decision at F# 8), so an unknowable version can
-    // mis-shape the fold. An ordinary SDK project's provenance is trusted (the
-    // SDK's own `LangVersion` writes sit under gates the walker decides —
-    // `sdk_project_fold_e2e::ordinary_sdk_projects_have_trusted_langversion_provenance`),
-    // so this axis bites only on a project whose `LangVersion` write sits under
-    // a gate the walker cannot pin. Even there the mark alone would refuse
-    // every file, however version-invariant; instead each parse reports
-    // whether its shape actually depends on the version
-    // (`Parse::shape_depends_on_language_version`, whose `false` *proves*
-    // version-invariance), and the fold refuses only the intersection:
-    // untrusted provenance × a file that genuinely straddles the boundary.
-    let lang_version_untrust = parsed.property_untrusted_cause("LangVersion").cloned();
+    let ParseInputs {
+        items: includes,
+        symbols,
+        lang,
+        lang_version_untrust,
+    } = inputs;
+    let lang = *lang;
     let lang_version_untrusted = lang_version_untrust.is_some();
-    // Snapshot the include paths before we hand `workspace` back out for
-    // disk reads / overlay lookups — `ParsedProject` is borrowed from the
-    // workspace and we can't keep that borrow live across the inner loop's
-    // mutable use of `workspace` (there's none today, but this keeps the
-    // borrow shape predictable for later stages).
-    // Accept every Compile flavour `ParsedProject.items` produces:
-    // `[CompileBefore, Compile, CompileAfter]` — F#-specific item kinds the
-    // msbuild parser already orders for us. Excluding any of them would
-    // silently drop real source from projects like FSharp.Core that depend
-    // on `<CompileBefore>` / `<CompileAfter>`. `ProjectReference` is *not*
-    // in `items` (it lives on `project_references`); even so, we filter
-    // defensively in case the parser's split ever loosens.
-    let includes: Vec<PathBuf> = parsed
-        .items
-        .iter()
-        .filter(|item| {
-            matches!(
-                item.kind,
-                ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter
-            )
-        })
-        .map(|item| item.include.clone())
-        .collect();
 
     let mut files = Vec::with_capacity(includes.len());
     let mut paths = Vec::with_capacity(includes.len());
@@ -2043,7 +2285,7 @@ fn build_parses(
 
     let _parse_all_span =
         tracing::info_span!("parse_compile_items", count = includes.len()).entered();
-    for include in includes {
+    for include in includes.iter().cloned() {
         let _file_span =
             tracing::info_span!("parse_compile_item", file = %include.display()).entered();
         // **Hard fail on any hole.** Sema's fold is order-sensitive: a later
@@ -2089,7 +2331,7 @@ fn build_parses(
                     c.parse.lang() == lang
                         && c.parse.file_kind() == file_kind
                         && c.lang_version_untrusted == lang_version_untrusted
-                        && *c.parse.symbols() == symbols
+                        && c.parse.symbols() == symbols
                         && (Arc::ptr_eq(&c.text, &text) || *c.text == *text)
                 })
                 .map(|c| {
@@ -2222,7 +2464,7 @@ fn build_parses(
             c.parse.lang() == lang
                 && c.parse.file_kind() == file_kind
                 && c.lang_version_untrusted == lang_version_untrusted
-                && *c.parse.symbols() == symbols
+                && c.parse.symbols() == symbols
         }) {
             *slot = variant;
         } else {
@@ -2270,13 +2512,26 @@ struct CachedAssemblyEnv {
 type PdbImage = (msbuild_observed::FileStamp, Option<Arc<[u8]>>);
 
 /// One cached env and what it depends on
-/// ([`SemanticState::assembly_envs`]).
+/// ([`SemanticState::assembly_envs`]): what it was built from, what
+/// resolving that read, and what building the env from it read.
 #[derive(Debug)]
 struct EnvEntry {
     cached: CachedAssemblyEnv,
-    /// What to confirm before serving `cached` again: its resolution's
-    /// reads, less the contents of the installed versions it trusts.
-    checks: EnvChecks,
+    /// What the env was built from besides its DLLs' bytes.
+    inputs: EnvInputs,
+    /// What to confirm before trusting `inputs` again: what resolving them
+    /// read (the graph walk and the evaluations behind it, the assets
+    /// files, the packs, the output search), less the contents of the
+    /// installed versions it trusts. When one moves, the references are
+    /// resolved again and compared with `inputs`.
+    resolution: EnvChecks,
+    /// What to confirm before serving `cached` again: what building it from
+    /// `inputs` read (each DLL's stamp), less the installed contents it
+    /// trusts.
+    contents: EnvChecks,
+    /// The read set behind `contents`, which joins a new resolution's in
+    /// `cached.reads`.
+    contents_reads: ReadSet,
     /// The generation that last confirmed `checks` (or that built the env);
     /// `None` when it was built outside a generation.
     confirmed_in: Option<u64>,
@@ -2285,6 +2540,24 @@ struct EnvEntry {
     /// it trusts too ([`Workspace::confirm_env`]'s `after_event`).
     event_since: bool,
 }
+
+/// What [`SemanticState::confirmed_env`] found of a cached env.
+#[derive(Debug)]
+enum EnvLookup {
+    /// Confirmed for the open generation (or served as it is outside one).
+    Served(CachedAssemblyEnv),
+    /// Not cached, or dropped because a DLL it holds moved.
+    Absent,
+    /// What building it read holds and what resolving its references read
+    /// does not: resolve them again, and keep the env if they resolve to the
+    /// inputs it was built from ([`SemanticState::keep_if_resolved_alike`]).
+    ResolutionMoved,
+}
+
+/// The span a resolution run to confirm a cached env opens
+/// ([`SemanticState::keep_if_resolved_alike`]), whether it keeps the env or
+/// not.
+pub const ENV_RESOLVED_AGAIN_SPAN: &str = "semantic.env_resolved_again";
 
 /// What one resolution of an assembly env read
 /// (`docs/incremental-lsp-plan.md`, D3, Stage 6a): every query it recorded,
@@ -2313,51 +2586,48 @@ pub const UNRECORDED_RESTORE: &str = "an on-demand restore's scratch output";
 /// it delivered metadata or not.
 pub const UNRECORDED_CSHARP: &str = "the C# sources the sidecar compiled";
 
-/// What [`build_assembly_env`] built: the env, the DLLs it was built from,
-/// its *retryable* flag, the readers it could not record, and the package
-/// folders its packages came from.
-struct BuiltEnv {
-    env: AssemblyEnv,
+/// Everything an assembly env is built from besides the bytes of the DLLs
+/// it reads: the outputs of its reference resolution that
+/// [`build_assembly_env`] reads (`docs/incremental-lsp-plan.md`, "Follow-up:
+/// cutoffs on the evaluation's consumed outputs").
+///
+/// The env is a function of these and of each DLL's bytes, which its
+/// contents checks confirm by stamp: [`build_assembly_env`] is handed this
+/// and the assembly cache, never the resolution, the workspace or the
+/// evaluations behind it. So a cached env whose resolution's reads moved
+/// (the `.fsproj` edited, a referenced project's evaluation run again, an
+/// assets file rewritten) is resolved again, and kept when the resolution
+/// gives equal inputs ([`SemanticState::confirmed_env`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnvInputs {
+    /// The reference DLLs, in fold order: an assembly's identity in the env
+    /// is its position.
     dlls: Vec<PathBuf>,
-    retryable: bool,
-    unrecorded: Vec<&'static str>,
-    package_folders: Vec<PathBuf>,
+    /// Some declared reference could not be read
+    /// ([`ReferenceOutcome::Unread`]), which marks the env incomplete.
+    incomplete: bool,
 }
 
-/// Build the assembly env for a fresh cache miss. Always returns *some*
-/// env — empty if anything went wrong (D5 degrades to under-resolution) — and
-/// the reference-DLL list it was built from.
-///
-/// The `bool` is *retryable*: `true` when a C# sidecar **transport** failure
-/// left the env incomplete but a retry (after respawn) might succeed, so the
-/// caller should not cache the result. Every other degradation is stable
-/// (`false`) — an un-restored project, a genuine build error, an unbuilt F#
-/// ref — and is safe to cache.
-#[allow(clippy::too_many_arguments)]
+impl EnvInputs {
+    fn of(refs: &ReferenceSet) -> EnvInputs {
+        EnvInputs {
+            dlls: refs.dlls.clone(),
+            incomplete: refs.unread().next().is_some(),
+        }
+    }
+}
+
+/// Build the assembly env for `project` from its resolved references
+/// (`refs`). Always returns *some* env — empty if the resolution declined
+/// (D5 degrades to under-resolution) — and the DLLs it holds. It reads
+/// nothing of `refs` but its [`EnvInputs`].
 fn build_assembly_env(
     project: &Path,
-    dotnet_root: Option<&Path>,
-    target_framework: &ServedTfm,
+    refs: &ReferenceSet,
     cache: &AssemblyCache,
-    sidecar: CsharpReferences<'_>,
-    ref_targets: &GraphRefTargets,
-    recovered_ref_tfms: &BTreeMap<PathBuf, String>,
-    restore_env: Option<&SdkDiscoveryEnv>,
     observer: &Observer,
-) -> BuiltEnv {
+) -> (AssemblyEnv, Vec<PathBuf>) {
     let _span = tracing::info_span!("build_assembly_env", project = %project.display()).entered();
-    let refs = resolve_reference_dlls(
-        project,
-        dotnet_root,
-        target_framework,
-        sidecar,
-        ref_targets,
-        recovered_ref_tfms,
-        restore_env,
-        observer,
-    );
-    let (mut env, kept) =
-        build_env_from_dll_paths(refs.dlls.iter().map(PathBuf::as_path), cache, observer);
     // A declared reference we **tried and failed to read** leaves its identity
     // and types unknown, which is the same hazard a skipped DLL poses and the
     // one `identities_incomplete` models — but it never reaches
@@ -2371,14 +2641,6 @@ fn build_assembly_env(
             references = ?unread,
             "project references could not be read; the env's identity set is incomplete"
         );
-        // Both marks, exactly as `build_env_from_dll_paths` applies them to the
-        // equivalent whole-DLL loss. An unread reference could carry an
-        // assembly-level `[<AutoOpen>]` reaching any namespace, or a C#-style
-        // `[<Extension>]` class, and the OV-6 gate treats an unmarked surface as
-        // complete — so marking only the identity set would leave the
-        // bare-value, attribute and overload gates committing past it.
-        env.mark_referenced_assemblies_incomplete();
-        env.mark_extension_surface_unknowable();
     }
     // Unbuilt references are logged but deliberately not an incompleteness —
     // see `ReferenceOutcome::NotBuilt` for the trade.
@@ -2390,13 +2652,29 @@ fn build_assembly_env(
             "project references have no built output; their types are unavailable until built"
         );
     }
-    BuiltEnv {
-        env,
-        dlls: kept,
-        retryable: refs.retryable,
-        unrecorded: refs.unrecorded,
-        package_folders: refs.package_folders,
+    build_env(&EnvInputs::of(refs), cache, observer)
+}
+
+/// The env [`EnvInputs`] describe, and the DLLs it holds (those of
+/// `inputs.dlls` that could be read).
+fn build_env(
+    inputs: &EnvInputs,
+    cache: &AssemblyCache,
+    observer: &Observer,
+) -> (AssemblyEnv, Vec<PathBuf>) {
+    let (mut env, kept) =
+        build_env_from_dll_paths(inputs.dlls.iter().map(PathBuf::as_path), cache, observer);
+    if inputs.incomplete {
+        // Both marks, exactly as `build_env_from_dll_paths` applies them to the
+        // equivalent whole-DLL loss. An unread reference could carry an
+        // assembly-level `[<AutoOpen>]` reaching any namespace, or a C#-style
+        // `[<Extension>]` class, and the OV-6 gate treats an unmarked surface as
+        // complete — so marking only the identity set would leave the
+        // bare-value, attribute and overload gates committing past it.
+        env.mark_referenced_assemblies_incomplete();
+        env.mark_extension_surface_unknowable();
     }
+    (env, kept)
 }
 
 /// What one declared `<ProjectReference>` edge contributed to the env.

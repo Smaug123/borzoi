@@ -551,6 +551,9 @@ enum Cmd {
     Write(FileId, Content),
     /// An external delete, queueing its watch event. Skipped if absent.
     Delete(FileId),
+    /// An external rewrite of a project file that keeps everything else it
+    /// says ([`Touch`]), queueing its watch event. Skipped if absent.
+    Touch(Proj, Touch),
     /// Deliver the queued watch events as one `didChangeWatchedFiles`.
     Flush,
     /// Compare against fresh sessions. Skipped while a watch event is queued
@@ -580,12 +583,70 @@ impl fmt::Debug for Cmd {
             Cmd::Save(file) => write!(f, "Save({file:?})"),
             Cmd::Write(file, c) => write!(f, "Write({file:?}, {:?})", c.render(*file)),
             Cmd::Delete(file) => write!(f, "Delete({file:?})"),
+            Cmd::Touch(proj, touch) => write!(f, "Touch({:?}, {touch:?})", FileId::Proj(*proj)),
             Cmd::Flush => f.write_str("Flush"),
             Cmd::Check => f.write_str("Check"),
             Cmd::Peek(src) => write!(f, "Peek({:?})", FileId::Src(*src)),
             Cmd::Install(rel, text) => write!(f, "Install({rel:?}, {text:?})"),
         }
     }
+}
+
+/// A rewrite of a project file's text that changes one thing and keeps the
+/// rest: what an evaluation run again must be compared on, value by value,
+/// rather than by identity (`docs/incremental-lsp-plan.md`, "Follow-up:
+/// cutoffs on the evaluation's consumed outputs").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Touch {
+    /// An XML comment, which no evaluation output reads, replacing the last
+    /// one a touch wrote.
+    Comment(u8),
+    /// A `<TargetFramework>`, or none, replacing the last one a touch wrote.
+    /// It selects the restored assets target (only `net10.0` is restored)
+    /// and moves no `#if` symbol of these SDK-less projects, so it moves the
+    /// assembly env and none of the parses.
+    Retarget(Option<&'static str>),
+}
+
+impl Touch {
+    /// `text` with the touch applied: the line it last wrote replaced, after
+    /// the `<Project>` line.
+    fn apply(self, text: &str) -> String {
+        let (marker, line) = match self {
+            Touch::Comment(n) => ("<!-- touch", Some(format!("  <!-- touch {n} -->"))),
+            Touch::Retarget(tfm) => (
+                "<!-- retarget -->",
+                tfm.map(|tfm| {
+                    format!(
+                        "  <PropertyGroup><TargetFramework>{tfm}</TargetFramework></PropertyGroup><!-- retarget -->"
+                    )
+                }),
+            ),
+        };
+        let mut lines: Vec<String> = text
+            .lines()
+            .filter(|l| !l.contains(marker))
+            .map(str::to_string)
+            .collect();
+        if let Some(line) = line {
+            lines.insert(1.min(lines.len()), line);
+        }
+        let mut out = lines.join("\n");
+        out.push('\n');
+        out
+    }
+}
+
+fn touch_strategy() -> impl Strategy<Value = Touch> {
+    prop_oneof![
+        3 => any::<u8>().prop_map(Touch::Comment),
+        2 => prop_oneof![Just(None), Just(Some("net10.0")), Just(Some("net9.0"))]
+            .prop_map(Touch::Retarget),
+    ]
+}
+
+fn proj_strategy() -> impl Strategy<Value = Proj> {
+    prop_oneof![1 => Just(Proj::O), 3 => Just(Proj::P), 2 => Just(Proj::Q)]
 }
 
 /// How the client receives diagnostics. Both modes accept semantic-token
@@ -868,6 +929,7 @@ fn cmd_strategy() -> impl Strategy<Value = Cmd> {
         2 => buffer_file_strategy().prop_map(Cmd::Save),
         3 => with_content(disk_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
         1 => disk_file_strategy().prop_map(Cmd::Delete),
+        2 => (proj_strategy(), touch_strategy()).prop_map(|(p, t)| Cmd::Touch(p, t)),
         3 => Just(Cmd::Flush),
         3 => Just(Cmd::Check),
         2 => src_strategy().prop_map(Cmd::Peek),
@@ -924,6 +986,7 @@ fn unwatched_project_cmd_strategy() -> impl Strategy<Value = Cmd> {
         2 => source_file_strategy().prop_map(Cmd::Close),
         2 => source_file_strategy().prop_map(Cmd::Save),
         6 => with_content(project_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        3 => (proj_strategy(), touch_strategy()).prop_map(|(p, t)| Cmd::Touch(p, t)),
         2 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
         1 => project_file_strategy().prop_map(Cmd::Delete),
         2 => source_file_strategy().prop_map(Cmd::Delete),
@@ -993,6 +1056,7 @@ fn unflushed_cmd_strategy() -> impl Strategy<Value = Cmd> {
         3 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
         1 => source_file_strategy().prop_map(Cmd::Delete),
         3 => with_content(project_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        2 => (proj_strategy(), touch_strategy()).prop_map(|(p, t)| Cmd::Touch(p, t)),
         1 => project_file_strategy().prop_map(Cmd::Delete),
         2 => with_content(Just(FileId::Proj(Proj::O))).prop_map(|(f, c)| Cmd::Write(f, c)),
         1 => Just(Cmd::Delete(FileId::Proj(Proj::O))),
@@ -2147,6 +2211,13 @@ fn apply(
         Cmd::Delete(file) => {
             world.delete(*file);
         }
+        Cmd::Touch(proj, touch) => {
+            let file = FileId::Proj(*proj);
+            let Some(text) = world.disk(file) else {
+                return Ok(());
+            };
+            world.write(file, touch.apply(&text).as_bytes());
+        }
         Cmd::Flush => {
             if world.pending.is_empty() {
                 return Ok(());
@@ -3177,6 +3248,30 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                     Cmd::Write(FileId::LibDll, Content::LibDll(LibDll::Console)),
                     Cmd::Check,
                     Cmd::Delete(FileId::Assets(Proj::P)),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // A project's parses and env outlive an evaluation run again to
+            // the same values they read: a comment touch keeps both, and the
+            // answers with them. A retarget moves the env's key and none of
+            // the parses, so the fold the parses kept must not keep the env:
+            // `System.Console.Out` resolves under `net10.0`, the restored
+            // target, and not under `net9.0`.
+            "an unwatched retarget reaches the env the kept parses fold against",
+            Case {
+                mode: Mode::Pull,
+                disk: console_out_world(Some(true), Some(LibDll::Console)),
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Touch(Proj::P, Touch::Retarget(Some("net10.0"))),
+                    Cmd::Check,
+                    Cmd::Touch(Proj::P, Touch::Comment(1)),
+                    Cmd::Check,
+                    Cmd::Touch(Proj::P, Touch::Retarget(Some("net9.0"))),
+                    Cmd::Check,
+                    Cmd::Touch(Proj::P, Touch::Retarget(Some("net10.0"))),
                     Cmd::Check,
                 ],
             },

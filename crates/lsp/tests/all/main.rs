@@ -17,6 +17,7 @@ mod definition_availability_incomplete;
 mod dispatch_coalescing;
 mod env_read_set_soundness;
 mod env_validation;
+mod evaluation_cutoff;
 mod fcs_bridge;
 mod fcs_dump_langversion_pin;
 mod fsharp_name_lexes_back;

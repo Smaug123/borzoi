@@ -159,6 +159,10 @@ pub struct EnvCounts {
     /// projection of every DLL they name ([`ENV_RESOLUTION_EVENT`] reports
     /// each one's reads).
     pub built: u64,
+    /// Cached envs kept by resolving their references again, once what the
+    /// last resolution read had moved, to the inputs they were built from
+    /// (each reported as [`ENV_RESOLUTION_EVENT`] too).
+    pub resolved_again: u64,
     /// The queries asked to confirm cached envs: files opened, paths
     /// `stat`ed, directories listed and paths canonicalised.
     pub validation: borzoi_msbuild::observed::ReadCounts,
