@@ -40,7 +40,7 @@ use lsp_types::{
     TextDocumentSyncKind,
 };
 
-use crate::batch::{Incoming, Refusal, Restart, Shape, Step as BatchStep, TextSync};
+use crate::batch::{Incoming, Refusal, Shape, Step as BatchStep, TextSync};
 use crate::diagnostics::FileDiagnostics;
 use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
@@ -833,13 +833,14 @@ pub struct Dispatcher {
     shapes: Vec<Shape>,
     /// Whether `shutdown` was acknowledged before the epoch began.
     epoch_shutting_down: bool,
-    /// The requests of the epoch whose runs stopped at a checkpoint, each
-    /// with how many messages the epoch held after the loop read what had
-    /// arrived: the plan runs each again behind those.
-    restarts: Vec<Restart>,
+    /// For each message of the epoch, whether a run of it stopped at a
+    /// checkpoint, and if so how many messages the epoch held after the loop
+    /// read what had arrived when its last run stopped: the plan runs it
+    /// again behind those. One entry per message, overwritten by each stop.
+    restarted: Vec<Option<usize>>,
     /// The requests whose shared run stopped in the last step (the one that
     /// ran, and those its answer was to answer too), waiting for the next
-    /// step to read what arrived before each becomes a [`Restart`].
+    /// step to read what arrived before each is marked restarted.
     stopped: Vec<usize>,
     /// [`crate::batch::plan`] of [`Self::epoch`], made again whenever a
     /// message joins it or a request stops.
@@ -878,7 +879,7 @@ impl Dispatcher {
             epoch: Vec::new(),
             shapes: Vec::new(),
             epoch_shutting_down: false,
-            restarts: Vec::new(),
+            restarted: Vec::new(),
             stopped: Vec::new(),
             plan: Vec::new(),
         }
@@ -895,6 +896,7 @@ impl Dispatcher {
             let message = Incoming::read(message);
             self.shapes.push(message.shape());
             self.epoch.push(Some(message));
+            self.restarted.push(None);
         }
         if self.epoch.len() > before {
             self.replan();
@@ -906,7 +908,7 @@ impl Dispatcher {
         self.plan = crate::batch::plan(
             &self.shapes,
             &handled,
-            &self.restarts,
+            &self.restarted,
             self.epoch_shutting_down,
         );
     }
@@ -916,7 +918,7 @@ impl Dispatcher {
     fn end_epoch(&mut self) {
         self.epoch.clear();
         self.shapes.clear();
-        self.restarts.clear();
+        self.restarted.clear();
         self.stopped.clear();
         self.plan.clear();
         self.epoch_shutting_down = self.shutting_down;
@@ -967,7 +969,7 @@ impl Dispatcher {
             // its arrival place ahead of those.
             let held = self.epoch.len();
             for index in std::mem::take(&mut self.stopped) {
-                self.restarts.push(Restart { index, held });
+                self.restarted[index] = Some(held);
             }
             self.replan();
         }

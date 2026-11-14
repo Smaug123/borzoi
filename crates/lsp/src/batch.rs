@@ -20,7 +20,7 @@
 //!    publishes no diagnostics: the later one publishes for the text that
 //!    stands.
 //! 2. Then every request, in arrival order, except that a request whose run
-//!    stopped at a checkpoint ([`Restart`]) waits behind every request the
+//!    stopped at a checkpoint (`restarted`, in [`plan`]) waits behind every request the
 //!    epoch held when it stopped. One that a later live `$/cancelRequest`
 //!    names is answered `RequestCancelled` without running. Otherwise one
 //!    that names a document (`params.textDocument.uri`) which a later live
@@ -71,7 +71,7 @@
 //! **A request that is running** stops at its next checkpoint when a
 //! notification arrives ([`crate::inbox`], Stage 9), and is unhandled again:
 //! the loop reads what arrived, plans again with the request as a
-//! [`Restart`], and refuses it or runs it again. The requests that arrived
+//! restart, and refuses it or runs it again. The requests that arrived
 //! while it ran go first: they are the client's newer interest, and usually
 //! cheaper than the run they interrupted. A `workspace/diagnostic` sweep in
 //! flight is not stopped; its interleaving with later messages is described
@@ -432,16 +432,6 @@ pub enum Refusal {
     AfterShutdown,
 }
 
-/// A request whose run stopped at a checkpoint ([`crate::inbox::Superseded`]):
-/// the message at `index`, and how many messages the epoch held when it
-/// stopped. It runs again after every request among those `held`, and before
-/// any read after them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Restart {
-    pub index: usize,
-    pub held: usize,
-}
-
 /// One thing the loop does, naming the epoch message it does it to by index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -487,21 +477,30 @@ impl Step {
 /// The plan for an epoch's messages, given as their [`Shape`]s in arrival
 /// order, in the order to execute it (see the module docs). `handled` says,
 /// for each message, whether the loop has handled it already: a handled
-/// request shares no run. `restarts` are the requests whose runs stopped, the
-/// last stop of each counting. `shutting_down` is whether `shutdown` was
+/// request shares no run. `restarted` says, for each message, whether a run
+/// of it stopped at a checkpoint ([`crate::inbox::Superseded`]), and if so how
+/// many messages the epoch held when its last run stopped: it runs again
+/// after every request among those, and before any read after them. One
+/// entry per message, so a request stopped many times weighs on the plan
+/// once. `shutting_down` is whether `shutdown` was
 /// acknowledged before the epoch began. Every request before the first `exit`
 /// gets exactly one step; an [`Shape::Ignored`] message, and a notification
 /// after `shutdown`, get none.
 pub fn plan(
     messages: &[Shape],
     handled: &[bool],
-    restarts: &[Restart],
+    restarted: &[Option<usize>],
     shutting_down: bool,
 ) -> Vec<Step> {
     assert_eq!(
         messages.len(),
         handled.len(),
         "one handled flag per message"
+    );
+    assert_eq!(
+        messages.len(),
+        restarted.len(),
+        "one restart entry per message"
     );
     let barrier = if shutting_down {
         0
@@ -550,10 +549,6 @@ pub fn plan(
     // A request runs in arrival order, or, once restarted, between the
     // requests read before it stopped and those read after: twice its index
     // plus one, against twice the number held when it stopped.
-    let mut held_at_restart: HashMap<usize, usize> = HashMap::new();
-    for restart in restarts {
-        held_at_restart.insert(restart.index, restart.held);
-    }
     let mut requests: Vec<usize> = live
         .iter()
         .enumerate()
@@ -561,9 +556,7 @@ pub fn plan(
         .map(|(index, _)| index)
         .collect();
     requests.sort_by_key(|&index| {
-        let turn = held_at_restart
-            .get(&index)
-            .map_or(2 * index + 1, |&held| 2 * held);
+        let turn = restarted[index].map_or(2 * index + 1, |held| 2 * held);
         (turn, index)
     });
     let fates: Vec<(usize, Option<Refusal>)> = requests
@@ -995,11 +988,12 @@ mod tests {
                 })
                 .map(|(index, held)| (index, (index + 1 + held).min(shapes.len())))
                 .collect();
-            let as_restarts: Vec<Restart> = restarts
-                .iter()
-                .map(|&(index, held)| Restart { index, held })
-                .collect();
-            let steps: Vec<_> = plan(&messages, handled, &as_restarts, shutting_down)
+            // The last stop of each request counts.
+            let mut restarted = vec![None; shapes.len()];
+            for &(index, held) in &restarts {
+                restarted[index] = Some(held);
+            }
+            let steps: Vec<_> = plan(&messages, handled, &restarted, shutting_down)
                 .into_iter()
                 .map(describe)
                 .collect();
@@ -1140,12 +1134,7 @@ mod tests {
         ];
         let messages = shapes_of(&shapes);
         assert_eq!(
-            plan(
-                &messages,
-                &[false; 4],
-                &[Restart { index: 0, held: 3 }],
-                false
-            ),
+            plan(&messages, &[false; 4], &[Some(3), None, None, None], false),
             vec![
                 Step::Sync {
                     index: 1,
@@ -1173,7 +1162,7 @@ mod tests {
         ];
         let messages = shapes_of(&shapes);
         assert_eq!(
-            plan(&messages, &[false; 3], &[], false),
+            plan(&messages, &[false; 3], &[None; 3], false),
             vec![
                 Step::Sync {
                     index: 0,
