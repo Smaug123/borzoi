@@ -293,32 +293,12 @@ pub fn recognise_directive(
     }
     pos += 1;
 
-    // FCS lex.fsl line 1084: `anywhite* ("#nowarn" | "#warnon") anystring`.
-    // No word-boundary requirement after the keyword: FCS swallows
-    // `#nowarn40`, `#warnonx`, `#nowarnings`, … as warning-directive lines
-    // and lets later passes diagnose them. We match the literal `nowarn` /
-    // `warnon` prefix here, *before* the alphabetic-keyword loop, which
-    // would otherwise over-eagerly consume `#warnonx` as keyword "warnonx"
-    // and then fail to dispatch.
-    if let Some(body) = source
-        .get(pos..line_end)
-        .and_then(|s| s.strip_prefix("nowarn"))
-    {
+    // Matched *before* the alphabetic-keyword loop, which would otherwise
+    // over-eagerly consume `#warnonx` as keyword "warnonx" and then fail to
+    // dispatch.
+    if let Some(directive) = warn_directive_after_hash(source, pos, line_end) {
         return Some(Ok(Recognised {
-            directive: Directive::NoWarn {
-                numbers: parse_warn_numbers(body),
-            },
-            range: line_start..line_end,
-        }));
-    }
-    if let Some(body) = source
-        .get(pos..line_end)
-        .and_then(|s| s.strip_prefix("warnon"))
-    {
-        return Some(Ok(Recognised {
-            directive: Directive::WarnOn {
-                numbers: parse_warn_numbers(body),
-            },
+            directive,
             range: line_start..line_end,
         }));
     }
@@ -574,6 +554,55 @@ fn line_directive_tail(
 /// successful result is non-negative, so the `as u32` cast is exact.
 fn parse_line_number(digits: &str) -> u32 {
     digits.parse::<i32>().map(|n| n as u32).unwrap_or(0)
+}
+
+/// The `#nowarn` / `#warnon` directive whose keyword starts at `after_hash`
+/// (the byte after its `#`), on a line ending at `line_end`.
+///
+/// FCS lex.fsl line 1084: `anywhite* ("#nowarn" | "#warnon") anystring`.
+/// No word-boundary requirement after the keyword: FCS swallows `#nowarn40`,
+/// `#warnonx`, `#nowarnings`, … as warning-directive lines and lets later
+/// passes diagnose them.
+fn warn_directive_after_hash(
+    source: &str,
+    after_hash: usize,
+    line_end: usize,
+) -> Option<Directive> {
+    let rest = source.get(after_hash..line_end)?;
+    if let Some(body) = rest.strip_prefix("nowarn") {
+        return Some(Directive::NoWarn {
+            numbers: parse_warn_numbers(body),
+        });
+    }
+    rest.strip_prefix("warnon").map(|body| Directive::WarnOn {
+        numbers: parse_warn_numbers(body),
+    })
+}
+
+/// A `#nowarn` / `#warnon` directive whose `#` sits at `hash` after other
+/// tokens on its line. FCS's rule is a token rule, so it matches wherever a
+/// token starts, not only at a line start; it then reports FS3874
+/// (`shouldStartLine`) and the directive still runs to the end of the line.
+/// The range runs from the `#` to the line end.
+pub fn recognise_warn_directive_mid_line(source: &str, hash: usize) -> Option<Recognised> {
+    let bytes = source.as_bytes();
+    // The prefix first: the line-end scan is paid only by a directive,
+    // which then takes the line, so no byte is scanned twice.
+    let after = source.get(hash + 1..)?;
+    if bytes.get(hash) != Some(&b'#')
+        || !(after.starts_with("nowarn") || after.starts_with("warnon"))
+    {
+        return None;
+    }
+    let line_end = bytes[hash..]
+        .iter()
+        .position(|&b| b == b'\n' || b == b'\r')
+        .map_or(source.len(), |i| hash + i);
+    let directive = warn_directive_after_hash(source, hash + 1, line_end)?;
+    Some(Recognised {
+        directive,
+        range: hash..line_end,
+    })
 }
 
 /// Extract the warning numbers from the body of a `#nowarn` / `#warnon`
