@@ -32,15 +32,33 @@ const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// respell in an item; a literal tab survives in MSBuild where XML attribute
 /// normalisation would turn it into a space. `@` and `(I)` assemble an item
 /// reference as `$(A)$(B)`, which MSBuild expands as such.
-const VALUES: [&str; 12] = [
-    "x", "y", "$(A)z", "$(B)", "", "$(Gated)", " x ", "a\\b", "x\ty", "@", "(I)", "$(A)$(B)",
+/// `@(I)` and `@(J)` read item lists (an `Include` copies them), and a
+/// transform is an item expression the executor declines.
+const VALUES: [&str; 15] = [
+    "x",
+    "y",
+    "$(A)z",
+    "$(B)",
+    "",
+    "$(Gated)",
+    " x ",
+    "a\\b",
+    "x\ty",
+    "@",
+    "(I)",
+    "$(A)$(B)",
+    "@(I)",
+    "@(J)",
+    "@(I->'%(M)')",
 ];
-const CONDITIONS: [&str; 6] = [
+const CONDITIONS: [&str; 8] = [
     "'$(A)' == 'x'",
     "'$(A)' != 'x'",
     "'$(B)' == ''",
     "'$(C)' == 'y'",
     "'$(Gated)' == 'g'",
+    "'@(I)' == ''",
+    "@(J) != ''",
     "Exists('nowhere')",
 ];
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
@@ -110,6 +128,10 @@ fn project(rng: &mut SplitMix64) -> String {
     out.push_str("    <Deps>T2;T3</Deps>\n    <Hook>T1</Hook>\n  </PropertyGroup>\n");
     if rng.below(2) == 0 {
         out.push_str("  <ItemGroup>\n    <I Include=\"e\" M=\"m\" />\n  </ItemGroup>\n");
+    }
+    // Another list, with metadata of its own, for a target to copy.
+    if rng.below(2) == 0 {
+        out.push_str("  <ItemGroup>\n    <J Include=\"j1;j2\" N=\"n\" />\n  </ItemGroup>\n");
     }
     // A `UsingTask` may rebind a built-in task.
     if rng.below(15) == 0 {
@@ -483,4 +505,33 @@ fn returns_that_fail_the_build_decline() {
         check(&mut oracle, xml, &mut tally);
     }
     assert_eq!(tally.failed, CASES.len(), "every case fails in MSBuild");
+}
+
+/// Item references whose effect the generator rarely shows: a copy takes its
+/// type's item-definition defaults beneath the metadata it carries, and a
+/// list read through a property keeps each identity escaped, so an escaped
+/// `;` stays inside its item when that property is included again. Each run
+/// must be MSBuild's.
+#[test]
+fn item_references_keep_definitions_and_escapes() {
+    const CASES: [&str; 2] = [
+        r#"<Project>
+             <ItemDefinitionGroup><I><M>d</M></I></ItemDefinitionGroup>
+             <ItemGroup><J Include="j1;j2" N="n" /></ItemGroup>
+             <Target Name="T0"><ItemGroup><I Include="@(J)" /></ItemGroup></Target>
+           </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="x%3By;z" /></ItemGroup>
+             <Target Name="T0">
+               <PropertyGroup><C>@(J)</C></PropertyGroup>
+               <ItemGroup><I Include="$(C)" /></ItemGroup>
+             </Target>
+           </Project>"#,
+    ];
+    let mut oracle = Oracle::spawn();
+    let mut tally = Tally::default();
+    for xml in CASES {
+        check(&mut oracle, xml, &mut tally);
+    }
+    assert_eq!(tally.committed, CASES.len(), "every case runs");
 }

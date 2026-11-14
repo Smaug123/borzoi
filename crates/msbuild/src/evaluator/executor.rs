@@ -107,6 +107,12 @@ struct Entry {
     state: EntryState,
 }
 
+/// The prefix of the property a plain `@(Type)` is read through
+/// ([`Engine::with_items`]): no name a project could write, since neither an
+/// XML element name nor an environment variable promoted to a property can
+/// start with `-`, though a reference reads it as a name.
+const ITEM_LIST_PROPERTY: &str = "-ItemList-";
+
 struct Decline(String);
 
 fn decline<T>(why: impl Into<String>) -> Result<T, Decline> {
@@ -200,8 +206,10 @@ impl<'s, 'r> Engine<'s, 'r> {
         // evaluation and kept only where that target exists
         // (`Evaluator.AddBeforeAndAfterTargetMappings`).
         for key in &kept {
-            let target = &engine.targets[key];
-            let document = target.document()?;
+            let xml = engine.targets[key].xml.clone();
+            let name = engine.targets[key].name.clone();
+            let document = Document::parse(&xml)
+                .or_else(|e| decline(format!("target {name} does not parse alone: {e}")))?;
             let root = document.root_element();
             for (attribute, before) in [("BeforeTargets", true), ("AfterTargets", false)] {
                 let Some(raw) = root.attribute(attribute) else {
@@ -581,8 +589,10 @@ impl<'s, 'r> Engine<'s, 'r> {
             if !self.decide(item)? {
                 continue;
             }
-            // The type's item-definition defaults, beneath the item's own.
-            let mut metadata = self.definitions(item_type)?;
+            // The type's item-definition defaults go beneath everything else,
+            // and the element's own metadata on top.
+            let definitions = self.definitions(item_type)?;
+            let mut metadata = BTreeMap::new();
             for attr in item.attributes() {
                 match attr.name() {
                     // Structural, not metadata.
@@ -612,12 +622,33 @@ impl<'s, 'r> Engine<'s, 'r> {
                 let value = self.metadata_value(&raw)?;
                 metadata.insert(child.tag_name().name().to_ascii_lowercase(), value);
             }
-            let expanded = self.expand(&include)?;
+            // Properties first, item references left in place; then each
+            // `;`-separated piece. One that is a lone plain `@(Type)` copies
+            // those items, metadata and all; any other item reference declines,
+            // as does one properties assembled.
+            let substituted = self.substitute_keeping_items(&include)?;
             let mut added = Vec::new();
-            for fragment in expanded.as_escaped().split(';') {
+            for fragment in substituted.split(';') {
                 let fragment = fragment.trim();
                 if fragment.is_empty() {
                     continue;
+                }
+                if lone_item_reference(fragment) {
+                    let source = fragment[2..fragment.len() - 1].trim().to_owned();
+                    let copies: Vec<ExecutedItem> = self.table(&source)?.clone();
+                    for copy in copies {
+                        let mut carried = definitions.clone();
+                        carried.extend(copy.metadata);
+                        carried.extend(metadata.clone());
+                        added.push(ExecutedItem {
+                            identity: copy.identity,
+                            metadata: carried,
+                        });
+                    }
+                    continue;
+                }
+                if fragment.contains("@(") {
+                    return decline(format!("a target includes {fragment}"));
                 }
                 if escaping::filespec_has_wildcards(fragment) {
                     return decline(format!("a target includes the wildcard {fragment}"));
@@ -626,9 +657,11 @@ impl<'s, 'r> Engine<'s, 'r> {
                 if fragment.contains('\\') {
                     return decline(format!("a target includes {fragment}, with a backslash"));
                 }
+                let mut carried = definitions.clone();
+                carried.extend(metadata.clone());
                 added.push(ExecutedItem {
                     identity: escaping::unescape(fragment),
-                    metadata: metadata.clone(),
+                    metadata: carried,
                 });
             }
             self.table(item_type)?.extend(added);
@@ -638,7 +671,7 @@ impl<'s, 'r> Engine<'s, 'r> {
 
     /// A metadatum's value: `raw` expanded and unescaped. A backslash is one
     /// MSBuild's Unix path fixup may respell, so it declines.
-    fn metadata_value(&self, raw: &str) -> Result<String, Decline> {
+    fn metadata_value(&mut self, raw: &str) -> Result<String, Decline> {
         let value = self.expand(raw)?;
         if value.as_escaped().contains('\\') {
             return decline(format!("a target's metadatum {raw} holds a backslash"));
@@ -695,10 +728,11 @@ impl<'s, 'r> Engine<'s, 'r> {
     }
 
     /// Decide `node`'s `Condition` (true when it has none).
-    fn decide(&self, node: Node<'_, '_>) -> Result<bool, Decline> {
+    fn decide(&mut self, node: Node<'_, '_>) -> Result<bool, Decline> {
         let Some(raw) = attribute(node, "Condition")? else {
             return Ok(true);
         };
+        let raw = self.with_items(&raw)?;
         self.check_references(&raw)?;
         if holds_reference(properties::substitute(&raw, &self.lookup).0.as_escaped()) {
             return decline(format!(
@@ -714,8 +748,45 @@ impl<'s, 'r> Engine<'s, 'r> {
         }
     }
 
-    /// Expand the `$(…)` in `raw` against the run's table.
-    fn expand(&self, raw: &str) -> Result<escaping::Escaped, Decline> {
+    /// Expand the `$(…)` and plain `@(Type)` in `raw` against the run's
+    /// tables.
+    fn expand(&mut self, raw: &str) -> Result<escaping::Escaped, Decline> {
+        let raw = self.with_items(raw)?;
+        self.substitute(&raw)
+    }
+
+    /// Expand the `$(…)` in `raw`, leaving its item references in place for
+    /// the caller to split on: every one must be in `raw` itself, not
+    /// assembled by a property.
+    fn substitute_keeping_items(&self, raw: &str) -> Result<String, Decline> {
+        if raw.contains("%(") {
+            return decline(format!("{raw} reads metadata"));
+        }
+        let Some(names) = plain_references(raw) else {
+            return decline(format!("{raw} calls a property function"));
+        };
+        for name in names {
+            self.check_read(name)?;
+            if self
+                .lookup
+                .get(name)
+                .is_some_and(|value| may_assemble(value.as_escaped()))
+            {
+                return decline(format!("{name} may assemble an item reference"));
+            }
+        }
+        let (value, issues) = properties::substitute(raw, &self.lookup);
+        if issues
+            .iter()
+            .any(|issue| !matches!(issue, Issue::Undefined { .. }))
+        {
+            return decline(format!("{raw} does not expand cleanly"));
+        }
+        Ok(value.as_escaped().to_owned())
+    }
+
+    /// Expand the `$(…)` in `raw`, which holds no item reference.
+    fn substitute(&self, raw: &str) -> Result<escaping::Escaped, Decline> {
         self.check_references(raw)?;
         let (value, issues) = properties::substitute(raw, &self.lookup);
         if issues
@@ -732,10 +803,43 @@ impl<'s, 'r> Engine<'s, 'r> {
         Ok(value)
     }
 
+    /// `raw` with each plain `@(Type)` read as a property holding the list as
+    /// MSBuild expands it: each identity escaped, joined by `;`. An item
+    /// expression that is more (a transform, a separator) declines.
+    fn with_items(&mut self, raw: &str) -> Result<String, Decline> {
+        let mut out = String::new();
+        let mut rest = raw;
+        while let Some(at) = rest.find("@(") {
+            out.push_str(&rest[..at]);
+            let interior = &rest[at + 2..];
+            let Some(close) = interior.find(')') else {
+                return decline(format!("{raw} has an unclosed item reference"));
+            };
+            let item_type = interior[..close].trim();
+            if !plain_name(item_type) {
+                return decline(format!("{raw} has an item expression"));
+            }
+            let list = self
+                .table(item_type)?
+                .iter()
+                .map(|item| escaping::escape(&item.identity))
+                .collect::<Vec<_>>()
+                .join(";");
+            let name = format!("{ITEM_LIST_PROPERTY}{item_type}");
+            self.lookup
+                .insert_escaped(&name, escaping::Escaped::from_xml(list));
+            self.written.insert(name.to_ascii_lowercase());
+            out.push_str(&format!("$({name})"));
+            rest = &interior[close + 1..];
+        }
+        out.push_str(rest);
+        Ok(out)
+    }
+
     /// Every reference in `raw` is a plain `$(Name)` the run may read.
     fn check_references(&self, raw: &str) -> Result<(), Decline> {
         if raw.contains("@(") || raw.contains("%(") {
-            return decline(format!("{raw} reads items or metadata"));
+            return decline(format!("{raw} reads metadata or an item expression"));
         }
         let Some(names) = plain_references(raw) else {
             return decline(format!("{raw} calls a property function"));
@@ -862,4 +966,19 @@ fn lone_item_reference(piece: &str) -> bool {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
         })
+}
+
+/// Whether `name` is a plain item type or property name.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Whether escaped text could join with what sits beside it into an item or
+/// metadata reference: it holds `@` or `%(`, or ends in `%`. An escape such as
+/// `%3b` cannot.
+fn may_assemble(escaped: &str) -> bool {
+    escaped.contains('@') || escaped.contains("%(") || escaped.ends_with('%')
 }

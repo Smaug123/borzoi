@@ -1969,6 +1969,15 @@ the two differ where it matters:
   expanded against the evaluation and dropped where the named target does
   not exist (`Evaluator.ReadTargetElement`,
   `AddBeforeAndAfterTargetMappings`).
+- **Item references.** A plain `@(Type)` in a condition or value reads as
+  MSBuild expands it, each identity escaped and joined by `;`: the executor
+  reads it through a property no project can write (`-ItemList-Type`), so
+  conditions and values take it as they take `$(…)`. In an `Include`, a
+  piece that is a lone plain `@(Type)` copies those items, metadata and all:
+  the destination's item-definition defaults beneath, the element's own
+  metadata on top. Any other item expression (a transform, a separator, a
+  list run together with text) declines, as does a property value that
+  could join into one.
 - **Bodies**: intrinsic `PropertyGroup`s, `ItemGroup` `Include`s without
   batching (each new item taking its type's item-definition defaults beneath
   its own metadata, `Label` not metadata), and `Message` with the parameters
@@ -2006,8 +2015,8 @@ every committed run to it. The scheduling rules above came out of its
 failures. Its soak fails when any of the three push rules is changed.
 
 The census runs `GenerateRestoreGraphFile` on every cone and pins where the
-executor stops. Every single-target cone stops at a condition that reads an
-item list, `@(RestoreGraphProjectInputItems) == ''`. The two
+executor stops. Every single-target cone stops at a property function in a
+condition, `$(MSBuildProjectFullPath.EndsWith('.metaproj'))`. The two
 multi-targeting outer builds stop at opacity.
 
 **`MSBuildProjectDefaultTargets`.** The hook
