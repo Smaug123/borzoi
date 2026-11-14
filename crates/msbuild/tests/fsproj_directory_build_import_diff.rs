@@ -82,7 +82,8 @@ use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::Path;
 
-use borzoi_msbuild::{parse_fsproj_with_imports, resolve_sdk, workloads};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{resolve_sdk, workloads};
 use common::Oracle;
 use tempfile::TempDir;
 

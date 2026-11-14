@@ -61,7 +61,7 @@ use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::Path;
 
-use borzoi_msbuild::parse_fsproj_with_imports;
+use crate::common::parse_fsproj_with_imports;
 use common::Oracle;
 use tempfile::TempDir;
 

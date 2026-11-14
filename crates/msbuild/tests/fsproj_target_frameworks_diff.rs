@@ -23,7 +23,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use borzoi_msbuild::{parse_fsproj_with_imports, target_frameworks};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::target_frameworks;
 use borzoi_oracle_harness::BoundedCommand;
 use serde::Deserialize;
 

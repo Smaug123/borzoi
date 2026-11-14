@@ -91,9 +91,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use borzoi_msbuild::{
-    Diagnostic, DiagnosticKind, ItemKind, ResolvedItem, parse_fsproj_with_imports,
-};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{Diagnostic, DiagnosticKind, ItemKind, ResolvedItem};
 use borzoi_oracle_harness::BoundedCommand;
 use serde::Deserialize;
 use tempfile::TempDir;

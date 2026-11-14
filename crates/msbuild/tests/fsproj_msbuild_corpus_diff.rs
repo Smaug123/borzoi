@@ -75,13 +75,14 @@ use borzoi_oracle_harness::manifest::{self, Manifest, ManifestDiff, UPDATE_ENV};
 
 mod common;
 
+use crate::common::parse_fsproj_with_imports;
 use borzoi_msbuild::{
     Diagnostic, GlobResolver, GlobalJson, ItemKind, PackageRefOp, PackageReference,
     PackageReferenceUncertaintyCause, PackageReferenceUncertaintyCauseKind, ParsedProject,
     SdkPathEntry, SdkResolution, SdkResolveError, SdkVersion,
     StructuralPackageReferenceUncertainty, VersionSpec, find_global_json, glob_resolver,
-    nuget_package_version, parse_fsproj, parse_fsproj_with_imports, parse_global_json, resolve_sdk,
-    target_frameworks, workloads,
+    nuget_package_version, parse_fsproj, parse_global_json, resolve_sdk, target_frameworks,
+    workloads,
 };
 use serde::{Deserialize, Serialize};
 

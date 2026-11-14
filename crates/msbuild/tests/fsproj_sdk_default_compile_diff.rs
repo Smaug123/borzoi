@@ -41,10 +41,8 @@ mod common;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use borzoi_msbuild::{
-    GlobResolver, ItemKind, SdkResolver, glob_resolver, parse_fsproj_with_imports, resolve_sdk,
-    workloads,
-};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{GlobResolver, ItemKind, SdkResolver, glob_resolver, resolve_sdk, workloads};
 use common::Oracle;
 
 /// Source files laid down beside every generated project. Every name is

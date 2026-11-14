@@ -32,7 +32,8 @@ mod common;
 use std::collections::HashMap;
 use std::path::Path;
 
-use borzoi_msbuild::{parse_fsproj, parse_fsproj_with_imports};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::parse_fsproj;
 use common::{Oracle, SplitMix64};
 use tempfile::TempDir;
 

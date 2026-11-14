@@ -860,7 +860,7 @@ fn reads(
     )
     .unwrap_or_else(|e| panic!("{}: our evaluation failed: {e}", subject.key));
     // The probe reads the walk's end state and changes nothing in it.
-    let unprobed = borzoi_msbuild::parse_fsproj_with_imports(
+    let unprobed = common::parse_fsproj_with_imports(
         &source,
         &subject.project,
         &extra,

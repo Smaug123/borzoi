@@ -93,7 +93,8 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use borzoi_msbuild::{parse_fsproj_with_imports, resolve_sdk, workloads};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{resolve_sdk, workloads};
 use common::{Oracle, SplitMix64};
 use tempfile::TempDir;
 

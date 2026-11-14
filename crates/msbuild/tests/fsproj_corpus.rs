@@ -28,10 +28,11 @@ use std::path::{Path, PathBuf};
 
 mod common;
 
+use crate::common::parse_fsproj_with_imports;
 use borzoi_msbuild::observed::soundness::sweep;
 use borzoi_msbuild::{
-    GlobResolver, ItemKind, ParsedProject, ResolvedItem, glob_resolver, parse_fsproj,
-    parse_fsproj_with_imports, resolve_sdk, workloads,
+    GlobResolver, ItemKind, ParsedProject, ResolvedItem, glob_resolver, parse_fsproj, resolve_sdk,
+    workloads,
 };
 
 fn fixtures_root() -> PathBuf {

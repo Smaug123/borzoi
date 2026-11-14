@@ -61,7 +61,13 @@ This is a Cargo workspace with nine members:
   to `observed::soundness::sweep` (perturb each file; a read set that still
   validates must mean an unchanged evaluation), which every
   `with_imports_tests` helper runs over its test's tree, so a new reader that
-  skips the observer fails there or in clippy. The evaluator is
+  skips the observer fails there or in clippy. An `Observer` asks each query
+  once per evaluation, and `parse_fsproj_with_imports_reusing` reuses an
+  earlier evaluation's parse of an imported file whose bytes, read again, are
+  the same (`observed::ImportDocuments`); `observed::reuse` holds both to the
+  reference that asks every time (`Observer::asking_every_time`) at every step
+  of every helper's sweep and on every integration test's evaluation
+  (`tests/common`'s `parse_fsproj_with_imports`). The evaluator is
   differentially tested against the
   real MSBuild evaluator via `tools/msbuild-condition-oracle` — a test-only
   JSONL batch oracle (in the `tools/fcs-dump` / `tools/nuget-oracle` mould)

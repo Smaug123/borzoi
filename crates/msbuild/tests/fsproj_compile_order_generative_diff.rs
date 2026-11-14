@@ -68,9 +68,8 @@ use std::sync::{Mutex, OnceLock};
 
 mod common;
 
-use borzoi_msbuild::{
-    ParsedProject, SdkPaths, SdkResolution, SdkResolveError, parse_fsproj_with_imports,
-};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{ParsedProject, SdkPaths, SdkResolution, SdkResolveError};
 use common::Oracle;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;

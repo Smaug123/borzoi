@@ -35,6 +35,64 @@ use std::time::Duration;
 use borzoi_oracle_harness::{BatchChild, BoundedCommand, default_timeout};
 
 use borzoi_msbuild::test_support::{Outcome, PropertyMap, evaluate, substitute};
+use borzoi_msbuild::{GlobResolver, ParseError, ParsedProject, SdkResolver};
+
+thread_local! {
+    /// Every document this test thread's evaluations have parsed, which each
+    /// later evaluation on the thread reuses where it reads the same bytes.
+    static DOCUMENTS: std::cell::RefCell<borzoi_msbuild::observed::ImportDocuments> =
+        std::cell::RefCell::default();
+}
+
+/// [`borzoi_msbuild::parse_fsproj_with_imports_reusing`], reusing every
+/// document this thread's earlier evaluations parsed, after holding it to the
+/// reference ([`borzoi_msbuild::parse_fsproj_with_imports_asking_every_time`])
+/// with the reuse oracle ([`borzoi_msbuild::observed::reuse`]): the two agree
+/// in all but their counts, and the reused evaluation asks each query once.
+///
+/// Every integration test that evaluates with imports goes through here, so
+/// each differential and generated sweep holds the reused evaluation to the
+/// reference on every case it evaluates.
+pub fn parse_fsproj_with_imports(
+    source: &str,
+    project_path: &Path,
+    extra_properties: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    sdk_resolver: Option<&SdkResolver<'_>>,
+    glob_resolver: Option<&GlobResolver<'_>>,
+) -> Result<ParsedProject, ParseError> {
+    let reference = borzoi_msbuild::parse_fsproj_with_imports_asking_every_time(
+        source,
+        project_path,
+        extra_properties,
+        environment,
+        sdk_resolver,
+        glob_resolver,
+    );
+    let reused = DOCUMENTS.with(|documents| {
+        borzoi_msbuild::parse_fsproj_with_imports_reusing(
+            source,
+            project_path,
+            extra_properties,
+            environment,
+            sdk_resolver,
+            glob_resolver,
+            &mut documents.borrow_mut(),
+        )
+    });
+    match (reference, reused) {
+        (Ok(reference), Ok(reused)) => Ok(borzoi_msbuild::observed::reuse::same_as_reference(
+            reference, reused,
+        )),
+        (Err(reference), Err(reused)) => {
+            assert_eq!(format!("{reference:?}"), format!("{reused:?}"));
+            Err(reused)
+        }
+        (reference, reused) => panic!(
+            "reuse changed whether the evaluation fails:\nreference: {reference:?}\nreused: {reused:?}"
+        ),
+    }
+}
 
 /// Budget for the one `dotnet build` this harness runs (the condition oracle).
 ///

@@ -34,9 +34,9 @@
 
 mod common;
 
+use crate::common::parse_fsproj_with_imports;
 use borzoi_msbuild::{
-    GlobResolver, ParsedProject, SdkResolver, glob_resolver, parse_fsproj_with_imports,
-    resolve_sdk, workloads,
+    GlobResolver, ParsedProject, SdkResolver, glob_resolver, resolve_sdk, workloads,
 };
 use common::{Oracle, SplitMix64};
 use std::collections::HashMap;

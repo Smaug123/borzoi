@@ -50,7 +50,8 @@
 
 mod common;
 
-use borzoi_msbuild::{PackageReference, parse_fsproj_with_imports};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::PackageReference;
 use common::{Oracle, SplitMix64};
 use std::collections::HashMap;
 

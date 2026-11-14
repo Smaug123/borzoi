@@ -11,11 +11,13 @@
 //! comparing the two directly would spuriously fail.
 
 use crate::observed::host_fs;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::observed::Observer;
+use crate::observed::reuse::same_as_reference;
+use crate::observed::{ImportDocuments, Observer};
 
 mod cycles_and_failures;
 mod directory_build;
@@ -66,33 +68,91 @@ fn write_at(dir: &Path, name: &str, contents: &str) -> PathBuf {
 /// need a canonical project path to match.)
 fn parse(project_path: &Path, source: &str) -> ParsedProject {
     let canon_project = canon(project_path);
-    sound(&canon_project, || {
-        parse_fsproj_with_imports(
-            source,
-            &canon_project,
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            None,
-        )
-        .expect("well-formed XML parses")
+    sound(&canon_project, |through| {
+        through
+            .evaluate(
+                source,
+                &canon_project,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                None,
+            )
+            .expect("well-formed XML parses")
     })
 }
 
-/// `evaluate()`, after holding its read set to the soundness oracle
-/// ([`crate::observed::soundness`]) over the test's own temporary tree: the
-/// directory directly below the system's temporary directory that holds the
-/// project. A project outside it is evaluated without the sweep.
-fn sound(canon_project: &Path, evaluate: impl Fn() -> ParsedProject) -> ParsedProject {
+/// Which entry point a helper's evaluation goes through: the reference, which
+/// asks every query every time and parses every file it reads
+/// ([`parse_fsproj_with_imports_asking_every_time`]), or the one the LSP calls,
+/// reusing the documents a test's earlier evaluations parsed
+/// ([`parse_fsproj_with_imports_reusing`]).
+#[derive(Clone, Copy)]
+enum Through<'d> {
+    Reference,
+    Reusing(&'d RefCell<ImportDocuments>),
+}
+
+impl Through<'_> {
+    fn evaluate(
+        self,
+        source: &str,
+        project_path: &Path,
+        extra_properties: &HashMap<String, String>,
+        environment: &HashMap<String, String>,
+        sdk_resolver: Option<&SdkResolver<'_>>,
+        glob_resolver: Option<&GlobResolver<'_>>,
+    ) -> Result<ParsedProject, ParseError> {
+        match self {
+            Through::Reference => parse_fsproj_with_imports_asking_every_time(
+                source,
+                project_path,
+                extra_properties,
+                environment,
+                sdk_resolver,
+                glob_resolver,
+            ),
+            Through::Reusing(documents) => parse_fsproj_with_imports_reusing(
+                source,
+                project_path,
+                extra_properties,
+                environment,
+                sdk_resolver,
+                glob_resolver,
+                &mut documents.borrow_mut(),
+            ),
+        }
+    }
+}
+
+/// `evaluate`'s result through the reused entry point, after holding it to
+/// two oracles over the test's own temporary tree (the directory directly
+/// below the system's temporary directory that holds the project; a project
+/// outside it is evaluated without them):
+///
+/// - the read-set soundness sweep ([`crate::observed::soundness`]);
+/// - at the start and after every perturbation the sweep makes, and after
+///   every undo before the next, the reused entry point, with every document
+///   the test's evaluations have parsed so far, equals the reference in all
+///   but its counts, and asks each query it records exactly once
+///   ([`crate::observed::reuse`]).
+fn sound(canon_project: &Path, evaluate: impl Fn(Through<'_>) -> ParsedProject) -> ParsedProject {
+    let documents = RefCell::new(ImportDocuments::default());
+    let checked = || {
+        same_as_reference(
+            evaluate(Through::Reference),
+            evaluate(Through::Reusing(&documents)),
+        )
+    };
     let temp = canon(&std::env::temp_dir());
     if let Some(first) = canon_project
         .strip_prefix(&temp)
         .ok()
         .and_then(|rest| rest.components().next())
     {
-        crate::observed::soundness::sweep(&temp.join(first), &evaluate, &[]);
+        crate::observed::soundness::sweep(&temp.join(first), &checked, &[]);
     }
-    evaluate()
+    checked()
 }
 
 /// [`parse`], reading the body back from `project_path` on disk. Most
@@ -119,8 +179,9 @@ fn parse_with_extras(
     extras: HashMap<String, String>,
 ) -> ParsedProject {
     let canon_project = canon(project_path);
-    sound(&canon_project, || {
-        parse_fsproj_with_imports(source, &canon_project, &extras, &HashMap::new(), None, None)
+    sound(&canon_project, |through| {
+        through
+            .evaluate(source, &canon_project, &extras, &HashMap::new(), None, None)
             .expect("well-formed XML parses")
     })
 }
@@ -171,16 +232,17 @@ where
 {
     let canon_project = canon(project_path);
     let resolver = |name: &str, _: &Observer| resolver(name);
-    sound(&canon_project, || {
-        parse_fsproj_with_imports(
-            source,
-            &canon_project,
-            &HashMap::new(),
-            &HashMap::new(),
-            Some(&resolver),
-            None,
-        )
-        .expect("well-formed XML parses")
+    sound(&canon_project, |through| {
+        through
+            .evaluate(
+                source,
+                &canon_project,
+                &HashMap::new(),
+                &HashMap::new(),
+                Some(&resolver),
+                None,
+            )
+            .expect("well-formed XML parses")
     })
 }
 
@@ -226,16 +288,17 @@ where
     let canon_project = canon(project_path);
     let source = host_fs::read_to_string(project_path).unwrap();
     let resolver = |name: &str, _observer: &crate::observed::Observer| resolver(name);
-    sound(&canon_project, || {
-        parse_fsproj_with_imports(
-            &source,
-            &canon_project,
-            &extras,
-            &environment,
-            Some(&resolver),
-            None,
-        )
-        .expect("well-formed XML parses")
+    sound(&canon_project, |through| {
+        through
+            .evaluate(
+                &source,
+                &canon_project,
+                &extras,
+                &environment,
+                Some(&resolver),
+                None,
+            )
+            .expect("well-formed XML parses")
     })
 }
 

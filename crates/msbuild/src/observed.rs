@@ -15,6 +15,15 @@
 //! answer moved. That holds only if every query is recorded, which is why the
 //! crate's `clippy.toml` bans the `std` calls everywhere but here.
 //!
+//! An evaluation asks each query at most once: the observer remembers every
+//! answer it recorded, and a query asked again takes that answer
+//! ([`Observer::new`]). The read set is what it would be had the query been
+//! asked again and got the same answer, which is one read; a file that moves
+//! during the evaluation is seen by the next validation, which asks again.
+//! An imported file's parsed document is kept across evaluations in
+//! [`ImportDocuments`], found by the file's path and reused only when the
+//! file's bytes, read again, are the bytes it was parsed from.
+//!
 //! Absence is an answer like any other. An evaluation that found no
 //! `Directory.Build.props` in some ancestor depends on that file staying
 //! absent, so a failed query is recorded with its [`Failure`], whose kind is
@@ -26,10 +35,14 @@
 //! a test module would also lift the child-process spawn bans it carries.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::document::ParsedDocument;
 
 /// Where an evaluation's observations go: the reads it made, and how many
 /// calls of each kind it made.
@@ -39,15 +52,139 @@ use std::path::{Path, PathBuf};
 /// [`crate::GlobResolver`], so it records through interior mutability. One
 /// evaluation is single-threaded and owns its observer, so nothing else sees
 /// the cells change.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Observer {
     reads: RefCell<Vec<Read>>,
     counts: Cell<ReadCounts>,
+    /// Every answer recorded so far, by query, which a query asked again
+    /// takes instead of asking the file system. `None` in an observer that
+    /// asks every time ([`Observer::asking_every_time`]).
+    memo: Option<RefCell<Memo>>,
+    /// The imported files' documents the evaluation may reuse, and those it
+    /// parsed ([`read_document`]).
+    documents: RefCell<ImportDocuments>,
+}
+
+impl Default for Observer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The answers an [`Observer`] has recorded, by query and then by the path's
+/// raw spelling (`p/child/` and `p/child` are different queries).
+#[derive(Debug, Default)]
+struct Memo {
+    texts: HashMap<OsString, Result<String, Failure>>,
+    documents: HashMap<OsString, Result<Parsed, Failure>>,
+    kinds: HashMap<OsString, Result<EntryKind, Failure>>,
+    link_kinds: HashMap<OsString, Result<EntryKind, Failure>>,
+    listings: HashMap<OsString, Result<Vec<Result<DirEntry, Failure>>, Failure>>,
+    canonicals: HashMap<OsString, Result<PathBuf, Failure>>,
+}
+
+/// A whole-file read parsed as XML ([`read_document`]): the document, or why
+/// the text does not parse.
+pub type Parsed = Result<Arc<ParsedDocument>, roxmltree::Error>;
+
+/// Parsed documents of imported files, kept from one evaluation to the next:
+/// at most one per path, the last one parsed.
+///
+/// An entry is reused only when the file's bytes, read again, equal the text
+/// it was parsed from ([`read_document`]): the file is still read, so the
+/// read set records what it records without the entry, and parsing is a
+/// function of the text. So an entry is never stale; it is only a parse
+/// saved.
+#[derive(Debug, Default)]
+pub struct ImportDocuments {
+    by_path: HashMap<OsString, Arc<ParsedDocument>>,
+    /// Documents parsed into it, ever.
+    parsed: u64,
+    /// Reads that reused a kept document, ever.
+    reused: u64,
+}
+
+impl ImportDocuments {
+    /// How many documents are kept.
+    pub fn len(&self) -> usize {
+        self.by_path.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_path.is_empty()
+    }
+
+    /// How many documents the evaluations it was handed to parsed.
+    pub fn parsed(&self) -> u64 {
+        self.parsed
+    }
+
+    /// How many reads by the evaluations it was handed to reused a kept
+    /// document rather than parse.
+    pub fn reused(&self) -> u64 {
+        self.reused
+    }
 }
 
 impl Observer {
+    /// An observer that asks each query once per evaluation, with no
+    /// documents to reuse.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_documents(ImportDocuments::default())
+    }
+
+    /// [`Observer::new`], reusing `documents`' parses;
+    /// [`Self::finish_with_documents`] hands them back with the evaluation's
+    /// own added.
+    pub fn with_documents(documents: ImportDocuments) -> Self {
+        Self {
+            reads: RefCell::new(Vec::new()),
+            counts: Cell::new(ReadCounts::default()),
+            memo: Some(RefCell::new(Memo::default())),
+            documents: RefCell::new(documents),
+        }
+    }
+
+    /// An observer that asks the file system every query it is asked, however
+    /// often, and parses every document it reads: the reference that
+    /// [`Observer::new`]'s memo and [`ImportDocuments`] are held to.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn asking_every_time() -> Self {
+        Self {
+            memo: None,
+            ..Self::new()
+        }
+    }
+
+    /// The read set, the counts, and the documents: those the observer was
+    /// made with, and those its evaluation parsed.
+    pub fn finish_with_documents(self) -> (ReadSet, ReadCounts, ImportDocuments) {
+        let documents = self.documents.take();
+        let (reads, counts) = self.finish();
+        (reads, counts, documents)
+    }
+
+    /// The memo's answer to a query, if it has one; `None` in an observer
+    /// that asks every time.
+    fn recall<T: Clone>(
+        &self,
+        table: impl FnOnce(&Memo) -> &HashMap<OsString, T>,
+        path: &Path,
+    ) -> Option<T> {
+        let memo = self.memo.as_ref()?.borrow();
+        table(&memo).get(path.as_os_str()).cloned()
+    }
+
+    /// Remember a query's answer, in an observer that remembers.
+    fn remember<T: Clone>(
+        &self,
+        table: impl FnOnce(&mut Memo) -> &mut HashMap<OsString, T>,
+        path: &Path,
+        answer: &T,
+    ) {
+        if let Some(memo) = &self.memo {
+            table(&mut memo.borrow_mut()).insert(path.as_os_str().to_owned(), answer.clone());
+        }
     }
 
     /// The read set and the counts. A query asked twice with the same answer
@@ -58,10 +195,11 @@ impl Observer {
     /// evaluation happened to ask its queries in (a walk over a `HashMap`,
     /// say) does not tell two equal read sets apart.
     pub fn finish(self) -> (ReadSet, ReadCounts) {
-        let mut reads = self.reads.into_inner();
+        let Self { reads, counts, .. } = self;
+        let mut reads = reads.into_inner();
         reads.sort();
         reads.dedup();
-        (ReadSet { reads }, self.counts.get())
+        (ReadSet { reads }, counts.get())
     }
 
     /// Another observer's reads and counts, as if this one had made them:
@@ -698,22 +836,86 @@ fn stamped_bytes(path: &Path) -> (Result<FileStamp, Failure>, Result<Vec<u8>, Fa
 
 /// [`std::fs::read_to_string`].
 pub fn read_to_string(observer: &Observer, path: &Path) -> Result<String, Failure> {
+    if let Some(answer) = observer.recall(|m| &m.texts, path) {
+        return answer;
+    }
     let result = read_text(path);
     observer.record(path, Observation::Text(text_digest(&result)));
+    observer.remember(|m| &mut m.texts, path, &result);
     result
+}
+
+/// [`read_to_string`], parsed as XML: the read [`read_to_string`] records,
+/// and the document `roxmltree` parses from its text.
+///
+/// The document is the observer's [`ImportDocuments`] entry for `path` when
+/// that was parsed from exactly the bytes read, and is parsed (and kept
+/// there, replacing any other) otherwise.
+pub fn read_document(observer: &Observer, path: &Path) -> Result<Parsed, Failure> {
+    if let Some(answer) = observer.recall(|m| &m.documents, path) {
+        return answer;
+    }
+    let result = read_text(path).map(|text| observer.parse_document(path, text));
+    let digest = match &result {
+        Ok(Ok(parsed)) => Ok(parsed.digest()),
+        Ok(Err((_, digest))) => Ok(*digest),
+        Err(failure) => Err(failure.clone()),
+    };
+    observer.record(path, Observation::Text(digest));
+    let result = result.map(|parsed| parsed.map_err(|(error, _)| error));
+    observer.remember(|m| &mut m.documents, path, &result);
+    result
+}
+
+impl Observer {
+    /// The document parsed from `text`, the text of the file at `path`: the
+    /// kept one when it was parsed from these bytes, else a new parse, kept
+    /// in its place. A text that does not parse fails with its digest.
+    fn parse_document(
+        &self,
+        path: &Path,
+        text: String,
+    ) -> Result<Arc<ParsedDocument>, (roxmltree::Error, TextDigest)> {
+        let key = path.as_os_str();
+        let reusing = self.memo.is_some();
+        let mut documents = self.documents.borrow_mut();
+        if reusing
+            && let Some(kept) = documents.by_path.get(key)
+            && kept.text() == text
+        {
+            let kept = Arc::clone(kept);
+            documents.reused += 1;
+            return Ok(kept);
+        }
+        let digest = TextDigest::of(&text);
+        let parsed = Arc::new(ParsedDocument::parse(text, digest).map_err(|e| (e, digest))?);
+        if reusing {
+            documents.parsed += 1;
+            documents.by_path.insert(key.to_owned(), Arc::clone(&parsed));
+        }
+        Ok(parsed)
+    }
 }
 
 /// What `path` names, following symlinks: [`std::fs::metadata`].
 pub fn kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
+    if let Some(answer) = observer.recall(|m| &m.kinds, path) {
+        return answer;
+    }
     let result = kind_of(path);
     observer.record(path, Observation::Kind(result.clone()));
+    observer.remember(|m| &mut m.kinds, path, &result);
     result
 }
 
 /// What `path` itself is: [`std::fs::symlink_metadata`].
 pub fn link_kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
+    if let Some(answer) = observer.recall(|m| &m.link_kinds, path) {
+        return answer;
+    }
     let result = link_kind_of(path);
     observer.record(path, Observation::LinkKind(result.clone()));
+    observer.remember(|m| &mut m.link_kinds, path, &result);
     result
 }
 
@@ -743,15 +945,23 @@ pub fn read_dir(
     observer: &Observer,
     path: &Path,
 ) -> Result<Vec<Result<DirEntry, Failure>>, Failure> {
+    if let Some(answer) = observer.recall(|m| &m.listings, path) {
+        return answer;
+    }
     let result = listing_of(path);
     observer.record(path, Observation::Listing(listed(&result)));
+    observer.remember(|m| &mut m.listings, path, &result);
     result
 }
 
 /// [`std::fs::canonicalize`].
 pub fn canonicalize(observer: &Observer, path: &Path) -> Result<PathBuf, Failure> {
+    if let Some(answer) = observer.recall(|m| &m.canonicals, path) {
+        return answer;
+    }
     let result = canonical_of(path);
     observer.record(path, Observation::Canonical(result.clone()));
+    observer.remember(|m| &mut m.canonicals, path, &result);
     result
 }
 
@@ -778,6 +988,9 @@ pub fn read_stamped(observer: &Observer, path: &Path) -> Result<Vec<u8>, Failure
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod soundness;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod reuse;
 
 /// The file-system reads of the crate's inline test modules, which set up and
 /// inspect fixtures rather than observe a project. The crate's `clippy.toml`
@@ -976,9 +1189,9 @@ mod tests {
             counts,
             ReadCounts {
                 opens: 2,
-                // `is_dir` and `is_file` of `sub` ask the same query, so the
-                // read set holds it once.
-                stats: 3,
+                // `is_dir` and `is_file` of `sub` ask the same query, which
+                // the observer asks once.
+                stats: 2,
                 listings: 1,
                 canonicalizations: 1,
             }
@@ -992,6 +1205,113 @@ mod tests {
             read_set.first_stale().map(|read| read.path.clone()),
             Some(dir.clone())
         );
+    }
+
+    /// An observer asks each query once: asked again, a query takes the first
+    /// answer, while the reference observer asks the file system again and
+    /// records both answers.
+    #[test]
+    fn a_query_asked_again_takes_its_first_answer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let file = dir.join("a.props");
+        std::fs::write(&file, "<A/>").unwrap();
+        let ask = |observer: &Observer| {
+            (
+                read_to_string(observer, &file),
+                kind(observer, &dir.join("b")),
+                read_dir(observer, &dir).map(|entries| entries.len()),
+            )
+        };
+        let once = Observer::new();
+        let every_time = Observer::asking_every_time();
+        let first = (ask(&once), ask(&every_time));
+        std::fs::write(&file, "<B/>").unwrap();
+        std::fs::create_dir(dir.join("b")).unwrap();
+        assert_eq!(ask(&once), first.0, "the memo answers as it first did");
+        assert_ne!(ask(&every_time), first.1, "the reference asks again");
+        let (once, once_counts) = once.finish();
+        let (every_time, every_time_counts) = every_time.finish();
+        assert_eq!(
+            once_counts,
+            ReadCounts {
+                opens: 1,
+                stats: 1,
+                listings: 1,
+                canonicalizations: 0
+            }
+        );
+        assert_eq!(
+            every_time_counts,
+            ReadCounts {
+                opens: 2,
+                stats: 2,
+                listings: 2,
+                canonicalizations: 0
+            }
+        );
+        assert_eq!(once.len(), 3);
+        assert_eq!(every_time.len(), 6, "each query recorded with both answers");
+        assert!(
+            once.first_stale().is_some(),
+            "the next validation sees the move"
+        );
+    }
+
+    /// A kept document is reused for the very bytes it was parsed from, and
+    /// parsed again (and kept in its place) for any others; the read is
+    /// recorded either way, as [`read_to_string`] records it.
+    #[test]
+    fn a_document_is_reused_only_for_its_own_bytes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let file = dir.join("a.props");
+        std::fs::write(&file, "<A/>").unwrap();
+        let evaluate = |documents: ImportDocuments| {
+            let observer = Observer::with_documents(documents);
+            let parsed = read_document(&observer, &file).unwrap().unwrap();
+            let reference = Observer::new();
+            read_to_string(&reference, &file).unwrap();
+            let (reads, counts, documents) = observer.finish_with_documents();
+            assert_eq!((reads, counts), reference.finish());
+            (parsed, documents)
+        };
+        let (first, documents) = evaluate(ImportDocuments::default());
+        assert_eq!(documents.len(), 1);
+        let (again, documents) = evaluate(documents);
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "the same bytes reuse the parse"
+        );
+        assert_eq!((documents.parsed(), documents.reused()), (1, 1));
+        std::fs::write(&file, "<B/>").unwrap();
+        let (changed, documents) = evaluate(documents);
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(changed.document().root_element().tag_name().name(), "B");
+        assert_eq!(documents.len(), 1, "the new parse replaces the old");
+        assert_eq!((documents.parsed(), documents.reused()), (2, 1));
+        std::fs::write(&file, "<A/>").unwrap();
+        let (back, _) = evaluate(documents);
+        assert!(!Arc::ptr_eq(&first, &back), "only the last parse is kept");
+        assert_eq!(back.document().root_element().tag_name().name(), "A");
+    }
+
+    /// A file that does not parse as XML records its read, fails as
+    /// `roxmltree` fails on its text, and is not kept.
+    #[test]
+    fn a_malformed_document_records_its_read_and_is_not_kept() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let file = dir.join("a.props");
+        std::fs::write(&file, "<A>").unwrap();
+        let observer = Observer::new();
+        let error = read_document(&observer, &file).unwrap().unwrap_err();
+        assert_eq!(error, roxmltree::Document::parse("<A>").unwrap_err());
+        let reference = Observer::new();
+        read_to_string(&reference, &file).unwrap();
+        let (reads, counts, documents) = observer.finish_with_documents();
+        assert_eq!((reads, counts), reference.finish());
+        assert!(documents.is_empty());
     }
 
     /// `p/child/` and `p/child` are different queries (the slash demands a

@@ -39,7 +39,8 @@ mod common;
 
 use std::collections::HashMap;
 
-use borzoi_msbuild::{ParsedProject, parse_fsproj_with_imports, resolve_sdk, workloads};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{ParsedProject, resolve_sdk, workloads};
 use tempfile::TempDir;
 
 /// Parse `body` with the real SDK resolver, so `seed_toolset_properties` runs.

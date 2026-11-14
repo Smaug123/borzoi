@@ -19,6 +19,7 @@
 
 mod condition;
 mod diagnostic;
+pub mod document;
 mod evaluator;
 mod glob;
 pub mod glob_resolver;
@@ -1082,6 +1083,10 @@ pub fn parse_fsproj(
 /// MSBuild property nor contain case-insensitive duplicates.
 /// `environment` carries the same semantics as on [`parse_fsproj`]
 /// (overridable environment-backed properties; reserved names ignored).
+///
+/// The evaluation asks each file-system query once (see [`observed`]), and
+/// parses every file it imports; [`parse_fsproj_with_imports_reusing`]
+/// reuses the parses of an earlier evaluation.
 pub fn parse_fsproj_with_imports(
     source: &str,
     project_path: &Path,
@@ -1103,6 +1108,66 @@ pub fn parse_fsproj_with_imports(
     .map(|walked| walked.project)
 }
 
+/// [`parse_fsproj_with_imports`], reusing the documents of `documents` that
+/// were parsed from exactly the bytes this evaluation reads, and leaving in
+/// it the document of every file it imported.
+///
+/// The result is [`parse_fsproj_with_imports`]'s, read set and counts
+/// included, whatever `documents` holds: an imported file is read either way,
+/// and a document is reused only for the very bytes it was parsed from
+/// ([`observed::ImportDocuments`]).
+pub fn parse_fsproj_with_imports_reusing(
+    source: &str,
+    project_path: &Path,
+    extra_properties: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    sdk_resolver: Option<&SdkResolver<'_>>,
+    glob_resolver: Option<&GlobResolver<'_>>,
+    documents: &mut observed::ImportDocuments,
+) -> Result<ParsedProject, ParseError> {
+    let observer = observed::Observer::with_documents(std::mem::take(documents));
+    let (walked, kept) = parse_fsproj_observed(
+        source,
+        project_path,
+        extra_properties,
+        environment,
+        sdk_resolver,
+        glob_resolver,
+        observer,
+        #[cfg(any(test, feature = "test-support"))]
+        None,
+    );
+    *documents = kept;
+    walked.map(|walked| walked.project)
+}
+
+/// [`parse_fsproj_with_imports`] through an observer that asks the file system
+/// every query it is asked and parses every file it reads
+/// ([`observed::Observer::asking_every_time`]): the reference the memo and the
+/// document reuse are held to.
+#[cfg(any(test, feature = "test-support"))]
+pub fn parse_fsproj_with_imports_asking_every_time(
+    source: &str,
+    project_path: &Path,
+    extra_properties: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    sdk_resolver: Option<&SdkResolver<'_>>,
+    glob_resolver: Option<&GlobResolver<'_>>,
+) -> Result<ParsedProject, ParseError> {
+    parse_fsproj_observed(
+        source,
+        project_path,
+        extra_properties,
+        environment,
+        sdk_resolver,
+        glob_resolver,
+        observed::Observer::asking_every_time(),
+        None,
+    )
+    .0
+    .map(|walked| walked.project)
+}
+
 /// [`parse_fsproj_with_imports`], also answering `probe` from the end of the
 /// walk when one is given (see [`evaluator::reads`]). Only the differential
 /// tests pass a probe, so a build without them has no `probe` parameter.
@@ -1115,7 +1180,39 @@ pub(crate) fn parse_fsproj_probed(
     glob_resolver: Option<&GlobResolver<'_>>,
     #[cfg(any(test, feature = "test-support"))] probe: Option<&evaluator::reads::ReadProbe>,
 ) -> Result<evaluator::Walked, ParseError> {
-    validate_inputs(project_path, extra_properties)?;
+    parse_fsproj_observed(
+        source,
+        project_path,
+        extra_properties,
+        environment,
+        sdk_resolver,
+        glob_resolver,
+        observed::Observer::new(),
+        #[cfg(any(test, feature = "test-support"))]
+        probe,
+    )
+    .0
+}
+
+/// [`parse_fsproj_probed`] through `observer`, handing back the documents it
+/// holds when the evaluation ends ([`observed::Observer::finish_with_documents`]).
+#[allow(clippy::too_many_arguments)]
+fn parse_fsproj_observed(
+    source: &str,
+    project_path: &Path,
+    extra_properties: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    sdk_resolver: Option<&SdkResolver<'_>>,
+    glob_resolver: Option<&GlobResolver<'_>>,
+    observer: observed::Observer,
+    #[cfg(any(test, feature = "test-support"))] probe: Option<&evaluator::reads::ReadProbe>,
+) -> (
+    Result<evaluator::Walked, ParseError>,
+    observed::ImportDocuments,
+) {
+    if let Err(error) = validate_inputs(project_path, extra_properties) {
+        return (Err(error), observer.finish_with_documents().2);
+    }
     // Detection only — we follow the props/targets ourselves and
     // suppress the per-kind `ImplicitImportPresent` diagnostic that
     // `detect_implicit_imports` would otherwise add to the result.
@@ -1127,7 +1224,6 @@ pub(crate) fn parse_fsproj_probed(
     // keeps the conservative "central versions not folded in" cause
     // whenever it never reached the file (no resolver, non-SDK project,
     // or a break anywhere along the chain).
-    let observer = observed::Observer::new();
     let mut implicit_props = None;
     let mut implicit_targets = None;
     let mut cpm_props_path = None;
@@ -1140,7 +1236,10 @@ pub(crate) fn parse_fsproj_probed(
             }
         }
     }
-    let doc = roxmltree::Document::parse(source)?;
+    let doc = match roxmltree::Document::parse(source) {
+        Ok(doc) => doc,
+        Err(error) => return (Err(error.into()), observer.finish_with_documents().2),
+    };
     let mut walked = evaluator::walk_with_imports(
         &doc,
         project_path,
@@ -1155,10 +1254,10 @@ pub(crate) fn parse_fsproj_probed(
         #[cfg(any(test, feature = "test-support"))]
         probe,
     );
-    let (read_set, read_counts) = observer.finish();
+    let (read_set, read_counts, documents) = observer.finish_with_documents();
     walked.project.read_set = read_set;
     walked.project.read_counts = read_counts;
-    Ok(walked)
+    (Ok(walked), documents)
 }
 
 /// Input-validation shared between the pure and with-imports entry

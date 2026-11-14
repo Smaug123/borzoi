@@ -47,16 +47,17 @@ use crate::observed::{EvaluationCounts, Unobserved};
 use crate::read_checks::{Check, ReadChecks, a_fact};
 use crate::vfs::Nanos;
 use borzoi_msbuild::observed::{
-    self as msbuild_observed, Listed, Observation, Observer, Read, ReadCounts, ReadSet,
+    self as msbuild_observed, ImportDocuments, Listed, Observation, Observer, Read, ReadCounts,
+    ReadSet,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_msbuild::{
     GlobResolver, ParsedProject, ResolvedItem, SdkResolution, SdkResolver,
-    parse_fsproj_with_imports, target_frameworks,
+    parse_fsproj_with_imports_reusing, target_frameworks,
 };
 
 use crate::paths::{lexically_normalize, paths_equal};
@@ -142,6 +143,11 @@ pub struct Workspace {
     env_counts: Cell<ReadCounts>,
     /// MSBuild evaluations run in the open generation.
     evaluated: Cell<u64>,
+    /// The imported files' parsed documents, which every evaluation reuses
+    /// when it reads a file's bytes unchanged
+    /// ([`borzoi_msbuild::parse_fsproj_with_imports_reusing`]). Never stale:
+    /// an evaluation still reads each file and compares its bytes.
+    documents: RefCell<ImportDocuments>,
     /// Each file's owner ([`Self::owning_project`]) as a walk inside a
     /// generation found it, keyed by the file's spelling, with what the walk
     /// read. Confirmed once per generation that asks for it.
@@ -768,6 +774,7 @@ impl Workspace {
             checker: ReadChecks::default(),
             env_counts: Cell::new(ReadCounts::default()),
             evaluated: Cell::new(0),
+            documents: RefCell::default(),
             owners: HashMap::new(),
             dir_listings: DirListings::default(),
             next_evaluation: Cell::new(0),
@@ -1722,6 +1729,7 @@ impl Workspace {
         let env = &self.env;
         let extra_build_properties = &self.extra_build_properties;
         let evaluated = &self.evaluated;
+        let documents = &self.documents;
         let generation = self.checker.generation();
         // Read before the evaluation starts, as the generation's time is.
         let started = self.checker.now();
@@ -1730,8 +1738,13 @@ impl Workspace {
         self.projects
             .entry(project.clone())
             .or_insert_with(|| {
-                let evaluation =
-                    evaluate_project(project.as_path(), env, extra_build_properties, evaluated);
+                let evaluation = evaluate_project(
+                    project.as_path(),
+                    env,
+                    extra_build_properties,
+                    evaluated,
+                    documents,
+                );
                 let id = EvaluationId(next_evaluation.get());
                 next_evaluation.set(id.0 + 1);
                 let (checks, exempt) = evaluation
@@ -1899,6 +1912,7 @@ impl Workspace {
                     env: &self.env,
                     extra_build_properties: &self.extra_build_properties,
                     evaluated: &self.evaluated,
+                    documents: &self.documents,
                 },
                 seed_tfm,
                 purpose,
@@ -1918,6 +1932,7 @@ struct NodeContext<'a> {
     env: &'a SdkDiscoveryEnv,
     extra_build_properties: &'a HashMap<String, String>,
     evaluated: &'a Cell<u64>,
+    documents: &'a RefCell<ImportDocuments>,
 }
 
 /// What a graph walk is *for* — the two consumers need different edge
@@ -2066,6 +2081,7 @@ fn resolve_node_uncached(
         env,
         extra_build_properties,
         evaluated,
+        documents,
     } = context;
     if !msbuild_observed::exists(observer, path) {
         return NodeResult::NotFound;
@@ -2077,7 +2093,7 @@ fn resolve_node_uncached(
     // set is recorded, whichever branch below it serves (the seeded inner
     // pass, and every remaining TFM of a multi-targeted project, included).
     let evaluate_recorded = |properties: &HashMap<String, String>| {
-        let evaluation = evaluate_project(path, env, properties, evaluated);
+        let evaluation = evaluate_project(path, env, properties, evaluated, documents);
         observer.absorb((evaluation.reads, ReadCounts::default()));
         evaluation.evaluated
     };
@@ -2508,7 +2524,8 @@ pub(crate) fn asset_list_covers_compile(v: &str) -> bool {
 /// Read and evaluate `project_path`, and say what that read. The evaluation
 /// is `None` on any failure (IO, XML, or evaluation) — the caller caches the
 /// `None` so we don't retry on every keystroke. Each MSBuild evaluation pass
-/// it runs is counted in `evaluated`.
+/// it runs is counted in `evaluated`, and reuses the parsed imports in
+/// `documents`, leaving its own there.
 ///
 /// Builds a per-project [`SdkDiscovery`] from `env`; on
 /// [`crate::sdk_discovery::DiscoveryError`] (e.g. missing `$DOTNET_ROOT`,
@@ -2520,6 +2537,7 @@ fn evaluate_project(
     env: &SdkDiscoveryEnv,
     extra_build_properties: &HashMap<String, String>,
     evaluated: &Cell<u64>,
+    documents: &RefCell<ImportDocuments>,
 ) -> Evaluation {
     let _span =
         tracing::info_span!("evaluate_project", project = %project_path.display()).entered();
@@ -2568,6 +2586,7 @@ fn evaluate_project(
         &env.build_environment,
         disc.as_ref(),
         evaluated,
+        documents,
     ) else {
         return Evaluation {
             evaluated: None,
@@ -2590,6 +2609,7 @@ fn evaluate_project(
         &env.build_environment,
         disc.as_ref(),
         evaluated,
+        documents,
     );
     // The second pass read on its own account, whether or not it is served.
     let reads = reads.union(served.pass2_reads.unwrap_or_default());
@@ -2676,6 +2696,7 @@ struct ServedEvaluation {
 /// The policy itself — which TFM, and when a second pass is needed — lives in
 /// [`tfm_policy`], shared with the `.fsproj`-buffer diagnostics path so the two
 /// surfaces cannot drift (plan E5/E7). This function is only the effect.
+#[allow(clippy::too_many_arguments)]
 fn select_target_framework(
     pass1: ParsedProject,
     source: &str,
@@ -2684,6 +2705,7 @@ fn select_target_framework(
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
     evaluated: &Cell<u64>,
+    documents: &RefCell<ImportDocuments>,
 ) -> ServedEvaluation {
     let choice = tfm_policy::tfm_choice(&pass1, extras);
     let Some(seed) = choice.reseed() else {
@@ -2721,7 +2743,15 @@ fn select_target_framework(
     let mut seeded = extras.clone();
     tfm_policy::seed_target_framework_global(&mut seeded, seed);
     let seed = seed.to_string();
-    match parse_with_optional_sdk(source, project_path, &seeded, environment, disc, evaluated) {
+    match parse_with_optional_sdk(
+        source,
+        project_path,
+        &seeded,
+        environment,
+        disc,
+        evaluated,
+        documents,
+    ) {
         Some(pass2) => match tfm_policy::reseed_outcome(&pass2) {
             tfm_policy::ReseedOutcome::AsSeeded => ServedEvaluation {
                 pass2_reads: Some(pass2.read_set.clone()),
@@ -2816,8 +2846,8 @@ fn contains_property_case_insensitive(properties: &HashMap<String, String>, name
     properties.keys().any(|key| key.eq_ignore_ascii_case(name))
 }
 
-/// Call [`parse_fsproj_with_imports`] with or without an SDK resolver
-/// depending on whether `disc` is `Some`. Split out so the resolver
+/// Call [`parse_fsproj_with_imports_reusing`] with or without an SDK
+/// resolver depending on whether `disc` is `Some`. Split out so the resolver
 /// closure can live on the stack in the same scope as the call — that
 /// keeps the closure's borrow of `disc` bounded by the call itself,
 /// avoiding the need to box a `dyn Fn`.
@@ -2828,32 +2858,36 @@ fn parse_with_optional_sdk(
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
     evaluated: &Cell<u64>,
+    documents: &RefCell<ImportDocuments>,
 ) -> Option<ParsedProject> {
     evaluated.set(evaluated.get() + 1);
     // Glob resolution is independent of SDK discovery, so both arms get the
     // filesystem-backed resolver. It borrows nothing, so it lives for the
     // whole function.
     let glob_resolver: &GlobResolver<'_> = &borzoi_msbuild::glob_resolver::resolve;
+    let documents = &mut documents.borrow_mut();
     match disc {
         Some(d) => {
             let resolver: &SdkResolver<'_> = &|name, observer| d.resolve(name, observer);
-            parse_fsproj_with_imports(
+            parse_fsproj_with_imports_reusing(
                 source,
                 project_path,
                 extras,
                 environment,
                 Some(resolver),
                 Some(glob_resolver),
+                documents,
             )
             .ok()
         }
-        None => parse_fsproj_with_imports(
+        None => parse_fsproj_with_imports_reusing(
             source,
             project_path,
             extras,
             environment,
             None,
             Some(glob_resolver),
+            documents,
         )
         .ok(),
     }
@@ -7012,7 +7046,13 @@ mod tests {
         /// `<Project />`, which no perturbation of the world evaluates to,
         /// with the reads behind the failure.
         fn evaluation(project: &Path, env: &SdkDiscoveryEnv) -> ParsedProject {
-            let evaluation = evaluate_project(project, env, &HashMap::new(), &Cell::new(0));
+            let evaluation = evaluate_project(
+                project,
+                env,
+                &HashMap::new(),
+                &Cell::new(0),
+                &RefCell::default(),
+            );
             let parsed = match evaluation.evaluated {
                 Some(evaluated) => evaluated.parsed,
                 None => borzoi_msbuild::parse_fsproj(
@@ -7102,8 +7142,13 @@ mod tests {
             write_file(&root.join("repo/Multi/M.fs"), "module M\n");
             for project in [sdk_project, multi] {
                 let checked = || {
-                    let evaluation =
-                        evaluate_project(&project, &env, &HashMap::new(), &Cell::new(0));
+                    let evaluation = evaluate_project(
+                        &project,
+                        &env,
+                        &HashMap::new(),
+                        &Cell::new(0),
+                        &RefCell::default(),
+                    );
                     let read_set: ReadSet = evaluation
                         .checks(|_| false)
                         .into_iter()
@@ -7377,6 +7422,37 @@ mod tests {
             let moved = ws.end_generation().evaluations;
             assert!(moved.evaluated > 0, "{moved:?}");
             assert_ne!(ws.projects_generation(), generation);
+        }
+
+        /// An evaluation run again reuses the documents of every imported
+        /// file whose bytes have not moved, and parses again only the one
+        /// rewritten: the workspace hands every evaluation the same
+        /// [`ImportDocuments`].
+        #[test]
+        fn an_evaluation_run_again_reuses_the_unchanged_imports() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (project, env) = world(&root, false);
+            let mut ws = Workspace::with_env(env);
+            let parses = |ws: &Workspace| {
+                let documents = ws.documents.borrow();
+                (documents.parsed(), documents.reused())
+            };
+            assert!(ws.project(&project).is_some());
+            let (first, reused) = parses(&ws);
+            // `Sdk.props`, `Directory.Build.props`, `common.props` and
+            // `Sdk.targets`.
+            assert_eq!((first, reused), (4, 0));
+            ws.drop_every_evaluation();
+            assert!(ws.project(&project).is_some());
+            assert_eq!(parses(&ws), (first, 4), "nothing moved, so nothing is parsed");
+            write_file(
+                &root.join("repo/common.props"),
+                "<Project><PropertyGroup><DefineConstants>$(DefineConstants);MOVED</DefineConstants></PropertyGroup></Project>",
+            );
+            ws.drop_every_evaluation();
+            assert!(ws.symbols_for_project(&project).contains("MOVED"));
+            assert_eq!(parses(&ws), (first + 1, 7), "only the rewritten import");
         }
 
         /// A file only the second, seeded pass reads (an import gated on the

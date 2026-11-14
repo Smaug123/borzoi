@@ -201,7 +201,7 @@ fn extras(root: &Path, world: &World) -> Vec<Perturbation> {
     out
 }
 
-fn evaluate(root: &Path, project: &Path, source: &str) -> ParsedProject {
+fn evaluate(root: &Path, project: &Path, source: &str, through: Through<'_>) -> ParsedProject {
     let dotnet = root.join("dotnet");
     let resolver = |name: &str, observer: &Observer| {
         resolve_sdk(
@@ -219,26 +219,46 @@ fn evaluate(root: &Path, project: &Path, source: &str) -> ParsedProject {
         )
     };
     let glob: &GlobResolver<'_> = &crate::glob_resolver::resolve;
-    parse_fsproj_with_imports(
-        source,
-        project,
-        &HashMap::new(),
-        &HashMap::new(),
-        Some(&resolver),
-        Some(glob),
-    )
-    .expect("well-formed XML parses")
+    through
+        .evaluate(
+            source,
+            project,
+            &HashMap::new(),
+            &HashMap::new(),
+            Some(&resolver),
+            Some(glob),
+        )
+        .expect("well-formed XML parses")
 }
 
+/// The sweep over `world`, with the reused entry point held to the reference
+/// at every step, as every helper's is ([`super::sound`]).
 fn sweep_world(world: &World) -> Tally {
     let tmp = TempDir::new().unwrap();
     let root = canon(tmp.path());
     let (project, source) = build(&root, world);
-    sweep(
+    let documents = RefCell::new(ImportDocuments::default());
+    let tally = sweep(
         &root,
-        &|| evaluate(&root, &project, &source),
+        &|| {
+            same_as_reference(
+                evaluate(&root, &project, &source, Through::Reference),
+                evaluate(&root, &project, &source, Through::Reusing(&documents)),
+            )
+        },
         &extras(&root, world),
-    )
+    );
+    // The sweep evaluates the world many times over a tree it changes one
+    // file at a time, so the comparison is vacuous unless those evaluations
+    // reused documents.
+    let documents = documents.into_inner();
+    if documents.parsed() > 0 {
+        assert!(
+            documents.reused() > 0,
+            "the sweep's evaluations reused no document: {documents:?}"
+        );
+    }
+    tally
 }
 
 proptest! {
@@ -310,7 +330,12 @@ fn a_full_world_records_every_kind_of_query() {
     let tmp = TempDir::new().unwrap();
     let root = canon(tmp.path());
     let (project, source) = build(&root, &world);
-    let parsed = evaluate(&root, &project, &source);
+    let parsed = evaluate(
+        &root,
+        &project,
+        &source,
+        Through::Reusing(&RefCell::default()),
+    );
     let read_set: &ReadSet = &parsed.read_set;
     let has =
         |pred: &dyn Fn(&Observation) -> bool| read_set.reads().iter().any(|r| pred(&r.observation));

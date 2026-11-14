@@ -8,7 +8,10 @@
 //! whole import graph) before evaluating any item, and keeping the two
 //! passes in one module made that ordering easy to violate.
 
+use std::sync::Arc;
+
 use super::*;
+use crate::document::ParsedDocument;
 use crate::glob::SpecFragment;
 use crate::properties::escaping;
 use crate::properties::path_fixup;
@@ -73,27 +76,27 @@ pub(super) enum CurrentFile {
     /// The entry project. Its `Document` outlives the whole walk (the
     /// caller owns it), so deferred groups replay against it directly.
     Entry,
-    /// An imported file, whose `Document` is dropped when the property
-    /// pass leaves it. `retained` is the index into
+    /// An imported file. `retained` is the index into
     /// [`State::retained_imported_files`] once the first deferred group
-    /// forces this walk-frame's source to be kept (lazily — files with no
-    /// item groups are never retained).
+    /// forces this walk-frame's document to be kept for the item pass
+    /// (lazily — files with no item groups are never retained).
     Imported {
         /// Pre-canonical path — MSBuild's identity for the file, and the
         /// source of its `MSBuildThisFile{,Directory}` binding at replay.
         path: PathBuf,
+        /// The document the property pass walks.
+        document: Arc<ParsedDocument>,
         retained: Option<usize>,
     },
 }
 
-/// An imported file whose full source is kept alive so its deferred
-/// `<ItemGroup>`s can be re-parsed and replayed in the item pass. Retaining
-/// the *whole file* (rather than slicing out group text) keeps every byte
-/// range in the replayed document identical to the property-pass parse — no
-/// span arithmetic, no namespace reconstruction.
+/// An imported file whose document is kept so its deferred `<ItemGroup>`s
+/// can be replayed in the item pass: the document the property pass walked,
+/// so every node id and byte range a deferred group recorded names the same
+/// element there.
 pub(super) struct RetainedImportedFile {
     path: PathBuf,
-    source: String,
+    document: Arc<ParsedDocument>,
 }
 
 /// Which retained document a [`DeferredItemGroup`] lives in.
@@ -151,17 +154,26 @@ impl<'r> State<'r> {
     pub(super) fn defer_item_group(&mut self, node: Node<'_, '_>, kind: DeferredGroupKind) {
         let file = match self.current_file.clone() {
             CurrentFile::Entry => DeferredFileKey::Entry,
-            CurrentFile::Imported { path, retained } => {
+            CurrentFile::Imported {
+                path,
+                document,
+                retained,
+            } => {
                 let index = match retained {
                     Some(index) => index,
                     None => {
+                        debug_assert!(
+                            std::ptr::eq(node.document(), document.document()),
+                            "an imported file's group defers from the document its frame walks"
+                        );
                         let index = self.retained_imported_files.len();
                         self.retained_imported_files.push(RetainedImportedFile {
                             path: path.clone(),
-                            source: node.document().input_text().to_string(),
+                            document: Arc::clone(&document),
                         });
                         self.current_file = CurrentFile::Imported {
                             path,
+                            document,
                             retained: Some(index),
                         };
                         index
@@ -189,16 +201,6 @@ impl<'r> State<'r> {
 pub(super) fn replay_deferred_item_groups(entry_doc: &Document<'_>, state: &mut State<'_>) {
     let groups = std::mem::take(&mut state.deferred_item_groups);
     let files = std::mem::take(&mut state.retained_imported_files);
-    // One parse per retained file for the whole pass, not one per group: a
-    // file is retained only when it defers a group, so none of these parses
-    // is wasted, and re-parsing per group is quadratic in a file's groups.
-    let docs: Vec<Document<'_>> = files
-        .iter()
-        .map(|file| {
-            Document::parse(&file.source)
-                .expect("retained source parsed successfully in the property pass")
-        })
-        .collect();
     let definition_groups = groups
         .iter()
         .filter(|group| group.kind == DeferredGroupKind::ItemDefinitionGroup);
@@ -223,7 +225,7 @@ pub(super) fn replay_deferred_item_groups(entry_doc: &Document<'_>, state: &mut 
             }
             DeferredFileKey::Imported(index) => {
                 let file = &files[index];
-                let doc = &docs[index];
+                let doc = file.document.document();
                 // MSBuild rebinds `MSBuildThisFile{,Directory}` to the
                 // *defining* file during the item pass too — an imported
                 // item's `$(MSBuildThisFileDirectory)Extra.fs` resolves
@@ -261,7 +263,7 @@ fn resolve_deferred_node<'a, 'input>(
     assert_eq!(
         node.range(),
         group.range,
-        "re-parsed document diverged from the property-pass parse"
+        "the retained document is not the one the property pass walked"
     );
     assert_eq!(node.tag_name().name(), group.kind.tag_name());
     node

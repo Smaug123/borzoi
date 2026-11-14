@@ -33,7 +33,8 @@ use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use borzoi_msbuild::{GlobResolver, ItemKind, glob_resolver, parse_fsproj_with_imports};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{GlobResolver, ItemKind, glob_resolver};
 use common::{Oracle, SplitMix64};
 use tempfile::TempDir;
 

@@ -27,7 +27,8 @@ use std::time::Duration;
 
 mod common;
 
-use borzoi_msbuild::{SdkPaths, SdkResolution, SdkResolveError, parse_fsproj_with_imports};
+use crate::common::parse_fsproj_with_imports;
+use borzoi_msbuild::{SdkPaths, SdkResolution, SdkResolveError};
 use borzoi_oracle_harness::BoundedCommand;
 use common::SplitMix64;
 
