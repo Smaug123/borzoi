@@ -1031,6 +1031,24 @@ mod tests {
         })
     }
 
+    /// `value` with the sign of every floating-point zero flipped: equal to
+    /// `value`, and serialised differently.
+    fn flip_zeros(value: &Value) -> Value {
+        match value {
+            Value::Number(n) if n.is_f64() && n.as_f64() == Some(0.0) => {
+                json!(-n.as_f64().unwrap())
+            }
+            Value::Array(items) => Value::Array(items.iter().map(flip_zeros).collect()),
+            Value::Object(members) => Value::Object(
+                members
+                    .iter()
+                    .map(|(k, v)| (k.clone(), flip_zeros(v)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 4_000, ..ProptestConfig::default() })]
 
@@ -1041,10 +1059,15 @@ mod tests {
         fn a_share_key_is_the_method_and_the_parameters(
             a in json(),
             b in json(),
-            same in any::<bool>(),
+            relation in 0u8..3,
             methods in (0usize..3, 0usize..3),
         ) {
-            let b = if same { a.clone() } else { b };
+            // Unrelated, the same value, or the same value spelt otherwise.
+            let b = match relation {
+                0 => b,
+                1 => a.clone(),
+                _ => flip_zeros(&a),
+            };
             let method = |i: usize| ["textDocument/hover", "workspace/symbol", "textDocument/definition"][i];
             let request = |method: &str, params: &Value| Request {
                 id: RequestId::from(1),
