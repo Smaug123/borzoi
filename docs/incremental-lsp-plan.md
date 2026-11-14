@@ -3794,9 +3794,19 @@ So the part after the edit is under the budget on WoofWare.PawPrint.Domain
 (43.6 M) and over it on WoofWare.Incremental (79.7 M), and the window is
 over it on both because of work done before the edit was sent.
 
-The tables were taken at d2b7f874 (main merged); the checkpoints Codex's
-second round added before the inference, before a cached prefix is
-returned and before each project's parses are an atomic load each.
+The tables were taken at d2b7f874 (main merged). `blocked-edit` was taken
+again at 282c5e50, after Codex's rounds added checkpoints (before the
+inference, before a cached prefix is returned, before each project's
+parses, before each candidate of an ownership walk) and moved a stopped
+run's follow-ups to the next step, on a box running the full gate at the
+same time: window 381.1 M and 392.2 M, the edit waited 377.1 M and 383.0 M,
+of which before the edit 294.2 M and 298.7 M. The part after the edit is
+the window less two readings taken at different moments of different
+rounds, so its minimum moves between runs (43.6 M and 83.9 M on
+WoofWare.PawPrint.Domain); the window and the wait are the gate's figures.
+The final head differs from 282c5e50 only in what a stop settles, which
+in this script is nothing (the evaluation moved, so no fold is kept
+stale).
 
 **Departures.**
 
