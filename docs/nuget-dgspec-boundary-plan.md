@@ -1976,8 +1976,10 @@ the two differ where it matters:
   piece that is a lone plain `@(Type)` copies those items, metadata and all:
   the destination's item-definition defaults beneath, the element's own
   metadata on top. Any other item expression (a transform, a separator, a
-  list run together with text) declines, as does a property value that
-  could join into one.
+  list run together with text, a name MSBuild leaves literal such as
+  `@(0)`) declines, as does a property value that could join into one, a
+  read of a property starting with `-`, and a list holding a padded
+  identity, whose escapes the decoded tables cannot respell.
 - **Bodies**: intrinsic `PropertyGroup`s, `ItemGroup` `Include`s without
   batching (each new item taking its type's item-definition defaults beneath
   its own metadata, `Label` not metadata), and `Message` with the parameters

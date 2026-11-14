@@ -477,6 +477,9 @@ impl<'s, 'r> Engine<'s, 'r> {
             return Ok(());
         };
         let declined = || decline(format!("target {target} returns {returns}"));
+        if references_private(&returns) {
+            return declined();
+        }
         if returns.contains("%(") {
             return declined();
         }
@@ -759,6 +762,9 @@ impl<'s, 'r> Engine<'s, 'r> {
     /// the caller to split on: every one must be in `raw` itself, not
     /// assembled by a property.
     fn substitute_keeping_items(&self, raw: &str) -> Result<String, Decline> {
+        if references_private(raw) {
+            return decline(format!("{raw} reads a property no project can write"));
+        }
         if raw.contains("%(") {
             return decline(format!("{raw} reads metadata"));
         }
@@ -807,6 +813,9 @@ impl<'s, 'r> Engine<'s, 'r> {
     /// MSBuild expands it: each identity escaped, joined by `;`. An item
     /// expression that is more (a transform, a separator) declines.
     fn with_items(&mut self, raw: &str) -> Result<String, Decline> {
+        if references_private(raw) {
+            return decline(format!("{raw} reads a property no project can write"));
+        }
         let mut out = String::new();
         let mut rest = raw;
         while let Some(at) = rest.find("@(") {
@@ -816,11 +825,20 @@ impl<'s, 'r> Engine<'s, 'r> {
                 return decline(format!("{raw} has an unclosed item reference"));
             };
             let item_type = interior[..close].trim();
-            if !plain_name(item_type) {
+            if !item_name(item_type) {
                 return decline(format!("{raw} has an item expression"));
             }
-            let list = self
-                .table(item_type)?
+            // The tables hold identities decoded, and re-escaping one loses the
+            // escapes it was spelt with: harmless except for padding, which
+            // MSBuild keeps escaped (`%20j%20`) and a later split would trim.
+            let table = self.table(item_type)?;
+            if table
+                .iter()
+                .any(|item| item.identity.trim() != item.identity)
+            {
+                return decline(format!("an item of {item_type} is padded"));
+            }
+            let list = table
                 .iter()
                 .map(|item| escaping::escape(&item.identity))
                 .collect::<Vec<_>>()
@@ -960,20 +978,25 @@ fn lone_item_reference(piece: &str) -> bool {
         .strip_prefix("@(")
         .and_then(|rest| rest.strip_suffix(')'))
         .map(str::trim)
-        .is_some_and(|name| {
-            !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        })
+        .is_some_and(item_name)
 }
 
-/// Whether `name` is a plain item type or property name.
-fn plain_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+/// Whether `name` is an item type name MSBuild expands in `@(…)`: a letter or
+/// `_`, then letters, digits, `_` or `-`. (`@(0)` and `@(-J)` stay literal
+/// text, which the executor declines.)
+fn item_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Whether `raw` references a property whose name starts with `-`: one no
+/// project can write, which MSBuild reads as unset and the executor uses for
+/// its item lists ([`ITEM_LIST_PROPERTY`]).
+fn references_private(raw: &str) -> bool {
+    crate::properties::property_references(raw).any(|name| name.starts_with('-'))
 }
 
 /// Whether escaped text could join with what sits beside it into an item or

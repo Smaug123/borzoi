@@ -34,7 +34,7 @@ const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// reference as `$(A)$(B)`, which MSBuild expands as such.
 /// `@(I)` and `@(J)` read item lists (an `Include` copies them), and a
 /// transform is an item expression the executor declines.
-const VALUES: [&str; 15] = [
+const VALUES: [&str; 17] = [
     "x",
     "y",
     "$(A)z",
@@ -50,6 +50,10 @@ const VALUES: [&str; 15] = [
     "@(I)",
     "@(J)",
     "@(I->'%(M)')",
+    // Literal text in MSBuild, which does not expand `@(0)`; and a read of a
+    // property no project can write.
+    "@(0)",
+    "$(-ItemList-J)",
 ];
 const CONDITIONS: [&str; 8] = [
     "'$(A)' == 'x'",
@@ -64,6 +68,16 @@ const CONDITIONS: [&str; 8] = [
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
 /// `Gated` is untrusted.
 const UNDECIDABLE: &str = "$([System.String]::IsNullOrWhiteSpace(''))";
+
+/// A value: mostly one of the first seven, which the executor runs, and now
+/// and then any, many of which it declines.
+fn value(rng: &mut SplitMix64) -> &'static str {
+    if rng.below(3) == 0 {
+        rng.pick(&VALUES)
+    } else {
+        rng.pick(&VALUES[..7])
+    }
+}
 
 /// The structural `Label` attribute, now and then: it is not metadata.
 fn label(rng: &mut SplitMix64) -> &'static str {
@@ -131,7 +145,12 @@ fn project(rng: &mut SplitMix64) -> String {
     }
     // Another list, with metadata of its own, for a target to copy.
     if rng.below(2) == 0 {
-        out.push_str("  <ItemGroup>\n    <J Include=\"j1;j2\" N=\"n\" />\n  </ItemGroup>\n");
+        out.push_str("  <ItemGroup>\n    <J Include=\"j1;j2\" N=\"n\" />\n");
+        // A padded identity, escaped so MSBuild keeps the padding.
+        if rng.below(4) == 0 {
+            out.push_str("    <J Include=\"%20j3%20\" />\n");
+        }
+        out.push_str("  </ItemGroup>\n");
     }
     // A `UsingTask` may rebind a built-in task.
     if rng.below(15) == 0 {
@@ -221,15 +240,15 @@ fn target(rng: &mut SplitMix64, index: usize, out: &mut String) {
                             "      <{property}{}{}>{}</{property}>\n",
                             condition(rng),
                             label(rng),
-                            rng.pick(&VALUES)
+                            value(rng)
                         ));
                     }
                     out.push_str("    </PropertyGroup>\n");
                 }
                 7 | 8 => out.push_str(&format!(
                     "    <ItemGroup>\n      <I Include=\"{};k\" M=\"{}\"{}{} />\n    </ItemGroup>\n",
-                    rng.pick(&VALUES),
-                    rng.pick(&VALUES),
+                    value(rng),
+                    value(rng),
                     condition(rng),
                     label(rng)
                 )),
@@ -534,4 +553,21 @@ fn item_references_keep_definitions_and_escapes() {
         check(&mut oracle, xml, &mut tally);
     }
     assert_eq!(tally.committed, CASES.len(), "every case runs");
+}
+
+/// A padded identity read through a property and included again: MSBuild
+/// keeps the padding escaped (`%20j%20`), and the executor, whose tables hold
+/// identities decoded, must not trim it away. The run may decline; if it
+/// runs, it must be MSBuild's.
+#[test]
+fn padded_identities_read_through_a_property() {
+    const XML: &str = r#"<Project>
+         <ItemGroup><J Include="%20j%20" /></ItemGroup>
+         <Target Name="T0">
+           <PropertyGroup><C>@(J)</C></PropertyGroup>
+           <ItemGroup><I Include="$(C)" /></ItemGroup>
+         </Target>
+       </Project>"#;
+    let mut oracle = Oracle::spawn();
+    check(&mut oracle, XML, &mut Tally::default());
 }
