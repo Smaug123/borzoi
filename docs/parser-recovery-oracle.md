@@ -81,6 +81,13 @@ all three numbers. So a change that hides a declaration still moves a pinned
 line, even when the relation still holds. That includes hiding it by growing
 the damage, or by making it unmodelled.
 
+A corpus manifest pins a whole file on one line, so a `divergent` verdict there
+also lists each offending unit's key (`divergent 6/6/7
+at:module[0]/Let@812,module[0]/Types@1460`): the first eight, then the
+rest's count and a hash of their keys.
+A second divergence in a file that already diverges then moves its line too,
+instead of hiding behind the first.
+
 ## FCS's recovery nodes
 
 The normalised AST (`crates/cst/tests/all/common/normalised_ast/model.rs`)

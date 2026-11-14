@@ -101,8 +101,9 @@ impl<'a> Gen<'a> {
 
     /// [`Self::scheme_use`] over a module function's reading: each type
     /// parameter carrying `equality` or `comparison` instantiates to a variable
-    /// recorded with its constraint ([`Scope::constrained`]) and poisoned, so it
-    /// is checked once the binding is solved and never generalised while open.
+    /// recorded with its constraint ([`Solver::constrain`]) and poisoned, so it
+    /// is checked where a check binds it and once the binding is solved, and
+    /// never generalised while open.
     fn constrained_scheme_use(
         &mut self,
         scope: &mut Scope,
@@ -117,7 +118,7 @@ impl<'a> Gen<'a> {
             // A type parameter the type does not mention has no variable to
             // check; FCS solves it by default, which nothing reads.
             if let Some(&v) = u32::try_from(i).ok().and_then(|i| fresh.get(&i)) {
-                scope.constrained.push((v, *req));
+                self.solver.constrain(v, *req);
                 scope.poison.push(v);
             }
         }
