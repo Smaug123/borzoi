@@ -34,7 +34,7 @@ const PROPERTIES: [&str; 3] = ["A", "B", "C"];
 /// reference as `$(A)$(B)`, which MSBuild expands as such.
 /// `@(I)` and `@(J)` read item lists (an `Include` copies them), and a
 /// transform is an item expression the executor declines.
-const VALUES: [&str; 17] = [
+const VALUES: [&str; 18] = [
     "x",
     "y",
     "$(A)z",
@@ -54,6 +54,8 @@ const VALUES: [&str; 17] = [
     // property no project can write.
     "@(0)",
     "$(-ItemList-J)",
+    // A list run into text: with `J` holding a lone `%`, MSBuild reads `A`.
+    "@(J)41",
 ];
 const CONDITIONS: [&str; 8] = [
     "'$(A)' == 'x'",
@@ -149,6 +151,10 @@ fn project(rng: &mut SplitMix64) -> String {
         // A padded identity, escaped so MSBuild keeps the padding.
         if rng.below(4) == 0 {
             out.push_str("    <J Include=\"%20j3%20\" />\n");
+        }
+        // A lone `%`, which beside other text can form a new escape.
+        if rng.below(6) == 0 {
+            out.push_str("    <J Include=\"%\" />\n");
         }
         out.push_str("  </ItemGroup>\n");
     }
@@ -555,19 +561,30 @@ fn item_references_keep_definitions_and_escapes() {
     assert_eq!(tally.committed, CASES.len(), "every case runs");
 }
 
-/// A padded identity read through a property and included again: MSBuild
-/// keeps the padding escaped (`%20j%20`), and the executor, whose tables hold
-/// identities decoded, must not trim it away. The run may decline; if it
-/// runs, it must be MSBuild's.
+/// Identities whose escaped spelling decoding loses, read through a
+/// property: MSBuild keeps padding escaped (`%20j%20`), and a lone `%` run into
+/// `41` forms the escape for `A`. The executor's tables hold identities
+/// decoded. Each run may decline; if it runs, it must be MSBuild's.
 #[test]
-fn padded_identities_read_through_a_property() {
-    const XML: &str = r#"<Project>
+fn identities_decoding_loses_the_spelling_of() {
+    const CASES: [&str; 2] = [
+        r#"<Project>
          <ItemGroup><J Include="%20j%20" /></ItemGroup>
          <Target Name="T0">
            <PropertyGroup><C>@(J)</C></PropertyGroup>
            <ItemGroup><I Include="$(C)" /></ItemGroup>
          </Target>
-       </Project>"#;
+       </Project>"#,
+        r#"<Project>
+             <ItemGroup><J Include="%" /></ItemGroup>
+             <Target Name="T0">
+               <PropertyGroup><C>@(J)41</C></PropertyGroup>
+               <ItemGroup><I Include="$(C)" /></ItemGroup>
+             </Target>
+           </Project>"#,
+    ];
     let mut oracle = Oracle::spawn();
-    check(&mut oracle, XML, &mut Tally::default());
+    for xml in CASES {
+        check(&mut oracle, xml, &mut Tally::default());
+    }
 }

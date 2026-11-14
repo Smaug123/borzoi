@@ -828,15 +828,15 @@ impl<'s, 'r> Engine<'s, 'r> {
             if !item_name(item_type) {
                 return decline(format!("{raw} has an item expression"));
             }
-            // The tables hold identities decoded, and re-escaping one loses the
-            // escapes it was spelt with: harmless except for padding, which
-            // MSBuild keeps escaped (`%20j%20`) and a later split would trim.
+            // The tables hold identities decoded, and MSBuild expands the list
+            // from the escaped spelling, which decoding loses. Only an identity
+            // every spelling of which reads the same wherever it lands passes.
             let table = self.table(item_type)?;
-            if table
-                .iter()
-                .any(|item| item.identity.trim() != item.identity)
-            {
-                return decline(format!("an item of {item_type} is padded"));
+            if let Some(item) = table.iter().find(|item| !respellable(&item.identity)) {
+                return decline(format!(
+                    "an item of {item_type}, {:?}, may be spelt otherwise",
+                    item.identity
+                ));
             }
             let list = table
                 .iter()
@@ -1004,4 +1004,17 @@ fn references_private(raw: &str) -> bool {
 /// `%3b` cannot.
 fn may_assemble(escaped: &str) -> bool {
     escaped.contains('@') || escaped.contains("%(") || escaped.ends_with('%')
+}
+
+/// Whether every escaped spelling of a decoded item identity reads the same
+/// wherever an expansion puts it. It must have no padding, which MSBuild keeps
+/// escaped and a later split would trim. And it must hold none of the
+/// characters whose raw and escaped spellings differ once joined with what
+/// sits beside them: `%` can form a new escape, and `@`, `$`, `(`, `)` can join
+/// an expression a later read expands, as can `*`, `?` a wildcard and `'` a
+/// quote. A `;` is not among them: an identity holding one was spelt with it
+/// escaped (raw, it would have split), as re-escaping spells it.
+fn respellable(identity: &str) -> bool {
+    identity.trim() == identity
+        && !identity.contains(['%', '*', '?', '@', '$', '(', ')', '\''])
 }
