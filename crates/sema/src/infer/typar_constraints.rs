@@ -122,6 +122,25 @@ pub(super) fn constraint_verdict_of(
     verdict
 }
 
+/// The census's reading of a verdict a constraint must not reach: `None`
+/// for one that holds or is open.
+pub(super) fn violation(verdict: Verdict) -> Option<ConstraintGap> {
+    match verdict {
+        Verdict::Holds | Verdict::Open => None,
+        Verdict::Fails => Some(ConstraintGap::Violated),
+        Verdict::Undecided => Some(ConstraintGap::Undecided),
+    }
+}
+
+impl From<ConstraintGap> for Verdict {
+    fn from(gap: ConstraintGap) -> Verdict {
+        match gap {
+            ConstraintGap::Violated => Verdict::Fails,
+            ConstraintGap::Undecided => Verdict::Undecided,
+        }
+    }
+}
+
 /// The verdict of a type made of parts with verdicts `a` and `b`: any part
 /// failing fails it, then any undecided, then any open.
 pub(super) fn worse(a: Verdict, b: Verdict) -> Verdict {
