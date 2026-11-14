@@ -238,7 +238,7 @@ fn predefined_names_without_an_sdk_are_exact_or_declined() {
             theirs.is_some_and(|v| !v.is_empty() && v != "empty" && v != "/FALLBACK"),
             "{label}: MSBuild reads {theirs:?}, so the name is not predefined here"
         );
-        let ours = borzoi_msbuild::parse_fsproj_with_imports(
+        let ours = common::parse_fsproj_with_imports(
             &body,
             &path,
             &std::collections::HashMap::new(),
