@@ -4144,6 +4144,162 @@ times.
   open buffer's sync already announced the change: one refresh more than
   the finished request would owe.
 
+### Follow-up: an evaluation asks each query once and reuses parsed imports
+
+**Dependencies**: Stage 9. **Addresses**: the re-evaluation in
+[#741](https://github.com/WoofWare/borzoi/issues/741), the largest part of
+`blocked-edit`'s wait and of every `.fsproj` edit.
+
+**What an evaluation cost.** `crates/lsp/examples/eval_counts.rs` evaluates a
+project as the workspace does, after dropping its cached evaluation, and
+asks each query of the evaluation's own read set again, one phase at a time.
+On WoofWare.Incremental, #726's head, the minimum of five runs:
+
+| phase | instructions | share |
+|---|---:|---:|
+| the workspace's evaluation (`lsp.evaluate`) | 324.8 M | |
+| of which the MSBuild pass (`msbuild.evaluate`) | 290.7 M | 100% |
+| `realpath`: 253 calls, 153 distinct queries, about 390 k each | ≈ 99 M | 34% |
+| `roxmltree` parsing the 114 imported files (1.37 MB) | 42.1 M | 14% |
+| the item pass parsing again each file that defers a group | ≈ 24 M | 8% |
+| reading the 114 files | 20.0 M | 7% |
+| their `TextDigest`s | 5.5 M | 2% |
+| `stat`s (264 calls, 175 distinct) and listings (57, 34) | ≈ 10 M | 3% |
+| the walk itself: expansion, conditions, globbing, recording | ≈ 90 M | 31% |
+
+A sampling profile (`sample`, 18,900 samples) agreed: `realpath` 32% of the
+time, `roxmltree` 19%, reading 11%. On macOS `realpath` fetches each
+component's on-disk name with a `getattrlist` of the prefix so far, so a
+14-component path under the SDK costs about 14 lookups of up to 14
+components. Most of its calls were repeats: `walk_external_file`
+canonicalises each imported file's directory, and the SDK's files share a
+few directories.
+
+So no single phase dominated. Parsing the imports again (a third of the cost,
+counting the item pass's second parse and the reads) is what the plan
+expected, and asking the same query several times in one evaluation was a
+second, independent third.
+
+**What changed** (`crates/msbuild/src/observed.rs`, `crates/msbuild/src/document.rs`,
+`crates/msbuild/src/evaluator/item_pass.rs`, `crates/lsp/src/workspace.rs`):
+
+- **An evaluation asks each query once.** The `Observer` remembers every
+  answer it records, by query and the path's raw spelling, and a query asked
+  again takes that answer. The read set is what it was: a query asked twice
+  with one answer was always one read. A file that moves during the
+  evaluation is seen by the next validation, which asks again, so the memo
+  cannot hide a change the read set would have caught. The counts are the
+  calls made, so they fall (253 canonicalisations to 153 on
+  WoofWare.Incremental).
+- **Parsed imports are reused across evaluations, by content.** Every import
+  is read through `observed::read_document`, which still reads the file and
+  records the read as `read_to_string` does, and then takes the document
+  `ImportDocuments` keeps for that path only when it was parsed from exactly
+  the bytes just read (compared byte for byte, not by digest), parsing and
+  keeping a new one otherwise. So a kept document is never stale: no stamp,
+  racy window or immutable-install axiom is involved, and a change to any
+  import is a parse, not a wrong answer. One document per path is kept, the
+  last parsed.
+- **The item pass replays against the property pass's document**, held by
+  `Arc`, rather than copying the file's text and parsing it again.
+- `ParsedDocument` owns a text and the `roxmltree::Document` parsed from it,
+  through `self_cell`, whose macro checks the document's covariance and fixes
+  the drop order; `borzoi-msbuild` forbids `unsafe`.
+- `parse_fsproj_with_imports_reusing` takes an `&mut ImportDocuments`; the
+  LSP's workspace holds one and hands it to every evaluation, the env graph
+  walk's included. `parse_fsproj_with_imports` keeps its signature and reuses
+  nothing across calls.
+
+**Why not the stamp-keyed cache the issue suggested.** Skipping the read as
+well, by trusting a file's stamp (or the immutable-install exemption), would
+save the reads and digests too, about 25 M more. It needs a racy rule, which
+makes a property test on freshly written fixtures vacuous (every stamp is
+racy for two seconds) unless the clock is injected, and a trust argument the
+content-addressed reuse does not need at all. The reads are now 10% of what
+is left; `realpath` is 30%.
+
+**The oracle** (`crates/msbuild/src/observed/reuse.rs`): the reference is an
+`Observer::asking_every_time`, which asks every query every time and parses
+every file it reads, exactly as the evaluator did before. `same_as_reference`
+asserts that the reused evaluation equals it in everything but its counts,
+read set included, and that its counts are one query per read in its read
+set, none more than the reference asked. It runs:
+
+- at every step of the soundness sweep of every `with_imports_tests` helper
+  (about 300 tests' trees) and of the generated `read_set` worlds, with one
+  `ImportDocuments` kept across the whole sweep: before the first
+  perturbation, after each, and so after each undo (the ABA case, where a
+  kept document's file is rewritten and then put back). The generated worlds
+  also assert that the sweep's evaluations did reuse documents;
+- on every evaluation of every integration test that evaluates with imports
+  (the MSBuild differentials, the generated diffs, the restore-cone census
+  and the corpus differential), through `tests/common`'s
+  `parse_fsproj_with_imports`, with one `ImportDocuments` per test thread, so
+  the corpus's projects share the real SDK's documents.
+
+Unit tests pin the memo (a query asked again takes its first answer, the
+reference asks again and records both), the reuse (only for the same bytes,
+replaced on a change, only the last parse kept, a malformed file recorded and
+not kept), and the workspace (an evaluation run again parses only the import
+that was rewritten).
+
+Planted, each caught by `borzoi-msbuild`'s unit tests (the LSP's for the
+last), then removed:
+
+| plant | failing tests |
+|---|---:|
+| the memo keyed by `Path`, which ignores a trailing separator | 1 |
+| `link_kind` answered from `kind`'s table | 1 |
+| a kept document reused by path alone | 200 |
+| a kept document reused when the lengths agree | 117 |
+| a reused document's read records a wrong digest | 201 |
+| the reference memoizes, so the oracle compares the memo with itself | 1 |
+| the documents not handed back, so nothing is reused | 3 |
+| the memo carried from one evaluation into the next | 285 |
+| the workspace hands each evaluation a fresh store | 1 |
+
+The generated worlds first asserted reuse only when the store reported a
+parse, so a store dropped after each evaluation (which reports none) passed
+them; they now check after every evaluation that each file it read is kept
+with the digest its read records.
+
+**Measured** against `main` at #726's merge (e853ad8bf), minimum of five
+runs (three for the keystroke), instructions per round:
+
+| measurement | project | before | after |
+|---|---|---:|---:|
+| `lsp.evaluate` (`eval_counts`) | WoofWare.Incremental | 323.8 M | 206.4 M |
+| `msbuild.evaluate`, no store to reuse | WoofWare.Incremental | 289.8 M | 229.3 M |
+| `own-comment` round | WoofWare.Incremental | 505.0 M | 379.6 M |
+| `own-comment` round | WoofWare.PawPrint.Domain | 516.9 M | 393.8 M |
+| of which `didChangeWatchedFiles` | WoofWare.Incremental | 330.0 M | 208.2 M |
+| `blocked-edit`: the edit waited | WoofWare.Incremental | 393.8 M | 240.6 M |
+| `blocked-edit`: the edit waited | WoofWare.PawPrint.Domain | 362.4 M | 246.8 M |
+| keystroke round (no evaluation) | WoofWare.Incremental | 37.6 M | 37.4 M |
+| `own-save` round (no evaluation) | WoofWare.Incremental | 56.4 M | 55.9 M |
+
+The evaluation asks 114 opens, 175 `stat`s, 34 listings and 153
+canonicalisations where it asked 115, 264, 57 and 253, for the same 476
+distinct reads.
+
+**Open gaps.**
+
+- `realpath` is now the largest single cost of an evaluation (about 60 M of
+  what is left on WoofWare.Incremental): 153 distinct canonicalisations, all
+  but a handful inside installed SDK versions. The workspace already trusts
+  those answers without asking (D3's immutable contents) for a cached
+  evaluation; handing the dropped evaluation's exempt answers to the next one
+  would remove most of them, and their reads, about 75 M. It needs the
+  version directories' existence confirmed in the generation that reuses
+  them, which `Workspace::validate` stops short of when an earlier check
+  fails.
+- The `.fsproj` buffer diagnostics evaluate through `parse_fsproj_with_imports`
+  with no `ImportDocuments`, so they parse every import each time.
+- `ImportDocuments` never evicts: it keeps the last parse of every path any
+  evaluation imported, for the workspace's lifetime.
+- The memo keeps a file's text read and its document read apart, so an
+  evaluation that read one file both ways would open it twice.
+
 ## Non-goals
 
 - **Semantic diagnostics.** The server publishes syntactic diagnostics only.
